@@ -36,8 +36,24 @@ async function getBtNames() {
 }
 
 async function listPorts() {
-  const ports = await SerialPort.list();
+  let ports = await SerialPort.list();
   console.log('serial ports', ports);
+
+  // normalize each entry to a usable string path; some drivers put the
+  // COM path in `comName` or just `name`. drop anything where we can't
+  // derive a path.
+  ports = ports
+    .map(p => {
+      const portPath = p.path ?? p.comName ?? p.name;
+      if (!portPath) {
+        console.log('dropping port entry without usable path', p);
+        return null;
+      }
+      return { original: p, path: portPath };
+    })
+    .filter(x => x !== null)
+    .map(x => x.original);
+
   let btNames = new Map();
   try {
     btNames = await getBtNames();
@@ -61,8 +77,10 @@ async function listPorts() {
   // appear to be Bluetooth so the user has some hint, and if we have a
   // matching friendly name from the BT subsystem prefer it.
   return ports.map(p => {
-    let name = p.friendlyName || p.manufacturer || p.path;
-    console.log('examining port', p.path, 'pnpId', p.pnpId);
+    // re-compute the normalized path here just in case
+    const portPath = p.path ?? p.comName ?? p.name;
+    let name = p.friendlyName || p.manufacturer || portPath;
+    console.log('examining port', portPath, 'pnpId', p.pnpId);
 
     // try to match against parsed addresses first
     if (p.pnpId) {
@@ -88,8 +106,8 @@ async function listPorts() {
     if (/bluetooth/i.test(name) || (p.pnpId && /bthenum/i.test(p.pnpId))) {
       name = `Bluetooth: ${name}`;
     }
-    console.log('port', p.path, 'labelled', name);
-    return { path: p.path, friendlyName: name };
+    console.log('port', portPath, 'labelled', name);
+    return { path: portPath, friendlyName: name };
   });
 }
 
@@ -99,81 +117,47 @@ async function choosePort() {
     throw new Error('No serial ports available');
   }
 
-  // try to automatically identify our board by opening each Bluetooth
-  // serial port and performing the familiar ScientISST handshake. this
-  // gives the desktop app a “bluetooth only” feel: the user does not need
-  // to pick a COM number, they just power the board and click connect.
-  for (const p of ports) {
-    // only bother with ports that look like bluetooth adapters
-    if (!/bluetooth/i.test(p.friendlyName)) continue;
-    try {
-      console.log(`scanning port ${p.path} (${p.friendlyName})`);
-      const probe = new SerialPort(p.path, { baudRate: 9600, autoOpen: false });
-      await new Promise((resolve, reject) => probe.open(err => (err ? reject(err) : resolve())));
-
-      // perform the same initial sequence used by the library when
-      // connecting: send 0x23 then 0x07 and wait for a zero‑terminated
-      // string response. if we receive something we consider it our
-      // device.
-      await new Promise((resolve, reject) =>
-        probe.write(Buffer.from([0x23]), err => (err ? reject(err) : resolve()))
-      );
-      await new Promise((resolve, reject) =>
-        probe.write(Buffer.from([0x07]), err => (err ? reject(err) : resolve()))
-      );
-
-      const version = await new Promise((resolve, reject) => {
-        let acc = Buffer.alloc(0);
-        const onData = chunk => {
-          acc = Buffer.concat([acc, chunk]);
-          if (acc.includes(0x00)) {
-            probe.off('data', onData);
-            resolve(acc.toString('utf8'));
-          }
-        };
-        probe.on('data', onData);
-        setTimeout(() => {
-          probe.off('data', onData);
-          reject(new Error('timeout'));
-        }, 1500);
-      });
-
-      await new Promise((resolve, reject) => probe.close(err => (err ? reject(err) : resolve())));
-
-      console.log(`auto‑detected board on ${p.path}: version=${version}`);
-      return p.path;
-    } catch (e) {
-      console.log(`port ${p.path} did not look like the board (${e.message})`);
-      // ignore and try next
-    }
-  }
-
-  // if autodetection failed, fall back to manual chooser
-  const response = await ipcRenderer.invoke('show-port-dialog', ports.map(p => p.friendlyName));
+  // simply show the chooser; the renderer can treat the returned path as the
+  // COM port to open. this avoids flaky handshake attempts and works
+  // reliably with Bluetooth SPP devices such as the ScientISST board.
+  const response = await ipcRenderer.invoke(
+    'show-port-dialog',
+    ports.map(p => p.friendlyName)
+  );
   if (response === -1) {
     throw new Error('Cancelled');
   }
   return ports[response].path;
 }
 
-function ensurePort(path) {
-  if (!openPorts.has(path)) {
-    const port = new SerialPort(path, { autoOpen: false });
-    openPorts.set(path, port);
-  }
-  return openPorts.get(path);
+function ensurePort(path, baudRate = 9600) {
+  if (!path) throw new Error("ensurePort called without a valid path");
+
+  const existing = openPorts.get(path);
+  if (existing) return existing;
+
+  const port = new SerialPort({ path, baudRate, autoOpen: false });
+  openPorts.set(path, port);
+  return port;
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
   listSerialPorts: listPorts,
   requestPort: choosePort,
-  openSerialPort: async (path, options) => {
-    const port = ensurePort(path);
+  openSerialPort: async (path, options = {}) => {
+    const baudRate = Number(options.baudRate ?? 9600); // IMPORTANT: default matches WebSerialTransport calls
+    if (!Number.isFinite(baudRate)) throw new Error(`Invalid baudRate: ${options.baudRate}`);
+
+    // recreate port if it already exists with unknown settings
+    const existing = openPorts.get(path);
+    if (existing) {
+      await new Promise((resolve) => existing.close(() => resolve()));
+      openPorts.delete(path);
+    }
+
+    const port = ensurePort(path, baudRate);
     return new Promise((resolve, reject) => {
-      port.update({ baudRate: options.baudRate }).open(err => {
-        if (err) reject(err);
-        else resolve();
-      });
+      port.open((err) => (err ? reject(err) : resolve()));
     });
   },
   writeSerialPort: async (path, data) => {
@@ -185,35 +169,54 @@ contextBridge.exposeInMainWorld('electronAPI', {
       });
     });
   },
-  readSerialPort: async (path, bytes, timeout) => {
+  readSerialPort: async (path, bytes, timeout, options = {}) => {
     const port = ensurePort(path);
+    const allowPartial = options.allowPartial ?? true;   // default true
+
     return new Promise((resolve, reject) => {
       let buffer = Buffer.alloc(0);
-      const onData = chunk => {
-        buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length >= bytes) {
-          cleanup();
-          resolve(new Uint8Array(buffer.slice(0, bytes)));
-        }
-      };
-      const onError = err => {
-        cleanup();
-        reject(err);
-      };
+
       const cleanup = () => {
         port.off('data', onData);
         port.off('error', onError);
+        if (timer) clearTimeout(timer);
       };
+
+      const onData = chunk => {
+        console.log('readSerialPort got', chunk.length, 'bytes');
+        buffer = Buffer.concat([buffer, chunk]);
+        if (bytes && buffer.length >= bytes) {
+          // return everything we have, not just the requested slice
+          cleanup();
+          resolve(new Uint8Array(buffer));
+        }
+      };
+
+      const onError = err => { cleanup(); reject(err); };
+
       port.on('data', onData);
       port.on('error', onError);
-      if (timeout > 0) {
-        setTimeout(() => {
-          cleanup();
+
+      const timer = timeout > 0 ? setTimeout(() => {
+        cleanup();
+        // if anything arrived, return it unconditionally; caller decides validity
+        if (buffer.length > 0) {
+          resolve(new Uint8Array(buffer));
+        } else {
           reject(new Error('timeout'));
-        }, timeout);
-      }
+        }
+      }, timeout) : null;
     });
   },
+
+  // streaming helper for future use
+  onSerialData: (path, cb) => {
+    const port = ensurePort(path);
+    const handler = chunk => cb(new Uint8Array(chunk));
+    port.on('data', handler);
+    return () => port.off('data', handler);
+  },
+
   closeSerialPort: async path => {
     const port = openPorts.get(path);
     if (!port) return;

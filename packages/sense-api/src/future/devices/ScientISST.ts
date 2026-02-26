@@ -3,7 +3,12 @@ import { SemVer } from "semver"
 import { ScientISSTAdcCharacteristics } from "../adcCharacteristics"
 import { Frame } from "../frames"
 import { FrameReader, ScientISSTFrameReader } from "../readers"
-import { Transport, WebSerialTransport, WebSocketTransport } from "../transport"
+import {
+	Transport,
+	WebSerialTransport,
+	WebSocketTransport
+} from "../transport"
+import { NodeSerialTransport } from "../transport/NodeSerialTransport"
 import { DEVICE_STATUS, Device } from "./Device"
 import { NotAcquiringException, NotIdleException } from "./exceptions"
 
@@ -47,6 +52,13 @@ export class ScientISST implements Device {
 
 		if (transportOverride) {
 			this.transport = transportOverride
+		} else if (
+			typeof window !== "undefined" &&
+			typeof (window as any).electronAPI !== "undefined"
+		) {
+			// running inside Electron – use native node serial transport regardless
+			// of the chosen communication mode (BLE support was removed earlier)
+			this.transport = new NodeSerialTransport(9600, 2 ** 20)
 		} else {
 			switch (communicationMode) {
 				case SCIENTISST_COMUNICATION_MODE.WEBSERIAL:
@@ -90,19 +102,19 @@ export class ScientISST implements Device {
 	}
 
 	private async readString(): Promise<string> {
-		let byte = (await this.transport.read(1, 2500))[0]
+		let byte = (await this.transport.read(1, 5000))[0]
 		let string = ""
 
 		while (byte !== 0x00) {
 			string += String.fromCharCode(byte)
-			byte = (await this.transport.read(1, 2500))[0]
+			byte = (await this.transport.read(1, 5000))[0]
 		}
 
 		return string
 	}
 
 	private async readUint32(): Promise<number> {
-		const bytes = await this.transport.read(4, 2500)
+		const bytes = await this.transport.read(4, 5000)
 		return bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24)
 	}
 

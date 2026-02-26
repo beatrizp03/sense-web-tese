@@ -1,5 +1,8 @@
 const { app, BrowserWindow } = require("electron");
 
+// serial/USB only; BLE experimental code was removed to simplify the
+// desktop build.  Port enumeration is handled via the native bridge.
+
 // Helps with common Windows GPU/renderer launch issues
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -34,7 +37,7 @@ function createWindow() {
     console.error("render-process-gone", details);
   });
   win.webContents.on("console-message", (_e, _level, message) => {
-    console.log("[renderer]", message);
+    //console.log("[renderer]", message);
   });
 
   const url = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";
@@ -64,6 +67,21 @@ app.whenReady().then(() => {
     });
     return response;
   });
+
+
+  function parseBlePayload(buf) {
+    // BLE notifications deliver raw bytes from the device. the
+    // ScientISST hardware uses exactly the same framing protocol whether
+    // we read it over serial or BLE, so the application-side code already
+    // knows how to make sense of these bytes. the existing
+    // `ScientISSTFrameReader` (see packages/sense-api/src/future/readers)
+    // implements the parser used by sense-web-v2.
+    //
+    // here we simply timestamp and forward the unmodified byte stream
+    // to the renderer, leaving interpretation to whatever transport or
+    // frame reader the UI chooses to use.
+    return { ts: Date.now(), bytes: [...buf] };
+  }
 
   createWindow();
 });
