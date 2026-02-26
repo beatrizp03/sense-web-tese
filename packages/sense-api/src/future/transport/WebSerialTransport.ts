@@ -23,32 +23,50 @@ export class WebSerialTransport implements Transport {
 	private reader?: ReadableStreamDefaultReader<unknown>
 	private writer?: WritableStreamDefaultWriter<unknown>
 
+	// when running inside Electron we prefer the injected node API. the
+	// browser Web‑Serial implementation is usable but the desktop bridge
+	// allows auto‑detecting the board and avoids the weird native chooser.
+	private isElectron =
+		typeof window !== "undefined" &&
+		typeof (window as any).electronAPI !== "undefined"
+	private electronPortPath: string | null = null
+	// always use native transport when we're inside the Electron shell
+	// (the `useNative` flag no longer depends on navigator.serial). this
+	// keeps behaviour consistent regardless of the availability of the
+	// browser API.
+	private useNative = this.isElectron
+
 	/**
 	 * Create a new WebSerialTransport.
 	 * @param {number} baudRate the baud rate to use
 	 * @param {number} bufferSize the size of the read buffer, in bytes
 	 */
 	constructor(baudRate: number, bufferSize: number) {
-		// Check if we're running in a browser
-		if (typeof window === "undefined") {
-			throw new Error("WebSerialTransport is only available in a browser")
-		}
+		// escalate validations only when not using the native electron
+		// transport.  the browser API (including when running inside
+		// Electron) will enforce its own constraints.
+		if (!this.useNative) {
+			// Check if we're running in a browser
+			if (typeof window === "undefined") {
+				throw new Error("WebSerialTransport is only available in a browser")
+			}
 
-		// Check if the Web Serial API is available
-		if (!("serial" in navigator)) {
-			throw new Error(
-				"WebSerialTransport is not available in this browser"
-			)
-		}
+			// Check if the Web Serial API is available
+			if (!("serial" in navigator)) {
+				throw new Error(
+					"WebSerialTransport is not available in this browser"
+				)
+			}
 
-		// Check if baudRate is a positive integer
-		if (!Number.isInteger(baudRate) || baudRate <= 0) {
-			throw new Error("baudRate must be a positive integer")
-		}
+			// Check if baudRate is a positive integer
+			if (!Number.isInteger(baudRate) || baudRate <= 0) {
+				throw new Error("baudRate must be a positive integer")
+			}
 
-		// Check if bufferSize is a positive integer
-		if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
-			throw new Error("bufferSize must be a positive integer")
+			// Check if bufferSize is a positive integer
+			if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+				throw new Error("bufferSize must be a positive integer")
+			}
 		}
 
 		this.baudRate = baudRate
@@ -69,6 +87,27 @@ export class WebSerialTransport implements Transport {
 	async open() {
 		if (this.isOpen()) {
 			throw new AlreadyConnectedException(this)
+		}
+
+		if (this.useNative) {
+			// ask main process to choose a port
+			const api = (window as any).electronAPI
+			try {
+				this.electronPortPath = await api.requestPort()
+			} catch (e) {
+				// map user cancellation or no available ports
+				if (
+					e &&
+					(e.message === "Cancelled" ||
+					 e.message === "No serial ports available")
+				) {
+					throw new CancelledByUserException(this)
+				}
+				throw e
+			}
+			// open it with the requested baud rate
+			await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate })
+			return
 		}
 
 		// Request the user to select a serial port
@@ -124,10 +163,24 @@ export class WebSerialTransport implements Transport {
 	}
 
 	isOpen(): boolean {
-		return !!(this.device && this.device.readable && this.device.writable)
+	if (this.useNative) {
+		return this.electronPortPath !== null
+	}
+	return !!(this.device && this.device.readable && this.device.writable)
 	}
 
 	async close() {
+		if (this.useNative) {
+			if (this.electronPortPath) {
+				await (window as any).electronAPI.closeSerialPort(
+					this.electronPortPath
+				)
+				this.electronPortPath = null
+			}
+			return
+		}
+
+		// existing browser implementation
 		// If the serial port is already closed, do nothing
 		if (!this.device) return
 		const device = this.device
@@ -183,6 +236,16 @@ export class WebSerialTransport implements Transport {
 			throw new ConnectionLostException(this)
 		}
 
+		if (this.useNative) {
+			// forward to electron API
+			await (window as any).electronAPI.writeSerialPort(
+				this.electronPortPath,
+				data
+			)
+			this.writeLock.release()
+			return
+		}
+
 		try {
 			const writer = this.device.writable.getWriter()
 			this.writer = writer
@@ -222,6 +285,17 @@ export class WebSerialTransport implements Transport {
 
 		if (!this.isOpen()) {
 			throw new ConnectionLostException(this)
+		}
+
+		if (this.useNative) {
+			// delegate to electron API which returns the buffer directly
+			const result = await (window as any).electronAPI.readSerialPort(
+				this.electronPortPath,
+				bytes,
+				timeoutMilliseconds
+			)
+			this.readLock.release()
+			return result
 		}
 
 		const result = new Uint8Array(bytes)

@@ -9,7 +9,9 @@
   "scripts": {
     "start": "electron ."
   },
-  "devDependencies": {
-    "electron": "^40.6.1"
-  }
+  "dependencies": {
+    "electron": "^40.6.1",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {}
 }

@@ -39,23 +39,28 @@ export class ScientISST implements Device {
 	constructor(
 		communicationMode: SCIENTISST_COMUNICATION_MODE,
 		channels: Set<SCIENTISST_CHANNEL>,
-		samplingRate: number
+		samplingRate: number,
+		transportOverride?: Transport
 	) {
 		this.channels = channels
 		this.samplingRate = samplingRate
 
-		switch (communicationMode) {
-			case SCIENTISST_COMUNICATION_MODE.WEBSERIAL:
-				this.transport = new WebSerialTransport(9600, 2 ** 20)
-				break
-			case SCIENTISST_COMUNICATION_MODE.WEBSOCKET:
-				this.transport = new WebSocketTransport(
-					"wss://scientisst.local",
-					2 ** 20
-				)
-				break
-			default:
-				throw new Error("Communication mode not implemented.")
+		if (transportOverride) {
+			this.transport = transportOverride
+		} else {
+			switch (communicationMode) {
+				case SCIENTISST_COMUNICATION_MODE.WEBSERIAL:
+					this.transport = new WebSerialTransport(9600, 2 ** 20)
+					break
+				case SCIENTISST_COMUNICATION_MODE.WEBSOCKET:
+					this.transport = new WebSocketTransport(
+						"wss://scientisst.local",
+						2 ** 20
+					)
+					break
+				default:
+					throw new Error("Communication mode not implemented.")
+			}
 		}
 	}
 
