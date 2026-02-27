@@ -95,7 +95,7 @@ export class ESPLoader {
 		public transport: Transport,
 		private baudrate: number,
 		private terminal?: IEspLoaderTerminal,
-		private rom_baudrate = 115200,
+		private rom_baudrate = 9600,
 		private debugLogging = false
 	) {
 		this.IS_STUB = false

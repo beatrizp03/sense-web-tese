@@ -37,7 +37,7 @@ function createWindow() {
     console.error("render-process-gone", details);
   });
   win.webContents.on("console-message", (_e, _level, message) => {
-    //console.log("[renderer]", message);
+    console.log("[renderer]", message);
   });
 
   const url = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";

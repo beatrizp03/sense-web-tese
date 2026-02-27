@@ -56,15 +56,18 @@ export class ScientISST implements Device {
 			typeof window !== "undefined" &&
 			typeof (window as any).electronAPI !== "undefined"
 		) {
-			// running inside Electron – use native node serial transport regardless
-			// of the chosen communication mode (BLE support was removed earlier)
+			// Electron environment: use native Node serial transport
+			console.log("[ScientISST] Using NodeSerialTransport (Electron)")
 			this.transport = new NodeSerialTransport(9600, 2 ** 20)
 		} else {
+			// Browser environment: use Web Serial API or WebSocket
 			switch (communicationMode) {
 				case SCIENTISST_COMUNICATION_MODE.WEBSERIAL:
+					console.log("[ScientISST] Using WebSerialTransport (Browser)")
 					this.transport = new WebSerialTransport(9600, 2 ** 20)
 					break
 				case SCIENTISST_COMUNICATION_MODE.WEBSOCKET:
+					console.log("[ScientISST] Using WebSocketTransport")
 					this.transport = new WebSocketTransport(
 						"wss://scientisst.local",
 						2 ** 20

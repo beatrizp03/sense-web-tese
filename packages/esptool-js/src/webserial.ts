@@ -208,7 +208,7 @@ class Transport {
 		await this.device.setSignals({ dataTerminalReady: state })
 	}
 
-	async connect(baud = 115200) {
+	async connect(baud = 9600) {
 		await this.device.open({ baudRate: baud })
 		this.baudrate = baud
 		this.left_over = new Uint8Array(0)

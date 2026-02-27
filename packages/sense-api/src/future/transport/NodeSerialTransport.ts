@@ -61,6 +61,7 @@ export class NodeSerialTransport implements Transport {
 
 		// open the chosen port at the desired baud rate
 		await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate })
+		console.log(`[electron][NodeSerialTransport] Port ${this.electronPortPath} opened at baudRate=${this.baudRate}`);
 	}
 
 	async close(): Promise<void> {
@@ -116,11 +117,14 @@ export class NodeSerialTransport implements Transport {
 
 			// need more data from native side
 			const needed = bytes - this.readBuffer.length
-			const chunk: Uint8Array = await (window as any).electronAPI.readSerialPort(
-				this.electronPortPath,
-				needed,
-				timeoutMilliseconds
-			)
+			   const start = Date.now();
+			   const chunk: Uint8Array = await (window as any).electronAPI.readSerialPort(
+				   this.electronPortPath,
+				   needed,
+				   timeoutMilliseconds
+			   );
+			   const end = Date.now();
+			   console.log(`[electron][NodeSerialTransport] readSerialPort resolved at ${end} (duration ${end - start} ms) with ${chunk.length} bytes`);
 
 			// concatenate with whatever was buffered
 			const combined = new Uint8Array(this.readBuffer.length + chunk.length)

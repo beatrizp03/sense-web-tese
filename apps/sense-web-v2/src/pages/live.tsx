@@ -277,51 +277,61 @@ const Page = () => {
 			)
 
 			deviceRef.current.onFrames = data => {
-				if (data === null) return
+				if (data === null) return;
+
+				// Latency logging for each frame
+				const now = performance.now();
+				if (Array.isArray(data)) {
+					data.forEach((frame, idx) => {
+						if (frame) {
+							console.log(`[web-v2][data] ts=${now} idx=${idx} frame=`, frame);
+						}
+					});
+				}
 
 				storeBufferRef.current = [
 					...storeBufferRef.current,
 					...data.filter(d => d !== null)
-				]
+				];
 				if (
 					storeBufferRef.current.length >=
 					storeBufferThreshold.current
 				) {
-					setStoreBufferLength(storeBufferRef.current.length)
+					setStoreBufferLength(storeBufferRef.current.length);
 				}
 
 				if (channelsRef.current.length === 0) {
-					channelsRef.current = Object.keys(data[0].channels).sort()
+					channelsRef.current = Object.keys(data[0].channels).sort();
 				}
 
 				const graphBufferLimit = Math.ceil(
 					deviceRef.current.getSamplingRate() * 5
-				)
+				);
 
 				for (let i = 0; i < data.length; i++) {
-					const frame = data[i]
+					const frame = data[i];
 
 					graphBufferRef.current.push([
 						frameSequenceRef.current,
 						frame
-					])
+					]);
 
 					if (graphBufferRef.current.length > graphBufferLimit) {
-						graphBufferRef.current.shift()
+						graphBufferRef.current.shift();
 					}
 
-					frameSequenceRef.current++
+					frameSequenceRef.current++;
 				}
 
 				setXDomain([
 					frameSequenceRef.current - graphBufferLimit,
 					frameSequenceRef.current
-				])
+				]);
 
 				// We set this to true so that the user will be shown a
 				// download button in case the acquisition is stopped due
 				// to a localStorage being full or connection being lost.
-				setAcquisitionStarted(true)
+				setAcquisitionStarted(true);
 			}
 
 			deviceRef.current.onError = e => {

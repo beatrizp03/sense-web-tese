@@ -37,7 +37,7 @@ const schema = Yup.object().shape({
 		.required(),
 	baudRate: Yup.number().when("deviceType", {
 		is: "maker",
-		then: Yup.number().integer().min(9600).max(115200).required()
+		then: Yup.number().integer().min(9600).max(9600).required()
 	}),
 	samplingRate: Yup.number().when("deviceType", {
 		is: "sense",

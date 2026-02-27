@@ -145,7 +145,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listSerialPorts: listPorts,
   requestPort: choosePort,
   openSerialPort: async (path, options = {}) => {
-    const baudRate = Number(options.baudRate ?? 9600); // IMPORTANT: default matches WebSerialTransport calls
+    const baudRate = Number(options.baudRate ?? 9600); // ScientISST board default
     if (!Number.isFinite(baudRate)) throw new Error(`Invalid baudRate: ${options.baudRate}`);
 
     // recreate port if it already exists with unknown settings
@@ -156,6 +156,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
 
     const port = ensurePort(path, baudRate);
+    console.log(`[electron][serial] Opening port ${path} at baudRate=${baudRate}`);
     return new Promise((resolve, reject) => {
       port.open((err) => (err ? reject(err) : resolve()));
     });
@@ -169,50 +170,57 @@ contextBridge.exposeInMainWorld('electronAPI', {
       });
     });
   },
+  // Event-driven ring buffer ingestion and streaming API
+  _serialBuffers: {},
   readSerialPort: async (path, bytes, timeout, options = {}) => {
-    const port = ensurePort(path);
-    const allowPartial = options.allowPartial ?? true;   // default true
-
+    // Use ring buffer for event-driven ingestion
+    if (!contextBridge._serialBuffers) contextBridge._serialBuffers = {};
+    if (!contextBridge._serialBuffers[path]) {
+      contextBridge._serialBuffers[path] = Buffer.alloc(0);
+      const port = ensurePort(path);
+      port.on('data', chunk => {
+        // Push bytes into ring buffer
+        contextBridge._serialBuffers[path] = Buffer.concat([contextBridge._serialBuffers[path], chunk]);
+      });
+    }
+    // Wait for enough bytes or timeout
     return new Promise((resolve, reject) => {
-      let buffer = Buffer.alloc(0);
-
-      const cleanup = () => {
-        port.off('data', onData);
-        port.off('error', onError);
-        if (timer) clearTimeout(timer);
-      };
-
-      const onData = chunk => {
-        console.log('readSerialPort got', chunk.length, 'bytes');
-        buffer = Buffer.concat([buffer, chunk]);
-        if (bytes && buffer.length >= bytes) {
-          // return everything we have, not just the requested slice
-          cleanup();
-          resolve(new Uint8Array(buffer));
-        }
-      };
-
-      const onError = err => { cleanup(); reject(err); };
-
-      port.on('data', onData);
-      port.on('error', onError);
-
-      const timer = timeout > 0 ? setTimeout(() => {
-        cleanup();
-        // if anything arrived, return it unconditionally; caller decides validity
-        if (buffer.length > 0) {
-          resolve(new Uint8Array(buffer));
+      const start = Date.now();
+      const check = () => {
+        const buf = contextBridge._serialBuffers[path];
+        if (buf.length >= bytes) {
+          const out = buf.slice(0, bytes);
+          contextBridge._serialBuffers[path] = buf.slice(bytes);
+          resolve(new Uint8Array(out));
+        } else if (Date.now() - start > timeout) {
+          // Return whatever is available
+          const out = buf;
+          contextBridge._serialBuffers[path] = Buffer.alloc(0);
+          resolve(new Uint8Array(out));
         } else {
-          reject(new Error('timeout'));
+          setTimeout(check, 2); // Poll every 2ms
         }
-      }, timeout) : null;
+      };
+      check();
     });
   },
 
   // streaming helper for future use
+  // Streaming API for continuous acquisition
   onSerialData: (path, cb) => {
     const port = ensurePort(path);
-    const handler = chunk => cb(new Uint8Array(chunk));
+    let lastLog = Date.now();
+    let byteCount = 0;
+    const handler = chunk => {
+      cb(new Uint8Array(chunk));
+      byteCount += chunk.length;
+      const now = Date.now();
+      if (now - lastLog > 1000) {
+        console.log(`[electron][serial] Streaming: ${byteCount} bytes in last second`);
+        byteCount = 0;
+        lastLog = now;
+      }
+    };
     port.on('data', handler);
     return () => port.off('data', handler);
   },

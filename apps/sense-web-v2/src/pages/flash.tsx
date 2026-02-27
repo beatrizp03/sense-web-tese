@@ -25,7 +25,7 @@ const Page = () => {
 			deviceRef.current = await navigator.serial.requestPort()
 			transportRef.current = new Transport(deviceRef.current)
 
-			const esploader = new ESPLoader(transportRef.current, 115200)
+			const esploader = new ESPLoader(transportRef.current, 9600)
 			const chip = await esploader.main_fn()
 			console.log(chip)
 
