@@ -1,4 +1,8 @@
 const { app, BrowserWindow } = require("electron");
+const fs = require('fs');
+const path = require('path');
+const { ipcMain, dialog } = require("electron");
+
 
 // serial/USB only; BLE experimental code was removed to simplify the
 // desktop build.  Port enumeration is handled via the native bridge.
@@ -11,12 +15,71 @@ app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
 // Required for Web Serial / Web Bluetooth APIs inside Electron
 app.commandLine.appendSwitch("enable-experimental-web-platform-features");
 
+console.log(`FRAME_TIMING_LOGS: ${process.env.FRAME_TIMING_LOGS}`);
+console.log(`BUFFER_MANAGER_LOGS: ${process.env.BUFFER_MANAGER_LOGS}`);
+
+/**
+ * ChunkedDataWriter class
+ * Automatically writes buffered samples to disk after reaching a chunk size.
+ * Usage: create an instance, call addSample() for each new sample.
+ */
+class ChunkedDataWriter {
+    constructor(options) {
+        this.chunkSize = options.chunkSize || 10000;
+        this.outputDir = options.outputDir || path.join(__dirname, 'data');
+        this.baseFilename = options.baseFilename || 'samples';
+        this.buffer = [];
+        this.chunkIndex = 0;
+        if (!fs.existsSync(this.outputDir)) {
+            fs.mkdirSync(this.outputDir, { recursive: true });
+        }
+        console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
+    }
+
+    /**
+     * Add a sample to the buffer. Writes to disk if chunk size reached.
+     */
+    addSample(sample) {
+        this.buffer.push(sample);
+        if (this.buffer.length >= this.chunkSize) {
+            this.writeChunk();
+        }
+    }
+
+    /**
+     * Write current buffer to disk as a chunk file, then clear buffer.
+     */
+    writeChunk() {
+        const filename = path.join(
+            this.outputDir,
+            `${this.baseFilename}_chunk${this.chunkIndex}.json`
+        );
+        fs.writeFileSync(filename, JSON.stringify(this.buffer, null, 2));
+        if (process.env.BUFFER_MANAGER_LOGS === '1'){
+          console.log(`[electron] Chunk ${this.chunkIndex} written. Size: ${this.chunkSize} at location: ${filename}`);
+        }
+        this.buffer = [];
+        this.chunkIndex++;
+    }
+
+    /**
+     * Flush remaining samples to disk (call on exit)
+     */
+    flush() {
+        if (this.buffer.length > 0) {
+            this.writeChunk();
+        }
+    }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
     show: false,
     webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: true,
       // If sandbox initialization is the problem, this avoids it
       sandbox: false,
       // enable experimental APIs like Web Serial / Web Bluetooth
@@ -55,8 +118,6 @@ app.whenReady().then(() => {
     callback(false);
   });
 
-  const { ipcMain, dialog } = require("electron");
-
   // show a simple chooser dialog for ports
   ipcMain.handle("show-port-dialog", async (_event, buttons) => {
     const { response } = await dialog.showMessageBox({
@@ -68,6 +129,22 @@ app.whenReady().then(() => {
     return response;
   });
 
+  // Listen for new samples from renderer process
+  ipcMain.on('new-sample', (_event, sample) => {
+    try {
+        const test = JSON.stringify(sample);
+        if (process.env.BUFFER_MANAGER_LOGS === '1'){
+          //console.log('[main] Received sample from IPC:', sample);
+        }
+        if (typeof sampleWriter !== 'undefined') {
+            sampleWriter.addSample(sample);
+        } else {
+            console.error('[main] sampleWriter is undefined!');
+        }
+    } catch (err) {
+        console.error('[main] Sample not serializable:', err, sample);
+    }
+  });
 
   function parseBlePayload(buf) {
     // BLE notifications deliver raw bytes from the device. the
@@ -88,4 +165,49 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// Example: Instantiate ChunkedDataWriter in Electron main process
+// IPC handler to get current buffer size
+ipcMain.handle('get-buffer-size', () => {
+  return sampleWriter.chunkSize;
+});
+// Create a new subfolder named by recording start time (ISO string)
+const sessionStart = new Date();
+const sessionFolder = path.join(__dirname, 'data', sessionStart.toISOString().replace(/[:.]/g, '-'));
+// Default chunk size, will be updated by renderer
+let chunkSize = 10000;
+const sampleWriter = new ChunkedDataWriter({
+  chunkSize,
+  outputDir: sessionFolder,
+  baseFilename: 'samples'
+});
+
+// Listen for buffer size updates from renderer
+ipcMain.on('set-buffer-size', (_event, newSize) => {
+  if (typeof newSize === 'number' && newSize > 0) {
+    sampleWriter.chunkSize = newSize;
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[electron] Buffer size updated to: ${newSize}`);
+    }
+  }
+});
+
+// Listen for flush command from renderer (session end)
+ipcMain.on('flush-samples', () => {
+  sampleWriter.flush();
+  if (process.env.BUFFER_MANAGER_LOGS === '1') {
+    console.log('[electron] Flushed samples on session end.');
+  }
+});
+
+// Example: Add a sample (replace with your actual sample acquisition logic)
+// This should be called whenever you acquire a new sample from the device
+function onNewSample(sample) {
+    sampleWriter.addSample(sample);
+}
+
+// Example: Flush remaining samples on app exit
+app.on('before-quit', () => {
+    sampleWriter.flush();
 });

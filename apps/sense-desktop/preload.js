@@ -237,5 +237,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         }
       });
     });
-  }
+  },
+
+  sendSample: (sample) => ipcRenderer.send('new-sample', sample),
+  setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
+  flushSamples: () => ipcRenderer.send('flush-samples'),
+  getBufferSize: () => ipcRenderer.invoke('get-buffer-size')
 });

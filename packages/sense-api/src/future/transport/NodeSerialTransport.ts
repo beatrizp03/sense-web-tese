@@ -61,7 +61,9 @@ export class NodeSerialTransport implements Transport {
 
 		// open the chosen port at the desired baud rate
 		await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate })
-		console.log(`[electron][NodeSerialTransport] Port ${this.electronPortPath} opened at baudRate=${this.baudRate}`);
+		if (process.env.FRAME_TIMING_LOGS === '1') {
+			console.log('[electron][NodeSerialTransport] Port ${this.electronPortPath} opened at baudRate=${this.baudRate}`');
+		}
 	}
 
 	async close(): Promise<void> {
@@ -124,7 +126,9 @@ export class NodeSerialTransport implements Transport {
 				   timeoutMilliseconds
 			   );
 			   const end = Date.now();
-			   console.log(`[electron][NodeSerialTransport] readSerialPort resolved at ${end} (duration ${end - start} ms) with ${chunk.length} bytes`);
+			   if (process.env.FRAME_TIMING_LOGS === '1') {
+					console.log(`[electron][NodeSerialTransport] readSerialPort resolved at ${end} (duration ${end - start} ms) with ${chunk.length} bytes`);
+				}
 
 			// concatenate with whatever was buffered
 			const combined = new Uint8Array(this.readBuffer.length + chunk.length)

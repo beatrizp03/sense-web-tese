@@ -49,7 +49,37 @@ const outlineColorLight =
 	fullConfig.theme.colors["over-background-highest-light"]
 const outlineColorDark = fullConfig.theme.colors["over-background-highest-dark"]
 
+// Buffer manager logic for Electron (local disk storage)
+let electronSampleWriter: any = null
+console.log('Window object:', window.electronAPI);
+if (window.electronAPI) {
+    // Send samples to main process for disk storage
+	function saveSampleToDisk(sample: any) {
+		window.electronAPI.sendSample(sample);
+    }
+    electronSampleWriter = { addSample: saveSampleToDisk }
+}
+
 const Page = () => {
+	const storeBufferThreshold = useRef(10000);
+
+   // Send initial buffer size to Electron
+   useEffect(() => {
+	   if (window.electronAPI && storeBufferThreshold.current) {
+		   if (window.electronAPI.setBufferSize) {
+			   window.electronAPI.setBufferSize(storeBufferThreshold.current);
+		   }
+	   }
+   }, []);
+
+   // Send buffer size to Electron whenever it changes
+   useEffect(() => {
+	   if (window.electronAPI && storeBufferThreshold.current) {
+		   if (window.electronAPI.setBufferSize) {
+			   window.electronAPI.setBufferSize(storeBufferThreshold.current);
+		   }
+	   }
+   }, [storeBufferThreshold.current]);
 	const router = useRouter()
 	const deviceRef = useRef<Device | null>(null)
 	const [status, setStatus] = useState(STATUS.DISCONNECTED)
@@ -61,7 +91,6 @@ const Page = () => {
 	// localStorage
 	const storeBufferRef = useRef<Frame[]>([])
 	const [storeBufferLength, setStoreBufferLength] = useState(0)
-	const storeBufferThreshold = useRef(1000)
 	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null)
 
 	const channelsRef = useRef<string[]>([])
@@ -96,6 +125,10 @@ const Page = () => {
 					dataKey + "time",
 					JSON.stringify(Date.now())
 				)
+				// Also send to chunked writer
+				if (electronSampleWriter) {
+					electronSampleWriter.addSample(dataKey + "time", JSON.stringify(Date.now()))
+				}
 
 				const channels = deviceRef.current?.getChannels()
 				if (channels) {
@@ -103,6 +136,10 @@ const Page = () => {
 						"aq_channels",
 						JSON.stringify(channels)
 					)
+					// Also send to chunked writer
+					if (electronSampleWriter) {
+						electronSampleWriter.addSample(channels)
+					}
 				}
 			}
 
@@ -112,12 +149,23 @@ const Page = () => {
 					"aq_sampleRate",
 					JSON.stringify(sampleRate)
 				)
+				// Also send to chunked writer
+				if (electronSampleWriter) {
+					electronSampleWriter.addSample(sampleRate)
+				}
 			}
 
 			localStorage.setItem(
 				dataKey,
 				(localStorage.getItem(dataKey) ?? "") + serialized
 			)
+
+			// Also send each frame to Electron main process for chunked saving
+			if (electronSampleWriter) {
+				buffer.forEach(frame => {
+					electronSampleWriter.addSample(frame)
+				})
+			}
 
 			storeBufferRef.current = []
 			setStoreBufferLength(storeBufferRef.current.length) // Prevent state loops
@@ -165,9 +213,22 @@ const Page = () => {
 			console.log("Save threshold: " + storeBufferThreshold.current)
 		} else if (status === STATUS.PAUSED) {
 			saveData(storeBufferRef.current)
+			if (electronSampleWriter) {
+				storeBufferRef.current.forEach(frame => {
+					electronSampleWriter.addSample(frame)
+				})
+			}
 		} else if (status === STATUS.STOPPED) {
 			saveData(storeBufferRef.current)
-
+			if (electronSampleWriter) {
+				storeBufferRef.current.forEach(frame => {
+					electronSampleWriter.addSample(frame)
+				})
+			}
+			// Tell Electron to flush its buffer at session end
+			if (window.electronAPI && window.electronAPI.flushSamples) {
+				window.electronAPI.flushSamples();
+			}
 			setStatus(STATUS.STOPPED_AND_SAVED)
 			router.push("/summary", {}).then(() => {
 				// Ignore
@@ -284,7 +345,9 @@ const Page = () => {
 				if (Array.isArray(data)) {
 					data.forEach((frame, idx) => {
 						if (frame) {
-							console.log(`[web-v2][data] ts=${now} idx=${idx} frame=`, frame);
+							if (process.env.FRAME_TIMING_LOGS === '1') {
+								console.log(`[web-v2][data] ts=${now} idx=${idx} frame=`, frame);
+							}
 						}
 					});
 				}
