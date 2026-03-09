@@ -173,23 +173,32 @@ ipcMain.handle('get-buffer-size', () => {
   return sampleWriter.chunkSize;
 });
 // Create a new subfolder named by recording start time (ISO string)
-const sessionStart = new Date();
-const sessionFolder = path.join(__dirname, 'data', sessionStart.toISOString().replace(/[:.]/g, '-'));
-// Default chunk size, will be updated by renderer
-let chunkSize = 10000;
-const sampleWriter = new ChunkedDataWriter({
-  chunkSize,
-  outputDir: sessionFolder,
-  baseFilename: 'samples'
+let sampleWriter = undefined;
+
+ipcMain.on('start-acquisition', (_event, startTime) => {
+  const sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
+  let chunkSize = 10000;
+  sampleWriter = new ChunkedDataWriter({
+    chunkSize,
+    outputDir: sessionFolder,
+    baseFilename: 'samples'
+  });
+  if (process.env.BUFFER_MANAGER_LOGS === '1') {
+    console.log(`[electron] Acquisition started. Folder: ${sessionFolder}`);
+  }
 });
 
 // Listen for buffer size updates from renderer
 ipcMain.on('set-buffer-size', (_event, newSize) => {
-  if (typeof newSize === 'number' && newSize > 0) {
-    sampleWriter.chunkSize = newSize;
-    if (process.env.BUFFER_MANAGER_LOGS === '1') {
-      console.log(`[electron] Buffer size updated to: ${newSize}`);
+  if (typeof sampleWriter !== 'undefined' && sampleWriter) {
+    if (typeof newSize === 'number' && newSize > 0) {
+      sampleWriter.chunkSize = newSize;
+      if (process.env.BUFFER_MANAGER_LOGS === '1') {
+        console.log(`[electron] Buffer size updated to: ${newSize}`);
+      }
     }
+  } else {
+    console.warn('[electron] Tried to set buffer size before acquisition started.');
   }
 });
 

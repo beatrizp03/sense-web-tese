@@ -89,27 +89,6 @@ export class WebSerialTransport implements Transport {
 			throw new AlreadyConnectedException(this)
 		}
 
-		if (this.useNative) {
-			// ask main process to choose a port
-			const api = (window as any).electronAPI
-			try {
-				this.electronPortPath = await api.requestPort()
-			} catch (e) {
-				// map user cancellation or no available ports
-				if (
-					e &&
-					(e.message === "Cancelled" ||
-					 e.message === "No serial ports available")
-				) {
-					throw new CancelledByUserException(this)
-				}
-				throw e
-			}
-			// open it with the requested baud rate
-			await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate })
-			return
-		}
-
 		// Request the user to select a serial port
 		try {
 			this.device = await navigator.serial.requestPort()
@@ -163,23 +142,10 @@ export class WebSerialTransport implements Transport {
 	}
 
 	isOpen(): boolean {
-	if (this.useNative) {
-		return this.electronPortPath !== null
-	}
-	return !!(this.device && this.device.readable && this.device.writable)
+		return !!(this.device && this.device.readable && this.device.writable)
 	}
 
 	async close() {
-		if (this.useNative) {
-			if (this.electronPortPath) {
-				await (window as any).electronAPI.closeSerialPort(
-					this.electronPortPath
-				)
-				this.electronPortPath = null
-			}
-			return
-		}
-
 		// existing browser implementation
 		// If the serial port is already closed, do nothing
 		if (!this.device) return
@@ -236,16 +202,6 @@ export class WebSerialTransport implements Transport {
 			throw new ConnectionLostException(this)
 		}
 
-		if (this.useNative) {
-			// forward to electron API
-			await (window as any).electronAPI.writeSerialPort(
-				this.electronPortPath,
-				data
-			)
-			this.writeLock.release()
-			return
-		}
-
 		try {
 			const writer = this.device.writable.getWriter()
 			this.writer = writer
@@ -285,17 +241,6 @@ export class WebSerialTransport implements Transport {
 
 		if (!this.isOpen()) {
 			throw new ConnectionLostException(this)
-		}
-
-		if (this.useNative) {
-			// delegate to electron API which returns the buffer directly
-			const result = await (window as any).electronAPI.readSerialPort(
-				this.electronPortPath,
-				bytes,
-				timeoutMilliseconds
-			)
-			this.readLock.release()
-			return result
 		}
 
 		const result = new Uint8Array(bytes)

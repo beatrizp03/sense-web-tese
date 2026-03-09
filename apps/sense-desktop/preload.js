@@ -3,6 +3,15 @@ const { SerialPort } = require('serialport');
 
 // Keep track of open ports by path so we can operate on them later
 const openPorts = new Map();
+// Explicit buffer cleanup for reliability
+let ringBuffer = [];
+const serialBuffers = {};
+const serialDataHandlers = new Map();
+
+function clearRingBuffer() {
+  ringBuffer = [];
+  console.log('[preload] Ring buffer cleared');
+}
 
 // run a PowerShell command to enumerate Bluetooth devices and
 // return a map from instance ID to friendly name. this allows us to
@@ -36,6 +45,7 @@ async function getBtNames() {
 }
 
 async function listPorts() {
+  clearRingBuffer(); // Always clear buffer before listing ports
   let ports = await SerialPort.list();
   console.log('serial ports', ports);
 
@@ -141,26 +151,86 @@ function ensurePort(path, baudRate = 9600) {
   return port;
 }
 
+async function openSerialPort(path, options = {}) {
+  const baudRate = Number(options.baudRate ?? 9600);
+  if (!Number.isFinite(baudRate)) throw new Error(`Invalid baudRate: ${options.baudRate}`);
+
+  // Clean up any existing port
+  const existing = openPorts.get(path);
+  if (existing) {
+    await closeSerialPort(path);
+  }
+
+  const port = new SerialPort({ path, baudRate, autoOpen: false });
+  openPorts.set(path, port);
+  serialBuffers[path] = Buffer.alloc(0);
+
+  // Attach one data listener per port
+  const onData = (chunk) => {
+    serialBuffers[path] = Buffer.concat([serialBuffers[path], chunk]);
+  };
+  serialDataHandlers.set(path, onData);
+  port.on("data", onData);
+
+  port.removeAllListeners("error");
+  port.removeAllListeners("close");
+
+  return new Promise((resolve, reject) => {
+    port.open((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+async function readSerialPort(path, bytes, timeout) {
+  // Only consume from serialBuffers[path], never attach listeners here
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      const buf = serialBuffers[path] || Buffer.alloc(0);
+      if (buf.length >= bytes) {
+        const out = buf.slice(0, bytes);
+        serialBuffers[path] = buf.slice(bytes);
+        resolve(new Uint8Array(out));
+      } else if (Date.now() - start > timeout) {
+        // Return whatever is available
+        const out = buf;
+        serialBuffers[path] = Buffer.alloc(0);
+        resolve(new Uint8Array(out));
+      } else {
+        setTimeout(check, 2);
+      }
+    };
+    check();
+  });
+}
+
+async function closeSerialPort(path) {
+  const port = openPorts.get(path);
+  if (!port) {
+    serialBuffers[path] = Buffer.alloc(0);
+    serialDataHandlers.delete(path);
+    return;
+  }
+  // Remove listeners
+  const onData = serialDataHandlers.get(path);
+  if (onData) {
+    port.off("data", onData);
+    serialDataHandlers.delete(path);
+  }
+  port.removeAllListeners("error");
+  port.removeAllListeners("close");
+  await new Promise((resolve, reject) => {
+    port.close(err => err ? reject(err) : resolve());
+  });
+  openPorts.delete(path);
+  serialBuffers[path] = Buffer.alloc(0);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   listSerialPorts: listPorts,
   requestPort: choosePort,
-  openSerialPort: async (path, options = {}) => {
-    const baudRate = Number(options.baudRate ?? 9600); // ScientISST board default
-    if (!Number.isFinite(baudRate)) throw new Error(`Invalid baudRate: ${options.baudRate}`);
-
-    // recreate port if it already exists with unknown settings
-    const existing = openPorts.get(path);
-    if (existing) {
-      await new Promise((resolve) => existing.close(() => resolve()));
-      openPorts.delete(path);
-    }
-
-    const port = ensurePort(path, baudRate);
-    console.log(`[electron][serial] Opening port ${path} at baudRate=${baudRate}`);
-    return new Promise((resolve, reject) => {
-      port.open((err) => (err ? reject(err) : resolve()));
-    });
-  },
   writeSerialPort: async (path, data) => {
     const port = ensurePort(path);
     return new Promise((resolve, reject) => {
@@ -172,38 +242,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Event-driven ring buffer ingestion and streaming API
   _serialBuffers: {},
-  readSerialPort: async (path, bytes, timeout, options = {}) => {
-    // Use ring buffer for event-driven ingestion
-    if (!contextBridge._serialBuffers) contextBridge._serialBuffers = {};
-    if (!contextBridge._serialBuffers[path]) {
-      contextBridge._serialBuffers[path] = Buffer.alloc(0);
-      const port = ensurePort(path);
-      port.on('data', chunk => {
-        // Push bytes into ring buffer
-        contextBridge._serialBuffers[path] = Buffer.concat([contextBridge._serialBuffers[path], chunk]);
-      });
-    }
-    // Wait for enough bytes or timeout
-    return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const check = () => {
-        const buf = contextBridge._serialBuffers[path];
-        if (buf.length >= bytes) {
-          const out = buf.slice(0, bytes);
-          contextBridge._serialBuffers[path] = buf.slice(bytes);
-          resolve(new Uint8Array(out));
-        } else if (Date.now() - start > timeout) {
-          // Return whatever is available
-          const out = buf;
-          contextBridge._serialBuffers[path] = Buffer.alloc(0);
-          resolve(new Uint8Array(out));
-        } else {
-          setTimeout(check, 2); // Poll every 2ms
-        }
-      };
-      check();
-    });
-  },
 
   // streaming helper for future use
   // Streaming API for continuous acquisition
@@ -225,22 +263,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => port.off('data', handler);
   },
 
-  closeSerialPort: async path => {
-    const port = openPorts.get(path);
-    if (!port) return;
-    return new Promise((resolve, reject) => {
-      port.close(err => {
-        if (err) reject(err);
-        else {
-          openPorts.delete(path);
-          resolve();
-        }
-      });
-    });
-  },
-
   sendSample: (sample) => ipcRenderer.send('new-sample', sample),
   setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
   flushSamples: () => ipcRenderer.send('flush-samples'),
-  getBufferSize: () => ipcRenderer.invoke('get-buffer-size')
+  getBufferSize: () => ipcRenderer.invoke('get-buffer-size'),
+  startAcquisition: (startTime) => ipcRenderer.send('start-acquisition', startTime),
+  openSerialPort,
+  readSerialPort,
+  closeSerialPort
 });

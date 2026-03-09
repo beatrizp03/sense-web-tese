@@ -197,6 +197,11 @@ const Page = () => {
 		if (storeBufferLength >= storeBufferThreshold.current) {
 			const start = Date.now()
 			saveData(storeBufferRef.current)
+			if (electronSampleWriter) {
+				storeBufferRef.current.forEach(frame => {
+					electronSampleWriter.addSample(frame)
+				})
+			}
 			const saveTime = Date.now() - start
 
 			console.log("Saved data in " + saveTime + "ms")
@@ -283,7 +288,9 @@ const Page = () => {
 		}
 
 		try {
+			console.log('[CONNECT] Attempting to connect to device...')
 			await deviceRef.current.connect()
+			console.log('[CONNECT] After connect() call')
 			segmentRef.current = 1
 			setFirmwareVersion(
 				deviceRef.current.getFirmwareVersion()
@@ -304,6 +311,8 @@ const Page = () => {
 
 	const disconnect = useCallback(async () => {
 		await deviceRef.current?.disconnect()
+		deviceRef.current = null
+		console.log('[DISCONNECT] Device disconnect called')
 		setStatus(STATUS.DISCONNECTED)
 	}, [])
 
@@ -411,6 +420,10 @@ const Page = () => {
 			channelsRef.current = []
 
 			await deviceRef.current?.startAcquisition()
+			// Send startAcquisition IPC event to Electron main process ONCE per session
+			if (window.electronAPI && window.electronAPI.startAcquisition) {
+				window.electronAPI.startAcquisition(new Date().toISOString())
+			}
 			setStatus(STATUS.ACQUIRING)
 		} catch (error) {
 			console.error(error)
@@ -427,6 +440,8 @@ const Page = () => {
 		try {
 			await deviceRef.current?.stopAcquisition()
 			await deviceRef.current?.disconnect()
+			deviceRef.current = null
+			console.log('[STOP] Device disconnect called')
 		} catch (e) {
 			// Ignore the errors. See the comment in the onError handler above.
 		}
@@ -447,9 +462,12 @@ const Page = () => {
 	}, [])
 
 	const resume = useCallback(async () => {
-		deviceRef.current.onError = e => {
-			console.error(e)
-			setStatus(STATUS.CONNECTION_LOST)
+			deviceRef.current.onError = e => {
+				console.error(e)
+				deviceRef.current?.disconnect().finally(() => {
+					deviceRef.current = null
+					setStatus(STATUS.CONNECTION_LOST)
+				})
 		}
 
 		try {
@@ -471,6 +489,10 @@ const Page = () => {
 			frameSequenceRef.current = 0
 
 			await deviceRef.current?.startAcquisition()
+			// Send startAcquisition IPC event to Electron main process ONCE per session
+			if (window.electronAPI && window.electronAPI.startAcquisition) {
+				window.electronAPI.startAcquisition(new Date().toISOString())
+			}
 			setStatus(STATUS.ACQUIRING)
 
 			// Now that acquisition has started, we need to update the
