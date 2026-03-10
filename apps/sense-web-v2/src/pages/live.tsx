@@ -51,7 +51,6 @@ const outlineColorDark = fullConfig.theme.colors["over-background-highest-dark"]
 
 // Buffer manager logic for Electron (local disk storage)
 let electronSampleWriter: any = null
-console.log('Window object:', window.electronAPI);
 if (window.electronAPI) {
     // Send samples to main process for disk storage
 	function saveSampleToDisk(sample: any) {
@@ -124,55 +123,61 @@ const Page = () => {
 				localStorage.setItem(
 					dataKey + "time",
 					JSON.stringify(Date.now())
-				)
+				);
 				// Also send to chunked writer
 				if (electronSampleWriter) {
-					electronSampleWriter.addSample(dataKey + "time", JSON.stringify(Date.now()))
+					electronSampleWriter.addSample({ type: "acquisition_time", value: Date.now() });
 				}
-
-				const channels = deviceRef.current?.getChannels()
+				const channels = deviceRef.current?.getChannels();
 				if (channels) {
 					localStorage.setItem(
 						"aq_channels",
 						JSON.stringify(channels)
-					)
+					);
 					// Also send to chunked writer
 					if (electronSampleWriter) {
-						electronSampleWriter.addSample(channels)
+						electronSampleWriter.addSample({ type: "channels", value: channels });
 					}
 				}
 			}
 
-			const sampleRate = deviceRef.current?.getSamplingRate()
+			const sampleRate = deviceRef.current?.getSamplingRate();
 			if (sampleRate) {
 				localStorage.setItem(
 					"aq_sampleRate",
 					JSON.stringify(sampleRate)
-				)
+				);
 				// Also send to chunked writer
 				if (electronSampleWriter) {
-					electronSampleWriter.addSample(sampleRate)
+					electronSampleWriter.addSample({ type: "sample_rate", value: sampleRate });
 				}
 			}
 
 			localStorage.setItem(
 				dataKey,
 				(localStorage.getItem(dataKey) ?? "") + serialized
-			)
+			);
 
-			// Also send each frame to Electron main process for chunked saving
+			// Send each frame to Electron main process for chunked saving
 			if (electronSampleWriter) {
 				buffer.forEach(frame => {
-					electronSampleWriter.addSample(frame)
-				})
+					electronSampleWriter.addSample({ type: "frame", value: frame });
+				});
 			}
 
-			storeBufferRef.current = []
-			setStoreBufferLength(storeBufferRef.current.length) // Prevent state loops
+			if (window.electronAPI && window.electronAPI.flushSamples) {
+				window.electronAPI.flushSamples();
+			}
+			storeBufferRef.current = [];
+			setStoreBufferLength(storeBufferRef.current.length); // Prevent state loops
 		} catch (e) {
 			if (e instanceof DOMException && e.name === "QuotaExceededError") {
 				// We are out of localStorage, show the user the error
 				setStatus(STATUS.OUT_OF_STORAGE)
+				// Tell Electron to flush its buffer at session end
+				if (window.electronAPI && window.electronAPI.flushSamples) {
+					window.electronAPI.flushSamples();
+				}
 				storeBufferRef.current = []
 				setStoreBufferLength(storeBufferRef.current.length) // Prevent state loops
 
@@ -195,45 +200,26 @@ const Page = () => {
 	// Save data to local storage
 	useEffect(() => {
 		if (storeBufferLength >= storeBufferThreshold.current) {
-			const start = Date.now()
-			saveData(storeBufferRef.current)
-			if (electronSampleWriter) {
-				storeBufferRef.current.forEach(frame => {
-					electronSampleWriter.addSample(frame)
-				})
-			}
-			const saveTime = Date.now() - start
+			const start = Date.now();
+			saveData(storeBufferRef.current);
+			const saveTime = Date.now() - start;
 
-			console.log("Saved data in " + saveTime + "ms")
+			console.log("Saved data in " + saveTime + "ms");
 
-			const sampleRate = deviceRef.current?.getSamplingRate()
+			const sampleRate = deviceRef.current?.getSamplingRate();
 			storeBufferThreshold.current = Math.max(
 				sampleRate * 5,
 				Math.min(
 					sampleRate * (saveTime / 1000 / 0.005),
 					sampleRate * 10
 				)
-			)
+			);
 
-			console.log("Save threshold: " + storeBufferThreshold.current)
+			console.log("Save threshold: " + storeBufferThreshold.current);
 		} else if (status === STATUS.PAUSED) {
 			saveData(storeBufferRef.current)
-			if (electronSampleWriter) {
-				storeBufferRef.current.forEach(frame => {
-					electronSampleWriter.addSample(frame)
-				})
-			}
 		} else if (status === STATUS.STOPPED) {
 			saveData(storeBufferRef.current)
-			if (electronSampleWriter) {
-				storeBufferRef.current.forEach(frame => {
-					electronSampleWriter.addSample(frame)
-				})
-			}
-			// Tell Electron to flush its buffer at session end
-			if (window.electronAPI && window.electronAPI.flushSamples) {
-				window.electronAPI.flushSamples();
-			}
 			setStatus(STATUS.STOPPED_AND_SAVED)
 			router.push("/summary", {}).then(() => {
 				// Ignore
@@ -288,9 +274,7 @@ const Page = () => {
 		}
 
 		try {
-			console.log('[CONNECT] Attempting to connect to device...')
 			await deviceRef.current.connect()
-			console.log('[CONNECT] After connect() call')
 			segmentRef.current = 1
 			setFirmwareVersion(
 				deviceRef.current.getFirmwareVersion()
@@ -312,7 +296,6 @@ const Page = () => {
 	const disconnect = useCallback(async () => {
 		await deviceRef.current?.disconnect()
 		deviceRef.current = null
-		console.log('[DISCONNECT] Device disconnect called')
 		setStatus(STATUS.DISCONNECTED)
 	}, [])
 
@@ -441,7 +424,6 @@ const Page = () => {
 			await deviceRef.current?.stopAcquisition()
 			await deviceRef.current?.disconnect()
 			deviceRef.current = null
-			console.log('[STOP] Device disconnect called')
 		} catch (e) {
 			// Ignore the errors. See the comment in the onError handler above.
 		}

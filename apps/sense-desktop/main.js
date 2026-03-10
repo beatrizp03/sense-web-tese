@@ -24,52 +24,127 @@ console.log(`BUFFER_MANAGER_LOGS: ${process.env.BUFFER_MANAGER_LOGS}`);
  * Usage: create an instance, call addSample() for each new sample.
  */
 class ChunkedDataWriter {
-    constructor(options) {
-        this.chunkSize = options.chunkSize || 10000;
-        this.outputDir = options.outputDir || path.join(__dirname, 'data');
-        this.baseFilename = options.baseFilename || 'samples';
-        this.buffer = [];
-        this.chunkIndex = 0;
-        if (!fs.existsSync(this.outputDir)) {
-            fs.mkdirSync(this.outputDir, { recursive: true });
+  deleteEmptyChunks() {
+    const files = fs.readdirSync(this.outputDir);
+    files.forEach(file => {
+      if (file.startsWith(this.baseFilename + '_chunk') && file.endsWith('.json')) {
+        const filePath = path.join(this.outputDir, file);
+        const stats = fs.statSync(filePath);
+        if (stats.size <= 3) {
+          fs.unlinkSync(filePath);
+          if (process.env.BUFFER_MANAGER_LOGS === '1') {
+            console.log(`[electron] Deleted empty chunk file: ${filePath}`);
+          }
         }
-        console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
+      }
+    });
+  }
+
+  constructor(options) {
+    this.chunkSize = options.chunkSize || 10000;
+    this.outputDir = options.outputDir || path.join(__dirname, 'data');
+    this.baseFilename = options.baseFilename || 'samples';
+
+    this.buffer = [];
+    this.chunkIndex = 0;
+
+    // New: track the maximum flush size ever reached
+    this.maxChunkSizeReached = 0;
+
+    // Track whether current JSON file already has content
+    this.currentChunkHasData = false;
+
+    if (!fs.existsSync(this.outputDir)) {
+      fs.mkdirSync(this.outputDir, { recursive: true });
     }
 
-    /**
-     * Add a sample to the buffer. Writes to disk if chunk size reached.
-     */
-    addSample(sample) {
-        this.buffer.push(sample);
-        if (this.buffer.length >= this.chunkSize) {
-            this.writeChunk();
-        }
+    this.currentStream = this._createChunkStream();
+    console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
+  }
+
+  _createChunkStream() {
+    const filename = path.join(
+      this.outputDir,
+      `${this.baseFilename}_chunk${this.chunkIndex}.json`
+    );
+
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(
+        `[electron : ${new Date().toISOString()}] [CREATE CHUNK FILE] Creating chunk file: ${filename}`
+      );
     }
 
-    /**
-     * Write current buffer to disk as a chunk file, then clear buffer.
-     */
-    writeChunk() {
-        const filename = path.join(
-            this.outputDir,
-            `${this.baseFilename}_chunk${this.chunkIndex}.json`
-        );
-        fs.writeFileSync(filename, JSON.stringify(this.buffer, null, 2));
-        if (process.env.BUFFER_MANAGER_LOGS === '1'){
-          console.log(`[electron] Chunk ${this.chunkIndex} written. Size: ${this.chunkSize} at location: ${filename}`);
-        }
-        this.buffer = [];
-        this.chunkIndex++;
+    const stream = fs.createWriteStream(filename, { flags: 'w' });
+    stream.write('[\n');
+    return stream;
+  }
+
+  _writeSamplesToCurrentChunk(samples) {
+    for (const sample of samples) {
+      if (this.currentChunkHasData) {
+        this.currentStream.write(',\n');
+      }
+      this.currentStream.write(JSON.stringify(sample, null, 2));
+      this.currentChunkHasData = true;
+    }
+  }
+
+  _closeCurrentChunk() {
+    if (this.currentStream) {
+      this.currentStream.write('\n]');
+      this.currentStream.end();
+    }
+  }
+
+  _openNextChunk() {
+    this.chunkIndex++;
+    this.currentStream = this._createChunkStream();
+    this.currentChunkHasData = false;
+  }
+
+  addSample(sample) {
+    this.buffer.push(sample);
+
+    if (this.buffer.length >= this.chunkSize) {
+      this.flush(false);
+    }
+  }
+
+  flush(finalize = false) {
+    if (this.buffer.length === 0) {
+      if (finalize && this.currentStream) {
+        this._closeCurrentChunk();
+      }
+      return;
     }
 
-    /**
-     * Flush remaining samples to disk (call on exit)
-     */
-    flush() {
-        if (this.buffer.length > 0) {
-            this.writeChunk();
-        }
+    const flushSize = this.buffer.length;
+
+    // New maximum reached
+    if (flushSize > this.maxChunkSizeReached) {
+      this.maxChunkSizeReached = flushSize;
     }
+
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[electron] Flushing ${flushSize} samples. maxChunkSizeReached=${this.maxChunkSizeReached}, finalize=${finalize}`);
+    }
+
+    // Always write current buffer into the current chunk first
+    this._writeSamplesToCurrentChunk(this.buffer);
+    this.buffer = [];
+
+    // Only rotate chunk if buffer reached the known maximum chunk size
+    // or if this is the final flush at session end
+    if (flushSize >= this.maxChunkSizeReached) {
+      this._closeCurrentChunk();
+
+      if (!finalize) {
+        this._openNextChunk();
+      }
+    } else if (finalize) {
+      this._closeCurrentChunk();
+    }
+  }
 }
 
 function createWindow() {
@@ -133,9 +208,6 @@ app.whenReady().then(() => {
   ipcMain.on('new-sample', (_event, sample) => {
     try {
         const test = JSON.stringify(sample);
-        if (process.env.BUFFER_MANAGER_LOGS === '1'){
-          //console.log('[main] Received sample from IPC:', sample);
-        }
         if (typeof sampleWriter !== 'undefined') {
             sampleWriter.addSample(sample);
         } else {
@@ -204,9 +276,8 @@ ipcMain.on('set-buffer-size', (_event, newSize) => {
 
 // Listen for flush command from renderer (session end)
 ipcMain.on('flush-samples', () => {
-  sampleWriter.flush();
-  if (process.env.BUFFER_MANAGER_LOGS === '1') {
-    console.log('[electron] Flushed samples on session end.');
+  if (sampleWriter) {
+    sampleWriter.flush(false);
   }
 });
 
@@ -218,5 +289,8 @@ function onNewSample(sample) {
 
 // Example: Flush remaining samples on app exit
 app.on('before-quit', () => {
-    sampleWriter.flush();
+  if (sampleWriter) {
+    sampleWriter.flush(true);
+    sampleWriter.deleteEmptyChunks();
+  }
 });
