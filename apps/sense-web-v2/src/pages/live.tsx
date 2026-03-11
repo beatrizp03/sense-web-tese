@@ -4,7 +4,9 @@ import React, {
 	useEffect,
 	useRef,
 	useState
-} from "react"
+	} from "react"
+
+import { framePublisher } from "../../../../packages/esptool-js/src/FramePublisher"
 
 import Link from "next/link"
 import { useRouter } from "next/router"
@@ -62,6 +64,42 @@ if (window.electronAPI) {
 const Page = () => {
 	const storeBufferThreshold = useRef(10000);
 
+	// Subscribe to framePublisher for UI and storage updates
+	useEffect(() => {
+		const handleFrame = (frame: any) => {
+			// UI: update graph buffer
+			graphBufferRef.current.push([
+				frameSequenceRef.current,
+				frame
+			])
+			const graphBufferLimit = Math.ceil(
+				deviceRef.current?.getSamplingRate?.() * 5 || 5000
+			)
+			if (graphBufferRef.current.length > graphBufferLimit) {
+				graphBufferRef.current.shift()
+			}
+			frameSequenceRef.current++
+			setXDomain([
+				frameSequenceRef.current - graphBufferLimit,
+				frameSequenceRef.current
+			])
+
+			// Storage: queue frame for saving
+			storeBufferRef.current.push(frame)
+			if (storeBufferRef.current.length >= storeBufferThreshold.current) {
+				setStoreBufferLength(storeBufferRef.current.length)
+			}
+			if (channelsRef.current.length === 0 && frame.channels) {
+				channelsRef.current = Object.keys(frame.channels).sort()
+			}
+			setAcquisitionStarted(true)
+		}
+		framePublisher.on('frame', handleFrame)
+		return () => {
+			framePublisher.off('frame', handleFrame)
+		}
+	}, [])
+
    // Send initial buffer size to Electron
    useEffect(() => {
 	   if (window.electronAPI && storeBufferThreshold.current) {
@@ -111,7 +149,7 @@ const Page = () => {
 	}, [])
 
 	// This function stored all queued frames to localStorage
-	const saveData = useCallback((buffer: Array<Frame | null>) => {
+	const saveData = useCallback((buffer: Array<Frame | null>, statusAtCall: STATUS) => {
 		if (buffer.length === 0) return
 
 		try {
@@ -165,7 +203,9 @@ const Page = () => {
 				});
 			}
 
-			if (window.electronAPI && window.electronAPI.flushSamples) {
+			if ((statusAtCall === STATUS.PAUSED || statusAtCall === STATUS.STOPPED) && window.electronAPI && window.electronAPI.flushSamples) {
+				window.electronAPI.flushSamples(true); // finalize = true
+			}else if (window.electronAPI && window.electronAPI.flushSamples) {
 				window.electronAPI.flushSamples();
 			}
 			storeBufferRef.current = [];
@@ -201,7 +241,7 @@ const Page = () => {
 	useEffect(() => {
 		if (storeBufferLength >= storeBufferThreshold.current) {
 			const start = Date.now();
-			saveData(storeBufferRef.current);
+			saveData(storeBufferRef.current, status);
 			const saveTime = Date.now() - start;
 
 			console.log("Saved data in " + saveTime + "ms");
@@ -217,9 +257,9 @@ const Page = () => {
 
 			console.log("Save threshold: " + storeBufferThreshold.current);
 		} else if (status === STATUS.PAUSED) {
-			saveData(storeBufferRef.current)
+			saveData(storeBufferRef.current, status);
 		} else if (status === STATUS.STOPPED) {
-			saveData(storeBufferRef.current)
+			saveData(storeBufferRef.current, status)
 			setStatus(STATUS.STOPPED_AND_SAVED)
 			router.push("/summary", {}).then(() => {
 				// Ignore
@@ -331,62 +371,14 @@ const Page = () => {
 
 			deviceRef.current.onFrames = data => {
 				if (data === null) return;
-
-				// Latency logging for each frame
-				const now = performance.now();
+				// Publish each parsed frame via FramePublisher
 				if (Array.isArray(data)) {
-					data.forEach((frame, idx) => {
-						if (frame) {
-							if (process.env.FRAME_TIMING_LOGS === '1') {
-								console.log(`[web-v2][data] ts=${now} idx=${idx} frame=`, frame);
-							}
-						}
-					});
+				  data.forEach(frame => {
+					if (frame) framePublisher.publishFrame(frame)
+				  })
+				} else if (data) {
+				  framePublisher.publishFrame(data)
 				}
-
-				storeBufferRef.current = [
-					...storeBufferRef.current,
-					...data.filter(d => d !== null)
-				];
-				if (
-					storeBufferRef.current.length >=
-					storeBufferThreshold.current
-				) {
-					setStoreBufferLength(storeBufferRef.current.length);
-				}
-
-				if (channelsRef.current.length === 0) {
-					channelsRef.current = Object.keys(data[0].channels).sort();
-				}
-
-				const graphBufferLimit = Math.ceil(
-					deviceRef.current.getSamplingRate() * 5
-				);
-
-				for (let i = 0; i < data.length; i++) {
-					const frame = data[i];
-
-					graphBufferRef.current.push([
-						frameSequenceRef.current,
-						frame
-					]);
-
-					if (graphBufferRef.current.length > graphBufferLimit) {
-						graphBufferRef.current.shift();
-					}
-
-					frameSequenceRef.current++;
-				}
-
-				setXDomain([
-					frameSequenceRef.current - graphBufferLimit,
-					frameSequenceRef.current
-				]);
-
-				// We set this to true so that the user will be shown a
-				// download button in case the acquisition is stopped due
-				// to a localStorage being full or connection being lost.
-				setAcquisitionStarted(true);
 			}
 
 			deviceRef.current.onError = e => {

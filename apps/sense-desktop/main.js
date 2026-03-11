@@ -59,7 +59,10 @@ class ChunkedDataWriter {
     }
 
     this.currentStream = this._createChunkStream();
-    console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
+    
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
+    }
   }
 
   _createChunkStream() {
@@ -275,9 +278,10 @@ ipcMain.on('set-buffer-size', (_event, newSize) => {
 });
 
 // Listen for flush command from renderer (session end)
-ipcMain.on('flush-samples', () => {
+ipcMain.on('flush-samples', (_event, finalize) => {
+  console.log(`[electron] Flush command received. finalize=${finalize}`);
   if (sampleWriter) {
-    sampleWriter.flush(false);
+    sampleWriter.flush(finalize);
   }
 });
 

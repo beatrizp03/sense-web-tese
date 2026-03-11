@@ -265,7 +265,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   sendSample: (sample) => ipcRenderer.send('new-sample', sample),
   setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
-  flushSamples: () => ipcRenderer.send('flush-samples'),
+  flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
   getBufferSize: () => ipcRenderer.invoke('get-buffer-size'),
   startAcquisition: (startTime) => ipcRenderer.send('start-acquisition', startTime),
   openSerialPort,
