@@ -249,6 +249,7 @@ ipcMain.handle('get-buffer-size', () => {
 });
 // Create a new subfolder named by recording start time (ISO string)
 let sampleWriter = undefined;
+let segmentNumber = 1;
 
 ipcMain.on('start-acquisition', (_event, startTime) => {
   const sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
@@ -256,10 +257,10 @@ ipcMain.on('start-acquisition', (_event, startTime) => {
   sampleWriter = new ChunkedDataWriter({
     chunkSize,
     outputDir: sessionFolder,
-    baseFilename: 'samples'
+    baseFilename: `sample${segmentNumber}`
   });
   if (process.env.BUFFER_MANAGER_LOGS === '1') {
-    console.log(`[electron] Acquisition started. Folder: ${sessionFolder}`);
+    console.log(`[electron] Acquisition started. Folder: ${sessionFolder}, baseFilename: sample${segmentNumber}`);
   }
 });
 
@@ -282,6 +283,10 @@ ipcMain.on('flush-samples', (_event, finalize) => {
   console.log(`[electron] Flush command received. finalize=${finalize}`);
   if (sampleWriter) {
     sampleWriter.flush(finalize);
+  }
+  // If finalize is true, increment segmentNumber for next acquisition segment
+  if (finalize) {
+    segmentNumber++;
   }
 });
 
