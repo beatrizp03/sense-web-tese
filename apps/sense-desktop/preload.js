@@ -3,15 +3,9 @@ const { SerialPort } = require('serialport');
 
 // Keep track of open ports by path so we can operate on them later
 const openPorts = new Map();
-// Explicit buffer cleanup for reliability
-let ringBuffer = [];
+// Only expose secure bridge APIs, no buffering or business logic
 const serialBuffers = {};
 const serialDataHandlers = new Map();
-
-function clearRingBuffer() {
-  ringBuffer = [];
-  console.log('[preload] Ring buffer cleared');
-}
 
 // run a PowerShell command to enumerate Bluetooth devices and
 // return a map from instance ID to friendly name. this allows us to
@@ -44,8 +38,16 @@ async function getBtNames() {
   });
 }
 
+// Clears all serialBuffers for device connection reset
+function clearRingBuffer() {
+  for (const path in serialBuffers) {
+    serialBuffers[path] = Buffer.alloc(0);
+  }
+}
+
 async function listPorts() {
   clearRingBuffer(); // Always clear buffer before listing ports
+  
   let ports = await SerialPort.list();
   console.log('serial ports', ports);
 
@@ -229,6 +231,7 @@ async function closeSerialPort(path) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Transport-safe bridge methods
   listSerialPorts: listPorts,
   requestPort: choosePort,
   writeSerialPort: async (path, data) => {
@@ -240,35 +243,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       });
     });
   },
-  // Event-driven ring buffer ingestion and streaming API
-  _serialBuffers: {},
-
-  // streaming helper for future use
-  // Streaming API for continuous acquisition
   onSerialData: (path, cb) => {
     const port = ensurePort(path);
-    let lastLog = Date.now();
-    let byteCount = 0;
-    const handler = chunk => {
-      cb(new Uint8Array(chunk));
-      byteCount += chunk.length;
-      const now = Date.now();
-      if (now - lastLog > 1000) {
-        console.log(`[electron][serial] Streaming: ${byteCount} bytes in last second`);
-        byteCount = 0;
-        lastLog = now;
-      }
-    };
+    const handler = chunk => cb(new Uint8Array(chunk));
     port.on('data', handler);
     return () => port.off('data', handler);
   },
-
-  sendSample: (sample) => ipcRenderer.send('new-sample', sample),
-  setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
-  flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
-  getBufferSize: () => ipcRenderer.invoke('get-buffer-size'),
+  // Acquisition/session control
   startAcquisition: (startTime) => ipcRenderer.send('start-acquisition', startTime),
+  stopAcquisition: () => ipcRenderer.send('stop-acquisition'),
+  writeChunk: (chunk) => ipcRenderer.send('write-chunk', chunk),
+  finalizeSession: () => ipcRenderer.send('finalize-session'),
+  flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
+  setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
+  // Listen for chunk write completion (saveTime)
+  onChunkWriteComplete: (cb) => {
+    ipcRenderer.on('chunk-write-complete', (_event, saveTime) => cb(saveTime));
+    return () => ipcRenderer.removeAllListeners('chunk-write-complete');
+  },
   openSerialPort,
   readSerialPort,
-  closeSerialPort
+  closeSerialPort,
+  clearRingBuffer
 });

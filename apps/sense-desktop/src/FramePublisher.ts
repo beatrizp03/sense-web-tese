@@ -22,6 +22,21 @@ class FramePublisher extends EventEmitter {
     return () => this.off('frame', cb)
   }
 
+  subscribeReset(cb: () => void): () => void {
+    this.on('reset', cb)
+    return () => this.off('reset', cb)
+  }
+
+  subscribeSessionStart(cb: (meta?: any) => void): () => void {
+    this.on('session-start', cb)
+    return () => this.off('session-start', cb)
+  }
+
+  subscribeSessionStop(cb: () => void): () => void {
+    this.on('session-stop', cb)
+    return () => this.off('session-stop', cb)
+  }
+
   reset(): void {
     this.emit('reset')
   }

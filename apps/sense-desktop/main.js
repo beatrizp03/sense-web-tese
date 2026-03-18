@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
 
+// Use external ChunkedDataWriter module
+const ChunkedDataWriter = require('./src/ChunkedDataWriter');
 
 // serial/USB only; BLE experimental code was removed to simplify the
 // desktop build.  Port enumeration is handled via the native bridge.
@@ -17,138 +19,6 @@ app.commandLine.appendSwitch("enable-experimental-web-platform-features");
 
 console.log(`FRAME_TIMING_LOGS: ${process.env.FRAME_TIMING_LOGS}`);
 console.log(`BUFFER_MANAGER_LOGS: ${process.env.BUFFER_MANAGER_LOGS}`);
-
-/**
- * ChunkedDataWriter class
- * Automatically writes buffered samples to disk after reaching a chunk size.
- * Usage: create an instance, call addSample() for each new sample.
- */
-class ChunkedDataWriter {
-  deleteEmptyChunks() {
-    const files = fs.readdirSync(this.outputDir);
-    files.forEach(file => {
-      if (file.startsWith(this.baseFilename + '_chunk') && file.endsWith('.json')) {
-        const filePath = path.join(this.outputDir, file);
-        const stats = fs.statSync(filePath);
-        if (stats.size <= 3) {
-          fs.unlinkSync(filePath);
-          if (process.env.BUFFER_MANAGER_LOGS === '1') {
-            console.log(`[electron] Deleted empty chunk file: ${filePath}`);
-          }
-        }
-      }
-    });
-  }
-
-  constructor(options) {
-    this.chunkSize = options.chunkSize || 10000;
-    this.outputDir = options.outputDir || path.join(__dirname, 'data');
-    this.baseFilename = options.baseFilename || 'samples';
-
-    this.buffer = [];
-    this.chunkIndex = 0;
-
-    // New: track the maximum flush size ever reached
-    this.maxChunkSizeReached = 0;
-
-    // Track whether current JSON file already has content
-    this.currentChunkHasData = false;
-
-    if (!fs.existsSync(this.outputDir)) {
-      fs.mkdirSync(this.outputDir, { recursive: true });
-    }
-
-    this.currentStream = this._createChunkStream();
-    
-    if (process.env.BUFFER_MANAGER_LOGS === '1') {
-      console.log(`ChunkedDataWriter initialized. Chunk size: ${this.chunkSize}`);
-    }
-  }
-
-  _createChunkStream() {
-    const filename = path.join(
-      this.outputDir,
-      `${this.baseFilename}_chunk${this.chunkIndex}.json`
-    );
-
-    if (process.env.BUFFER_MANAGER_LOGS === '1') {
-      console.log(
-        `[electron : ${new Date().toISOString()}] [CREATE CHUNK FILE] Creating chunk file: ${filename}`
-      );
-    }
-
-    const stream = fs.createWriteStream(filename, { flags: 'w' });
-    stream.write('[\n');
-    return stream;
-  }
-
-  _writeSamplesToCurrentChunk(samples) {
-    for (const sample of samples) {
-      if (this.currentChunkHasData) {
-        this.currentStream.write(',\n');
-      }
-      this.currentStream.write(JSON.stringify(sample, null, 2));
-      this.currentChunkHasData = true;
-    }
-  }
-
-  _closeCurrentChunk() {
-    if (this.currentStream) {
-      this.currentStream.write('\n]');
-      this.currentStream.end();
-    }
-  }
-
-  _openNextChunk() {
-    this.chunkIndex++;
-    this.currentStream = this._createChunkStream();
-    this.currentChunkHasData = false;
-  }
-
-  addSample(sample) {
-    this.buffer.push(sample);
-
-    if (this.buffer.length >= this.chunkSize) {
-      this.flush(false);
-    }
-  }
-
-  flush(finalize = false) {
-    if (this.buffer.length === 0) {
-      if (finalize && this.currentStream) {
-        this._closeCurrentChunk();
-      }
-      return;
-    }
-
-    const flushSize = this.buffer.length;
-
-    // New maximum reached
-    if (flushSize > this.maxChunkSizeReached) {
-      this.maxChunkSizeReached = flushSize;
-    }
-
-    if (process.env.BUFFER_MANAGER_LOGS === '1') {
-      console.log(`[electron] Flushing ${flushSize} samples. maxChunkSizeReached=${this.maxChunkSizeReached}, finalize=${finalize}`);
-    }
-
-    // Always write current buffer into the current chunk first
-    this._writeSamplesToCurrentChunk(this.buffer);
-    this.buffer = [];
-
-    // Only rotate chunk if buffer reached the known maximum chunk size
-    // or if this is the final flush at session end
-    if (flushSize >= this.maxChunkSizeReached) {
-      this._closeCurrentChunk();
-
-      if (!finalize) {
-        this._openNextChunk();
-      }
-    } else if (finalize) {
-      this._closeCurrentChunk();
-    }
-  }
-}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -208,16 +78,16 @@ app.whenReady().then(() => {
   });
 
   // Listen for new samples from renderer process
-  ipcMain.on('new-sample', (_event, sample) => {
-    try {
-        const test = JSON.stringify(sample);
-        if (typeof sampleWriter !== 'undefined') {
-            sampleWriter.addSample(sample);
-        } else {
-            console.error('[main] sampleWriter is undefined!');
-        }
-    } catch (err) {
-        console.error('[main] Sample not serializable:', err, sample);
+  // IPC handler for chunk writing
+  ipcMain.on('write-chunk', (_event, chunk) => {
+    if (sampleWriter) {
+      const start = Date.now();
+      sampleWriter.writeChunk(chunk);
+      const saveTime = Date.now() - start;
+      // Send saveTime back to renderer
+      _event.sender.send('chunk-write-complete', saveTime);
+    } else {
+      console.error('[main] sampleWriter is undefined!');
     }
   });
 
@@ -244,15 +114,23 @@ app.on("window-all-closed", () => {
 
 // Example: Instantiate ChunkedDataWriter in Electron main process
 // IPC handler to get current buffer size
-ipcMain.handle('get-buffer-size', () => {
-  return sampleWriter.chunkSize;
-});
 // Create a new subfolder named by recording start time (ISO string)
 let sampleWriter = undefined;
 let segmentNumber = 1;
+let sessionFolder = undefined;
 
 ipcMain.on('start-acquisition', (_event, startTime) => {
-  const sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
+  // Only create session folder if not already set (first acquisition)
+  if (!sessionFolder) {
+    sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
+    segmentNumber = 1;
+  } else {
+    // On resume, finalize previous writer before incrementing segmentNumber
+    if (sampleWriter) {
+      sampleWriter.finalizeChunk();
+    }
+    segmentNumber++;
+  }
   let chunkSize = 10000;
   sampleWriter = new ChunkedDataWriter({
     chunkSize,
@@ -265,41 +143,32 @@ ipcMain.on('start-acquisition', (_event, startTime) => {
 });
 
 // Listen for buffer size updates from renderer
-ipcMain.on('set-buffer-size', (_event, newSize) => {
-  if (typeof sampleWriter !== 'undefined' && sampleWriter) {
-    if (typeof newSize === 'number' && newSize > 0) {
-      sampleWriter.chunkSize = newSize;
-      if (process.env.BUFFER_MANAGER_LOGS === '1') {
-        console.log(`[electron] Buffer size updated to: ${newSize}`);
-      }
+ipcMain.on('set-buffer-size', (_event, size) => {
+  if (sampleWriter && typeof size === 'number') {
+    sampleWriter.chunkSize = size;
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[electron] Updated chunk size: ${size}`);
     }
-  } else {
-    console.warn('[electron] Tried to set buffer size before acquisition started.');
   }
 });
 
-// Listen for flush command from renderer (session end)
-ipcMain.on('flush-samples', (_event, finalize) => {
-  console.log(`[electron] Flush command received. finalize=${finalize}`);
+// Listen for session finalization from renderer
+ipcMain.on('finalize-session', () => {
   if (sampleWriter) {
-    sampleWriter.flush(finalize);
-  }
-  // If finalize is true, increment segmentNumber for next acquisition segment
-  if (finalize) {
+    sampleWriter.finalizeSession();
     segmentNumber++;
+    // Reset sessionFolder for next acquisition
+    sessionFolder = undefined;
   }
 });
 
 // Example: Add a sample (replace with your actual sample acquisition logic)
 // This should be called whenever you acquire a new sample from the device
-function onNewSample(sample) {
-    sampleWriter.addSample(sample);
-}
+// Remove onNewSample and any frame-by-frame batching logic
 
 // Example: Flush remaining samples on app exit
 app.on('before-quit', () => {
   if (sampleWriter) {
-    sampleWriter.flush(true);
-    sampleWriter.deleteEmptyChunks();
+    sampleWriter.finalizeSession();
   }
 });
