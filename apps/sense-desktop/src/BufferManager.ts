@@ -40,7 +40,7 @@ export class BufferManager {
       }
     }
   // Config/state
-  private uiRingBufferLimit: number;
+  // Removed: uiRingBufferLimit
   private processingBufferLimit: number;
   private storageChunkThreshold: number;
   private chunkIndex = 0;
@@ -52,30 +52,24 @@ export class BufferManager {
     processingWindowSize?: number;
     chunkSize?: number;
   }) {
-    this.uiRingBufferLimit = options?.uiWindowSize ?? 10000;
+    // Removed: uiRingBufferLimit
     this.processingBufferLimit = options?.processingWindowSize ?? 10000;
     this.storageChunkThreshold = options?.chunkSize ?? 10000;
-    this.uiRingBuffer = { data: [], head: 0, size: this.uiRingBufferLimit };
+    // Removed: uiRingBuffer
     this.processingBuffer = [];
     this.storageChunkBuffer = [];
   }
 
-  // Buffers: UI is ring buffer, processing/storage are linear accumulators
-  private uiRingBuffer: { data: any[]; head: number; size: number };
+  // Buffers: Only processing/storage are needed
   private processingBuffer: any[];
   private storageChunkBuffer: any[];
 
   // Subscribers
-  private uiSubscribers: BufferManagerSubscriber<any[]>[] = [];
+  // Removed: uiSubscribers
   private processingSubscribers: BufferManagerSubscriber<any[]>[] = [];
   private storageSubscribers: BufferManagerSubscriber<BufferManagerChunkPayload>[] = [];
 
-  setUIWindowSize(size: number) {
-    this.uiRingBufferLimit = size;
-    this.uiRingBuffer.size = size;
-    this.uiRingBuffer.data = [];
-    this.uiRingBuffer.head = 0;
-  }
+  // Removed: setUIWindowSize
   setProcessingWindowSize(size: number) {
     this.processingBufferLimit = size;
     this.processingBuffer = [];
@@ -99,23 +93,7 @@ export class BufferManager {
     }
   }
 
-  // True circular buffer logic
-  private _pushRingBuffer(bufferObj: { data: any[]; head: number; size: number }, item: any) {
-    if (bufferObj.data.length < bufferObj.size) {
-      bufferObj.data.push(item);
-    } else {
-      bufferObj.data[bufferObj.head] = item;
-      bufferObj.head = (bufferObj.head + 1) % bufferObj.size;
-    }
-  }
-
-  private _getOrderedBuffer(bufferObj: { data: any[]; head: number; size: number }) {
-    if (bufferObj.data.length < bufferObj.size) {
-      return [...bufferObj.data];
-    }
-    // Return oldest to newest
-    return bufferObj.data.slice(bufferObj.head).concat(bufferObj.data.slice(0, bufferObj.head));
-  }
+  // Removed: _pushRingBuffer and _getOrderedBuffer
 
   private _ingestFrame(frame: any) {
     // Stamp frame with monotonic sequence for x-axis
@@ -123,8 +101,7 @@ export class BufferManager {
       ...frame,
       __seq: this.frameSequence++
     };
-    // UI ring buffer
-    this._pushRingBuffer(this.uiRingBuffer, managedFrame);
+    // Removed: UI ring buffer logic
     // Processing buffer: bounded accumulator
     this.processingBuffer.push(managedFrame);
     if (this.processingBuffer.length > this.processingBufferLimit) {
@@ -132,8 +109,7 @@ export class BufferManager {
     }
     // Storage chunk buffer: linear accumulator
     this.storageChunkBuffer.push(managedFrame);
-    // Notify UI
-    this.uiSubscribers.forEach(cb => cb(this._getOrderedBuffer(this.uiRingBuffer)));
+    // Removed: UI notification
     // Notify processing
     this.processingSubscribers.forEach(cb => cb([...this.processingBuffer]));
     // Chunking logic
@@ -164,8 +140,7 @@ export class BufferManager {
   }
 
   reset() {
-    this.uiRingBuffer.data = [];
-    this.uiRingBuffer.head = 0;
+    // Removed: uiRingBuffer reset
     this.processingBuffer = [];
     this.storageChunkBuffer = [];
     this.chunkIndex = 0;
@@ -215,12 +190,7 @@ export class BufferManager {
   }
 
   // Subscription methods
-  subscribeUI(cb: BufferManagerSubscriber<any[]>) {
-    this.uiSubscribers.push(cb);
-    return () => {
-      this.uiSubscribers = this.uiSubscribers.filter(sub => sub !== cb);
-    };
-  }
+  // Removed: subscribeUI
 
   subscribeProcessing(cb: BufferManagerSubscriber<any[]>) {
     this.processingSubscribers.push(cb);
