@@ -256,9 +256,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   finalizeSession: () => ipcRenderer.send('finalize-session'),
   flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
   setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
-  // Listen for chunk write completion (saveTime)
+  // Listen for chunk write completion (info object)
   onChunkWriteComplete: (cb) => {
-    ipcRenderer.on('chunk-write-complete', (_event, saveTime) => cb(saveTime));
+    ipcRenderer.on('chunk-write-complete', (_event, info) => cb(info));
     return () => ipcRenderer.removeAllListeners('chunk-write-complete');
   },
   openSerialPort,

@@ -18,6 +18,9 @@ interface SessionMeta {
 }
 
 export class BufferManager {
+  private finalChunkPromise: Promise<void> | null = null;
+  private finalChunkResolver: (() => void) | null = null;
+  private finalChunkPending: boolean = false;
     // Add method to update chunk threshold after disk write
     updateChunkThreshold(saveTime: number) {
       const sampleRate = this.sessionMeta?.sampleRate || 1000;
@@ -168,11 +171,47 @@ export class BufferManager {
     this.chunkIndex = 0;
     this.sessionMeta = null;
     this.frameSequence = 0;
+
+    this.finalChunkPromise = null;
+    this.finalChunkResolver = null;
+    this.finalChunkPending = false;
   }
 
-  stopSession() {
+  /**
+   * Stop session and return a Promise that resolves when the final chunk is acknowledged as written.
+   * Call notifyFinalChunkWritten() when the final chunk is confirmed written.
+   */
+  stopSession(): Promise<void> {
+    if (this.finalChunkPromise) {
+      // Already stopping
+      return this.finalChunkPromise;
+    }
+    if (this.storageChunkBuffer.length === 0) {
+      this.reset();
+      return Promise.resolve();
+    }
+    // Set up promise and resolver BEFORE flushing
+    this.finalChunkPromise = new Promise<void>((resolve) => {
+      this.finalChunkResolver = () => {
+        this.reset();
+        this.finalChunkPending = false;
+        this.finalChunkPromise = null;
+        this.finalChunkResolver = null;
+        resolve();
+      };
+    });
+    this.finalChunkPending = true;
     this.flushChunk(true);
-    this.reset();
+    return this.finalChunkPromise;
+  }
+
+  /**
+   * Call this when the final chunk is confirmed written (e.g., from Electron chunk-write-complete event).
+   */
+  notifyFinalChunkWritten() {
+    if (this.finalChunkPending && this.finalChunkResolver) {
+      this.finalChunkResolver();
+    }
   }
 
   // Subscription methods

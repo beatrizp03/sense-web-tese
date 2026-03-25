@@ -18,6 +18,7 @@ class ChunkedDataWriter {
       this.outputDir,
       `${this.baseFilename}_chunk${this.chunkIndex}.json`
     );
+    console.log(`[MAIN] Creating chunk file: ${filename}`);
     const stream = fs.createWriteStream(filename, { flags: 'w' });
     stream.write('[\n');
     return stream;
@@ -30,6 +31,10 @@ class ChunkedDataWriter {
       frames = chunk.frames;
     }
     if (!Array.isArray(frames) || frames.length === 0) return;
+    // If currentStream is null (after finalizeChunk), create a new chunk file
+    if (!this.currentStream) {
+      this.currentStream = this._createChunkStream();
+    }
     for (const sample of frames) {
       if (this.currentChunkHasData) {
         this.currentStream.write(',\n');
@@ -37,6 +42,7 @@ class ChunkedDataWriter {
       this.currentStream.write(JSON.stringify(sample, null, 2));
       this.currentChunkHasData = true;
     }
+    console.log(`[MAIN] Wrote chunk with ${frames.length} frames to ${this.currentStream.path}`);
     this.finalizeChunk();
   }
 
@@ -46,7 +52,10 @@ class ChunkedDataWriter {
       this.currentStream.end();
     }
     this.chunkIndex++;
-    this.currentStream = this._createChunkStream();
+    console.log(`[MAIN] Finalized chunk ${this.chunkIndex - 1}`);
+    // Only create a new chunk file if more data will be written later
+    // (i.e., do not pre-create an empty chunk file)
+    this.currentStream = null;
     this.currentChunkHasData = false;
   }
 

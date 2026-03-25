@@ -31,9 +31,9 @@ import SenseLayout from "../components/layout/SenseLayout"
 import { framePublisher } from "../../../sense-desktop/src/FramePublisher"
 import { BufferManager } from "../../../sense-desktop/src/BufferManager"
 import { SignalProcessor } from "../../../sense-desktop/src/SignalProcessor"
-import { onUIBufferUpdated } from '../../../sense-desktop/src/UISubscriber';
 import { onChunkReady } from '../../../sense-desktop/src/StorageSubscriber';
 import { onProcessingWindow } from '../../../sense-desktop/src/ProcessingSubscriber';
+import { SessionManager } from '../../../sense-desktop/src/SessionManager';
 
 enum STATUS {
 	DISCONNECTED,
@@ -66,129 +66,174 @@ declare global {
 			flushSamples?: (finalize?: boolean) => void
 			writeChunk?: (chunk: any) => void
 			finalizeSession?: () => void
+			onChunkWriteComplete?: ( callback: (info: { saveTime: number, chunkIndex: number, final: boolean }) => void) => () => void
 		}
 	}
 }
 
-type UIUpdatePayload = {
-	graphBuffer: Array<[number, Frame]>
-	xDomain: [number, number]
-	channels: string[]
-	acquisitionStarted: boolean
-}
-
 const Page = () => {
-		// Track all segments for summary export
-		const allSegmentsRef = useRef<any[][]>([]);
+	// Track all segments for summary export
+	const allSegmentsRef = useRef<any[][]>([]);
 	// Accumulates all frames for the current segment for summary export
 	const fullSessionFramesRef = useRef<any[]>([]);
 	const storeBufferThresholdRef = useRef(10000);
 	// Track last chunk flush time and threshold for dynamic adjustment
-	const [lastChunkSaveTime, setLastChunkSaveTime] = useState<number | null>(null);
-	const [dynamicChunkThreshold, setDynamicChunkThreshold] = useState<number>(storeBufferThresholdRef.current);
 
-	const router = useRouter()
-	const isDark = useDarkTheme()
+	const router = useRouter();
+	const isDark = useDarkTheme();
 
-	const deviceRef = useRef<Device | null>(null)
-	const bufferManagerRef = useRef<BufferManager | null>(null)
+	const deviceRef = useRef<Device | null>(null);
+	const bufferManagerRef = useRef<BufferManager | null>(null);
 
-	const subscriptionsRef = useRef<Array<() => void>>([])
-	const segmentRef = useRef(1)
-	const uiWindowSecondsRef = useRef(5)
-	const processingWindowSecondsRef = useRef(5)
+	const subscriptionsRef = useRef<Array<() => void>>([]);
+	const segmentRef = useRef(1);
+	const uiWindowSecondsRef = useRef(5);
+	const processingWindowSecondsRef = useRef(5);
 
-	const [status, setStatus] = useState(STATUS.DISCONNECTED)
-	const statusRef = useRef(status)
+	const [status, setStatus] = useState(STATUS.DISCONNECTED);
 
-	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null)
-	const [acquisitionStarted, setAcquisitionStarted] = useState(false)
-	const graphBufferRef = useRef<Array<[number, Frame]>>([])
-	const [graphBuffer, setGraphBuffer] = useState<Array<[number, Frame]>>([])
-	const channelsRef = useRef<string[]>([])
-	const [channels, setChannels] = useState<string[]>([])
-	const [xDomain, setXDomain] = useState<[number, number]>([0, 0])
+	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null);
+	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
+	const acquisitionStartedRef = useRef(false);
 
-	useEffect(() => {
-		statusRef.current = status
-	}, [status])
+	const graphBufferRef = useRef<Array<[number, Frame]>>([]);
+	const [graphBuffer, setGraphBuffer] = useState<Array<[number, Frame]>>([]);
+	const channelsRef = useRef<string[]>([]);
+	const [channels, setChannels] = useState<string[]>([]);
+	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
+	const frameSequenceRef = useRef(0);
 
-	// Listen for chunk write completion and update chunk threshold
-	useEffect(() => {
-		if (window.electronAPI?.onChunkWriteComplete) {
-			const unsubscribe = window.electronAPI.onChunkWriteComplete((saveTime: number) => {
-				bufferManagerRef.current?.updateChunkThreshold?.(saveTime);
-			});
-			return unsubscribe;
-		}
-	}, []);
-
-	// Helper to save current segment to localStorage
 	const saveCurrentSegment = useCallback(() => {
 		const segment = segmentRef.current;
-		const allFrames = fullSessionFramesRef.current;
-		if (allFrames && allFrames.length > 0) {
-			// Serialize frames (assume Frame has serialize method, else JSON.stringify)
-			const serialized = allFrames.map(frame => {
-				// If frame is a [seq, frame] tuple, use frame[1]
-				const f = Array.isArray(frame) && frame.length === 2 && frame[1]?.channels ? frame[1] : frame;
-				return f?.serialize ? f.serialize() : JSON.stringify(f);
-			}).join("");
-			localStorage.setItem(`aq_seg${segment}`, serialized);
-			localStorage.setItem(`aq_seg${segment}time`, JSON.stringify(Date.now()));
-		}
-		// Save channels
 		const device = deviceRef.current;
 		const channels = device?.getChannels?.() ?? channelsRef.current;
+		const allFrames = fullSessionFramesRef.current;
+
+		SessionManager.saveSegmentFrames(segment, allFrames);
+
 		if (channels.length > 0) {
-			localStorage.setItem("aq_channels", JSON.stringify(channels));
+			SessionManager.saveChannels(channels);
 		}
-		// Save sample rate
+
 		const sampleRate = device?.getSamplingRate?.() || 1000;
-		localStorage.setItem("aq_sampleRate", JSON.stringify(sampleRate));
-		// Save segments
-		localStorage.setItem("aq_segments", JSON.stringify(segment));
-		// Save device type
-		localStorage.setItem("aq_deviceType", device instanceof Maker ? "maker" : "sense");
-	}, [deviceRef, channelsRef]);
+		SessionManager.saveSampleRate(sampleRate);
+		SessionManager.saveSegmentCount(segment);
+		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
+	}, []);
+
+	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
+	const animationFrameRef = useRef<number | null>(null);
+	// Only run RAF UI loop when acquiring or paused
+	useEffect(() => {
+		let running = false;
+		function updateUI() {
+			if (!running) return;
+			setGraphBuffer([...graphBufferRef.current]);
+			// Compute xDomain based on frameSequenceRef and graphBufferLimit
+			const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
+			const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
+			setXDomain([
+				Math.max(0, frameSequenceRef.current - graphBufferLimit),
+				frameSequenceRef.current
+			]);
+			animationFrameRef.current = requestAnimationFrame(updateUI);
+		}
+		if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
+			running = true;
+			animationFrameRef.current = requestAnimationFrame(updateUI);
+		}
+		return () => {
+			running = false;
+			if (animationFrameRef.current !== null) {
+				cancelAnimationFrame(animationFrameRef.current);
+			}
+		};
+	}, [status]);
+
+
+	useEffect(() => {
+		if (!window.electronAPI?.onChunkWriteComplete) return;
+
+		// Expect info: { saveTime: number, chunkIndex: number, final: boolean }
+		const unsubscribe = window.electronAPI.onChunkWriteComplete((info: { saveTime: number, chunkIndex: number, final: boolean }) => {
+			if (info && Number.isFinite(info.saveTime)) {
+				bufferManagerRef.current?.updateChunkThreshold?.(info.saveTime);
+			}
+		});
+
+		return unsubscribe;
+	}, []);
+
+	useEffect(() => {
+		const finalizeStop = async () => {
+			if (status !== STATUS.STOPPED) return;
+
+			try {
+				// Do NOT await stopSession here
+				try {
+					bufferManagerRef.current?.flushChunk?.(true);
+				} catch (e) {
+					console.error("[finalizeStop] flushChunk error", e);
+				}
+
+				// save current segment if needed
+				if (fullSessionFramesRef.current.length > 0) {
+					allSegmentsRef.current.push([...fullSessionFramesRef.current]);
+					console.log("[finalizeStop] Added current segment to allSegmentsRef");
+				}
+
+				// persist all segments to localStorage
+				allSegmentsRef.current.forEach((segmentFrames, idx) => {
+					segmentRef.current = idx + 1;
+					fullSessionFramesRef.current = segmentFrames;
+					console.log(`[finalizeStop] Saving segment ${segmentRef.current}`);
+					saveCurrentSegment();
+				});
+
+				// finalize Electron session without waiting for a final-chunk ack
+				try {
+					window.electronAPI?.finalizeSession?.();
+					console.log("[finalizeStop] Called electronAPI.finalizeSession");
+				} catch (e) {
+					console.error("[finalizeStop] Error in finalizeSession", e);
+				}
+
+				setStatus(STATUS.STOPPED_AND_SAVED);
+
+				await router.push("/summary");
+			} catch (error) {
+				console.error("[finalizeStop] Outer error", error);
+				setStatus(STATUS.STOPPED_AND_SAVED);
+			}
+		};
+
+		finalizeStop();
+	}, [status, router, saveCurrentSegment]);
 
 	const cleanupPipeline = useCallback(() => {
-			// Clear full session buffer and all segments
-			fullSessionFramesRef.current = [];
-			allSegmentsRef.current = [];
 		subscriptionsRef.current.forEach(unsubscribe => {
 			try {
-				unsubscribe?.()
-			} catch {
-				// ignore subscriber cleanup errors
-			}
-		})
-		subscriptionsRef.current = []
+				unsubscribe?.();
+			} catch {}
+		});
+		subscriptionsRef.current = [];
 
-		// Reset BufferManager state
 		if (bufferManagerRef.current) {
 			bufferManagerRef.current.reset?.();
 		}
 		bufferManagerRef.current = null;
 
-		// Reset all local UI state
+		frameSequenceRef.current = 0;
+		graphBufferRef.current = [];
+		channelsRef.current = [];
+
 		setGraphBuffer([]);
 		setChannels([]);
 		setXDomain([0, 0]);
 		setAcquisitionStarted(false);
-	}, [])
+		acquisitionStartedRef.current = false;
+	}, []);
 
-	const handleUIUpdate = useCallback((payload: UIUpdatePayload) => {
-		graphBufferRef.current = payload.graphBuffer ?? [];
-		setGraphBuffer(graphBufferRef.current);
-
-		// Use channels from payload (now always extracted in UISubscriber)
-		channelsRef.current = payload.channels ?? [];
-		setChannels(channelsRef.current);
-
-		setXDomain(payload.xDomain ?? [0, 0]);
-		setAcquisitionStarted(Boolean(payload.acquisitionStarted));
-	}, [])
 
 	const writeChunkToElectron = useCallback(
 		(chunk: any) => {
@@ -214,89 +259,114 @@ const Page = () => {
 
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
-			cleanupPipeline();
-			// Instantiate BufferManager with options if needed
+			cleanupPipeline()
+
+			frameSequenceRef.current = 0
+			graphBufferRef.current = []
+			channelsRef.current = []
+
+			setGraphBuffer([])
+			setChannels([])
+			setXDomain([0, 0])
+			setAcquisitionStarted(false)
+			acquisitionStartedRef.current = false;
+
 			bufferManagerRef.current = new BufferManager({
 				uiWindowSize: uiWindowSecondsRef.current * sampleRate,
 				processingWindowSize: processingWindowSecondsRef.current * sampleRate,
 				chunkSize: storeBufferThresholdRef.current
-			});
-			// Subscribe BufferManager to framePublisher
-			const unsubscribePublisher = framePublisher.subscribeFrame(frame => {
-				bufferManagerRef.current?.ingest(frame);
+			})
+
+			// Fast UI path: direct from FramePublisher
+			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
+				if (!frame) return;
+
+				graphBufferRef.current.push([frameSequenceRef.current, frame]);
+
+				const graphBufferLimit = Math.ceil(
+					(deviceRef.current?.getSamplingRate?.() || sampleRate) *
+					uiWindowSecondsRef.current
+				);
+
+				if (graphBufferRef.current.length > graphBufferLimit) {
+					graphBufferRef.current.shift();
+				}
+
+				frameSequenceRef.current += 1;
+
+				if (channelsRef.current.length === 0 && frame.channels) {
+					channelsRef.current = Object.keys(frame.channels).sort();
+					setChannels([...channelsRef.current]);
+				}
+
+				// Only setAcquisitionStarted(true) once
+				if (!acquisitionStartedRef.current) {
+					acquisitionStartedRef.current = true;
+					setAcquisitionStarted(true);
+				}
 			});
 
-			// Subscribe to UI updates
-			const unsubscribeUI = bufferManagerRef.current?.subscribeUI(bufferWindow => {
-				onUIBufferUpdated(bufferWindow, handleUIUpdate);
-			});
-			// Subscribe to storage chunk updates
+			// Storage + processing path: through BufferManager
+			const unsubscribeBufferManagerPublisher = framePublisher.subscribeFrame(frame => {
+				bufferManagerRef.current?.ingest(frame)
+			})
+
 			const unsubscribeStorage = bufferManagerRef.current?.subscribeStorage(chunk => {
 				onChunkReady(chunk, chunk => {
-					writeChunkToElectron(chunk);
-				});
-			});
-			// Subscribe to processing window updates using ProcessingSubscriber adapter
-			const unsubscribeProcessing = bufferManagerRef.current?.subscribeProcessing(window => {
-				onProcessingWindow(
-					window,
-					{
-						process: SignalProcessor.extractFeatures
-					},
-					results => {
-						// Optionally handle derived results
+					console.log("[onChunkReady] writing chunk to electron: ", chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0);
+					if (chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0) {
+						writeChunkToElectron(chunk)
 					}
-				);
-			});
+				})
+			})
+
+			const unsubscribeProcessing = bufferManagerRef.current?.subscribeProcessing(
+				window => {
+					onProcessingWindow(
+						window,
+						{
+							process: SignalProcessor.extractFeatures
+						},
+						_results => {
+							// optionally handle results
+						}
+					)
+				}
+			)
+
 			subscriptionsRef.current = [
-				unsubscribePublisher,
-				unsubscribeUI,
+				unsubscribeUIPublisher,
+				unsubscribeBufferManagerPublisher,
 				unsubscribeStorage,
 				unsubscribeProcessing
-			];
+			].filter(Boolean) as Array<() => void>
 		},
-		[cleanupPipeline, handleUIUpdate, writeChunkToElectron]
-	);
-
-	const clearAcquisitionLocalState = useCallback(() => {
-		setGraphBuffer([])
-		setChannels([])
-		setXDomain([0, 0])
-		setAcquisitionStarted(false)
-
-		for (const key in localStorage) {
-			if (key.startsWith("aq_")) {
-				localStorage.removeItem(key)
-			}
-		}
-	}, [])
+		[cleanupPipeline, writeChunkToElectron]
+	)
 
 	const persistSessionMetadata = useCallback(() => {
-		const device = deviceRef.current
-		if (!device) return
+		const device = deviceRef.current;
+		if (!device) return;
 
-		localStorage.setItem(
-			"aq_deviceType",
-			device instanceof Maker ? "maker" : "sense"
-		)
+		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
 
-		const adcCharacteristics = device.getAdcCharacteristics?.()
+		const adcCharacteristics = device.getAdcCharacteristics?.();
 		if (adcCharacteristics !== null && adcCharacteristics !== undefined) {
-			localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON())
+			localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON());
 		}
 
-		localStorage.setItem("aq_segments", JSON.stringify(segmentRef.current))
+		SessionManager.saveSegmentCount(segmentRef.current);
 
-		const samplingRate = device.getSamplingRate?.()
+		const samplingRate = device.getSamplingRate?.();
 		if (samplingRate) {
-			localStorage.setItem("aq_sampleRate", JSON.stringify(samplingRate))
+			SessionManager.saveSampleRate(samplingRate);
 		}
 
-		const currentChannels = device.getChannels?.() ?? []
+		const currentChannels = device.getChannels?.() ?? [];
 		if (currentChannels.length > 0) {
-			localStorage.setItem("aq_channels", JSON.stringify(currentChannels))
+			SessionManager.saveChannels(currentChannels);
 		}
-	}, [])
+	}, []);
 
 	const connect = useCallback(async () => {
 		setStatus(STATUS.CONNECTING)
@@ -327,7 +397,10 @@ const Page = () => {
 						"AI5",
 						"AI6"
 					]) as SCIENTISST_CHANNEL[]
-					const samplingRate = (settings.samplingRate ?? 1000) as number
+					let samplingRate = Number(settings.samplingRate)
+					if (!Number.isFinite(samplingRate) || samplingRate <= 0) {
+						samplingRate = 1000;
+					}
 
 					deviceRef.current = new ScientISST(
 						communicationMode,
@@ -352,7 +425,10 @@ const Page = () => {
 					: null
 			)
 
-			window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current)
+			// Only set buffer size if valid
+			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
+				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current)
+			}
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
 			console.error(error)
@@ -381,12 +457,16 @@ const Page = () => {
 	}, [cleanupPipeline])
 
 	const start = useCallback(async () => {
+		console.log("[start] Starting acquisition\n");
 		const device = deviceRef.current
 		if (!device) return
 
 		try {
-			cleanupPipeline(); // Reset all state and BufferManager before start
+			// Clear session/segment buffers only at the start of a new acquisition
+			fullSessionFramesRef.current = [];
+			allSegmentsRef.current = [];
 
+			// cleanupPipeline is already called inside initializePipeline
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
@@ -397,7 +477,10 @@ const Page = () => {
 			});
 
 			window.electronAPI?.startAcquisition?.(new Date().toISOString());
-			window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
+			// Only set buffer size if valid
+			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
+				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
+			}
 
 			persistSessionMetadata();
 
@@ -426,9 +509,10 @@ const Page = () => {
 			console.error(error);
 			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [cleanupPipeline, initializePipeline, persistSessionMetadata])
+	}, [initializePipeline, persistSessionMetadata])
 
 	const pause = useCallback(async () => {
+		console.log("[pause] Pausing acquisition\n");
 		if (!deviceRef.current) return
 
 		deviceRef.current.onError = () => {
@@ -436,45 +520,51 @@ const Page = () => {
 		}
 
 		try {
-			await deviceRef.current.stopAcquisition?.();
-			bufferManagerRef.current?.flushChunk?.(true);
-			// Save current segment before resetting for next
-			saveCurrentSegment();
-			// Track segment for summary export
+			await deviceRef.current.stopAcquisition?.()
+			bufferManagerRef.current?.flushChunk?.(false)
+
+			saveCurrentSegment()
+
 			if (fullSessionFramesRef.current.length > 0) {
-				allSegmentsRef.current.push([...fullSessionFramesRef.current]);
+				allSegmentsRef.current.push([...fullSessionFramesRef.current])
 			}
-			// Reset full session buffer for next segment
-			fullSessionFramesRef.current = [];
-			setStatus(STATUS.PAUSED);
+
+			fullSessionFramesRef.current = []
+			setStatus(STATUS.PAUSED)
 		} catch (error) {
-			console.error(error);
-			setStatus(STATUS.CONNECTION_LOST);
+			console.error(error)
+			setStatus(STATUS.CONNECTION_LOST)
 		}
-	}, [])
+	}, [saveCurrentSegment])
 
 	const resume = useCallback(async () => {
-			// Reset full session buffer for new segment (already saved at pause)
-			fullSessionFramesRef.current = [];
-		if (!deviceRef.current) return
+		console.log("[resume] Resuming acquisition\n");
+		// Reset full session buffer for new segment (already saved at pause)
+		fullSessionFramesRef.current = [];
+		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = error => {
-			console.error(error)
+			console.error(error);
 			deviceRef.current?.disconnect?.().finally(() => {
-				deviceRef.current = null
-				setStatus(STATUS.CONNECTION_LOST)
-			})
-		}
+				deviceRef.current = null;
+				setStatus(STATUS.CONNECTION_LOST);
+			});
+		};
 
 		try {
-			segmentRef.current += 1;
-			
-			setGraphBuffer([]);
-			setChannels([]);
-			setXDomain([0, 0]);
-			setAcquisitionStarted(false);
+			segmentRef.current += 1
 
-			bufferManagerRef.current?.reset();
+			frameSequenceRef.current = 0
+			graphBufferRef.current = []
+			channelsRef.current = []
+
+			setGraphBuffer([])
+			setChannels([])
+			setXDomain([0, 0])
+			setAcquisitionStarted(false)
+			acquisitionStartedRef.current = false;
+
+			bufferManagerRef.current?.reset()
 			bufferManagerRef.current?.startSession({
 				startedAt: Date.now(),
 				sampleRate: deviceRef.current.getSamplingRate?.() || 1000,
@@ -482,7 +572,7 @@ const Page = () => {
 			})
 
 			window.electronAPI?.startAcquisition?.(new Date().toISOString())
-			localStorage.setItem("aq_segments", JSON.stringify(segmentRef.current))
+			SessionManager.saveSegmentCount(segmentRef.current)
 
 			await deviceRef.current.startAcquisition?.()
 			setStatus(STATUS.ACQUIRING)
@@ -490,60 +580,30 @@ const Page = () => {
 			console.error(error)
 			setStatus(STATUS.CONNECTION_LOST)
 		}
-	}, [])
+	}, []);
+
 
 	const stop = useCallback(async () => {
-		if (!deviceRef.current) return
+		console.log("[stop] Stopping acquisition\n");
+		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
-			// ignore while stopping
-		}
+			// We are already stopping and disconnecting the device
+		};
 
-		setStatus(STATUS.STOPPING)
+		setStatus(STATUS.STOPPING);
 
 		try {
-			await deviceRef.current.stopAcquisition?.()
+			await deviceRef.current?.stopAcquisition();
+			await deviceRef.current?.disconnect();
+			deviceRef.current = null;
 		} catch {
 			// ignore
 		}
 
-		try {
-			bufferManagerRef.current?.stopSession();
-		} catch {
-			// ignore
-		}
+		setStatus(STATUS.STOPPED);
+	}, []);
 
-		try {
-			await deviceRef.current.disconnect?.()
-		} catch {
-			// ignore
-		}
-
-		// Save all segments before cleanup
-		try {
-			// Save current segment if not already tracked
-			if (fullSessionFramesRef.current.length > 0) {
-				allSegmentsRef.current.push([...fullSessionFramesRef.current]);
-			}
-			// Save each segment to localStorage
-			allSegmentsRef.current.forEach((segmentFrames, idx) => {
-				// Temporarily set segmentRef for saveCurrentSegment
-				segmentRef.current = idx + 1;
-				fullSessionFramesRef.current = segmentFrames;
-				saveCurrentSegment();
-			});
-		} catch (e) {
-			// Ignore errors
-		}
-		deviceRef.current = null;
-		cleanupPipeline();
-		window.electronAPI?.finalizeSession?.();
-
-		setStatus(STATUS.STOPPED_AND_SAVED);
-		router.push("/summary", {}).then(() => {
-			// Ignore
-		});
-	}, [cleanupPipeline, router])
 
 	useEffect(() => {
 		return () => {

@@ -82,10 +82,12 @@ app.whenReady().then(() => {
   ipcMain.on('write-chunk', (_event, chunk) => {
     if (sampleWriter) {
       const start = Date.now();
+      const chunkIndex = sampleWriter.chunkIndex || 0;
+      const final = !!chunk.final;
       sampleWriter.writeChunk(chunk);
       const saveTime = Date.now() - start;
-      // Send saveTime back to renderer
-      _event.sender.send('chunk-write-complete', saveTime);
+      // Send info object back to renderer
+      _event.sender.send('chunk-write-complete', { saveTime, chunkIndex, final });
     } else {
       console.error('[main] sampleWriter is undefined!');
     }
@@ -144,7 +146,7 @@ ipcMain.on('start-acquisition', (_event, startTime) => {
 
 // Listen for buffer size updates from renderer
 ipcMain.on('set-buffer-size', (_event, size) => {
-  if (sampleWriter && typeof size === 'number') {
+  if (sampleWriter && typeof size === 'number' && sampleWriter.chunkSize !== size) {
     sampleWriter.chunkSize = size;
     if (process.env.BUFFER_MANAGER_LOGS === '1') {
       console.log(`[electron] Updated chunk size: ${size}`);
