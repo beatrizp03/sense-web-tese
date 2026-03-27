@@ -19,6 +19,7 @@ app.commandLine.appendSwitch("enable-experimental-web-platform-features");
 
 console.log(`FRAME_TIMING_LOGS: ${process.env.FRAME_TIMING_LOGS}`);
 console.log(`BUFFER_MANAGER_LOGS: ${process.env.BUFFER_MANAGER_LOGS}`);
+console.log(`TESTING_STORAGE: ${process.env.TESTING_STORAGE}`);
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -39,16 +40,16 @@ function createWindow() {
     },
   });
 
-  win.webContents.openDevTools({ mode: "detach" });
-
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     console.error("did-fail-load", { code, desc, url });
   });
   win.webContents.on("render-process-gone", (_e, details) => {
     console.error("render-process-gone", details);
   });
-  win.webContents.on("console-message", (_e, _level, message) => {
-    console.log("[renderer]", message);
+  win.webContents.on("console-message", (event) => {
+    // Electron >= v24: event is WebContentsConsoleMessageEventParams
+    // https://www.electronjs.org/docs/latest/breaking-changes/#webcontentsconsole-message-event
+    console.log("[renderer]", event.message);
   });
 
   const url = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";
@@ -86,8 +87,9 @@ app.whenReady().then(() => {
       const final = !!chunk.final;
       sampleWriter.writeChunk(chunk);
       const saveTime = Date.now() - start;
-      // Send info object back to renderer
-      _event.sender.send('chunk-write-complete', { saveTime, chunkIndex, final });
+      const filename = sampleWriter.getLastFilename ? sampleWriter.getLastFilename() : undefined;
+      // Send info object back to renderer, including filename
+      _event.sender.send('chunk-write-complete', { saveTime, chunkIndex, final, filename });
     } else {
       console.error('[main] sampleWriter is undefined!');
     }
@@ -120,8 +122,9 @@ app.on("window-all-closed", () => {
 let sampleWriter = undefined;
 let segmentNumber = 1;
 let sessionFolder = undefined;
+let lastSessionFolder = undefined;
 
-ipcMain.on('start-acquisition', (_event, startTime) => {
+ipcMain.handle('start-acquisition', async (_event, startTime) => {
   // Only create session folder if not already set (first acquisition)
   if (!sessionFolder) {
     sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
@@ -133,6 +136,7 @@ ipcMain.on('start-acquisition', (_event, startTime) => {
     }
     segmentNumber++;
   }
+  lastSessionFolder = sessionFolder;
   let chunkSize = 10000;
   sampleWriter = new ChunkedDataWriter({
     chunkSize,
@@ -141,6 +145,62 @@ ipcMain.on('start-acquisition', (_event, startTime) => {
   });
   if (process.env.BUFFER_MANAGER_LOGS === '1') {
     console.log(`[electron] Acquisition started. Folder: ${sessionFolder}, baseFilename: sample${segmentNumber}`);
+  }
+  return sessionFolder;
+});
+
+// Handle manifest/session.json updates from renderer
+ipcMain.on('update-session-manifest', (_event, manifest) => {
+  if (!sessionFolder) return;
+  const manifestPath = path.join(sessionFolder, 'session.json');
+  try {
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  } catch (e) {
+    console.error('[update-session-manifest] Failed to write manifest:', e);
+  }
+});
+
+// Handler to load all chunk files and manifest for summary/export
+ipcMain.handle('load-all-chunks', async () => {
+  const folder = sessionFolder || lastSessionFolder;
+  if (!folder) return { segments: [], meta: null };
+  try {
+    const manifestPath = path.join(folder, 'session.json');
+    const meta = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    // Find all chunk files in the session folder
+    const files = fs.readdirSync(folder)
+      .filter(f => /^sample\d+_chunk\d+\.json$/.test(f))
+      .sort((a, b) => {
+        // Extract sample and chunk numbers
+        const matchA = a.match(/^sample(\d+)_chunk(\d+)\.json$/);
+        const matchB = b.match(/^sample(\d+)_chunk(\d+)\.json$/);
+        if (!matchA || !matchB) return a.localeCompare(b);
+        const sampleA = parseInt(matchA[1], 10);
+        const chunkA = parseInt(matchA[2], 10);
+        const sampleB = parseInt(matchB[1], 10);
+        const chunkB = parseInt(matchB[2], 10);
+        if (sampleA !== sampleB) return sampleA - sampleB;
+        return chunkA - chunkB;
+      });
+    // Group files by sample number (segment)
+    const segmentMap = new Map();
+    for (const f of files) {
+      const match = f.match(/^sample(\d+)_chunk(\d+)\.json$/);
+      if (!match) continue;
+      const sampleNum = parseInt(match[1], 10);
+      const chunkData = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf-8'));
+      const frames = Array.isArray(chunkData.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
+      if (!segmentMap.has(sampleNum)) segmentMap.set(sampleNum, []);
+      segmentMap.get(sampleNum).push(frames);
+    }
+    // For each segment, concatenate all its chunk frames in order
+    const segments = Array.from(segmentMap.keys()).sort((a, b) => a - b).map(sampleNum => {
+      return segmentMap.get(sampleNum).flat();
+    });
+    return { segments, meta };
+  } catch (e) {
+    console.error('[load-all-chunks] Failed to load session:', e);
+    return { segments: [], meta: null };
   }
 });
 
@@ -159,7 +219,8 @@ ipcMain.on('finalize-session', () => {
   if (sampleWriter) {
     sampleWriter.finalizeSession();
     segmentNumber++;
-    // Reset sessionFolder for next acquisition
+    // Save last session folder before resetting
+    lastSessionFolder = sessionFolder;
     sessionFolder = undefined;
   }
 });

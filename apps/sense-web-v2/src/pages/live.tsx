@@ -57,25 +57,20 @@ const outlineColorLight =
 const outlineColorDark =
 	fullConfig.theme.colors["over-background-highest-dark"]
 
-declare global {
-	interface Window {
-		electronAPI?: {
-			sendSample?: (sample: any) => void
-			setBufferSize?: (size: number) => void
-			startAcquisition?: (timestamp: string) => void
-			flushSamples?: (finalize?: boolean) => void
-			writeChunk?: (chunk: any) => void
-			finalizeSession?: () => void
-			onChunkWriteComplete?: ( callback: (info: { saveTime: number, chunkIndex: number, final: boolean }) => void) => () => void
-		}
+
+function initTestingStorageFlag() {
+	if (typeof window !== 'undefined' && window.TESTING_STORAGE === undefined && typeof process !== 'undefined' && process.env && process.env.TESTING_STORAGE) {
+		window.TESTING_STORAGE = process.env.TESTING_STORAGE;
 	}
 }
 
+initTestingStorageFlag();
+
 const Page = () => {
-	// Track all segments for summary export
-	const allSegmentsRef = useRef<any[][]>([]);
-	// Accumulates all frames for the current segment for summary export
-	const fullSessionFramesRef = useRef<any[]>([]);
+	// Track all segments for summary export (for validation only)
+	const allSegmentsRef = useRef<any[][]>([]); // Only for LocalStorage validation
+	// Accumulates all frames for the current segment for summary export (for validation only)
+	const fullSessionFramesRef = useRef<any[]>([]); // Only for LocalStorage validation
 	const storeBufferThresholdRef = useRef(10000);
 	// Track last chunk flush time and threshold for dynamic adjustment
 
@@ -87,6 +82,7 @@ const Page = () => {
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
+
 	const uiWindowSecondsRef = useRef(5);
 	const processingWindowSecondsRef = useRef(5);
 
@@ -103,22 +99,23 @@ const Page = () => {
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
 
+	// Save segment to LocalStorage for validation only (main persistence is chunk files)
+	// Testing-only: Save segment to LocalStorage for validation
 	const saveCurrentSegment = useCallback(() => {
-		const segment = segmentRef.current;
-		const device = deviceRef.current;
-		const channels = device?.getChannels?.() ?? channelsRef.current;
-		const allFrames = fullSessionFramesRef.current;
-
-		SessionManager.saveSegmentFrames(segment, allFrames);
-
-		if (channels.length > 0) {
-			SessionManager.saveChannels(channels);
+		if (typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') {
+			const segment = segmentRef.current;
+			const device = deviceRef.current;
+			const channels = device?.getChannels?.() ?? channelsRef.current;
+			const allFrames = fullSessionFramesRef.current;
+			SessionManager.saveSegmentFrames(segment, allFrames);
+			if (channels.length > 0) {
+				SessionManager.saveChannels(channels);
+			}
+			const sampleRate = device?.getSamplingRate?.() || 1000;
+			SessionManager.saveSampleRate(sampleRate);
+			SessionManager.saveSegmentCount(segment);
+			SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
 		}
-
-		const sampleRate = device?.getSamplingRate?.() || 1000;
-		SessionManager.saveSampleRate(sampleRate);
-		SessionManager.saveSegmentCount(segment);
-		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
 	}, []);
 
 	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
@@ -155,9 +152,15 @@ const Page = () => {
 		if (!window.electronAPI?.onChunkWriteComplete) return;
 
 		// Expect info: { saveTime: number, chunkIndex: number, final: boolean }
-		const unsubscribe = window.electronAPI.onChunkWriteComplete((info: { saveTime: number, chunkIndex: number, final: boolean }) => {
+		const unsubscribe = window.electronAPI.onChunkWriteComplete((info: { saveTime: number, chunkIndex: number, final: boolean, filename?: string }) => {
 			if (info && Number.isFinite(info.saveTime)) {
 				bufferManagerRef.current?.updateChunkThreshold?.(info.saveTime);
+			}
+			// Append chunk record to manifest
+			if (typeof SessionManager.appendChunkRecord === 'function') {
+				const file = info.filename || `sample${segmentRef.current}_chunk${info.chunkIndex}.json`;
+				const segment = segmentRef.current;
+				SessionManager.appendChunkRecord(file, segment, info.final);
 			}
 		});
 
@@ -169,31 +172,45 @@ const Page = () => {
 			if (status !== STATUS.STOPPED) return;
 
 			try {
-				// Do NOT await stopSession here
+				// Await final chunk write completion
+				const finalChunkPromise = new Promise(resolve => {
+					const unsubscribe = window.electronAPI?.onChunkWriteComplete?.((info) => {
+						if (info && info.final) {
+							unsubscribe?.();
+							resolve();
+						}
+					});
+				});
 				try {
 					bufferManagerRef.current?.flushChunk?.(true);
 				} catch (e) {
 					console.error("[finalizeStop] flushChunk error", e);
 				}
+				await finalChunkPromise;
 
 				// save current segment if needed
 				if (fullSessionFramesRef.current.length > 0) {
 					allSegmentsRef.current.push([...fullSessionFramesRef.current]);
-					console.log("[finalizeStop] Added current segment to allSegmentsRef");
 				}
 
-				// persist all segments to localStorage
-				allSegmentsRef.current.forEach((segmentFrames, idx) => {
-					segmentRef.current = idx + 1;
-					fullSessionFramesRef.current = segmentFrames;
-					console.log(`[finalizeStop] Saving segment ${segmentRef.current}`);
-					saveCurrentSegment();
+				// persist all segments to localStorage for validation/testing only
+				if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
+					allSegmentsRef.current.forEach((segmentFrames, idx) => {
+						segmentRef.current = idx + 1;
+						fullSessionFramesRef.current = segmentFrames;
+						saveCurrentSegment();
+					});
+				}
+
+				// Finalize manifest
+				await new Promise(resolve => {
+					SessionManager.finalizeSession(Date.now());
+					// Give a tick for manifest write to propagate
+					setTimeout(resolve, 50);
 				});
 
-				// finalize Electron session without waiting for a final-chunk ack
 				try {
 					window.electronAPI?.finalizeSession?.();
-					console.log("[finalizeStop] Called electronAPI.finalizeSession");
 				} catch (e) {
 					console.error("[finalizeStop] Error in finalizeSession", e);
 				}
@@ -348,23 +365,31 @@ const Page = () => {
 		const device = deviceRef.current;
 		if (!device) return;
 
-		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
+			   // Update manifest/session.json (session metadata) via SessionManager only
+			   SessionManager.updateSessionMeta({
+				   segment: segmentRef.current,
+				   channels: device.getChannels?.() ?? [],
+				   sampleRate: device.getSamplingRate?.() || 1000,
+				   deviceType: device instanceof Maker ? "maker" : "sense",
+				   timestamp: Date.now()
+			   });
 
-		const adcCharacteristics = device.getAdcCharacteristics?.();
-		if (adcCharacteristics !== null && adcCharacteristics !== undefined) {
-			localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON());
-		}
-
-		SessionManager.saveSegmentCount(segmentRef.current);
-
-		const samplingRate = device.getSamplingRate?.();
-		if (samplingRate) {
-			SessionManager.saveSampleRate(samplingRate);
-		}
-
-		const currentChannels = device.getChannels?.() ?? [];
-		if (currentChannels.length > 0) {
-			SessionManager.saveChannels(currentChannels);
+		// For validation/testing: only write to LocalStorage if TESTING_STORAGE=1
+		if (typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') {
+			SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
+			const adcCharacteristics = device.getAdcCharacteristics?.();
+			if (adcCharacteristics !== null && adcCharacteristics !== undefined) {
+				localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON());
+			}
+			SessionManager.saveSegmentCount(segmentRef.current);
+			const samplingRate = device.getSamplingRate?.();
+			if (samplingRate) {
+				SessionManager.saveSampleRate(samplingRate);
+			}
+			const currentChannels = device.getChannels?.() ?? [];
+			if (currentChannels.length > 0) {
+				SessionManager.saveChannels(currentChannels);
+			}
 		}
 	}, []);
 
@@ -457,7 +482,7 @@ const Page = () => {
 	}, [cleanupPipeline])
 
 	const start = useCallback(async () => {
-		console.log("[start] Starting acquisition\n");
+		console.log("\n[start] Starting acquisition\n");
 		const device = deviceRef.current
 		if (!device) return
 
@@ -470,19 +495,43 @@ const Page = () => {
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
-			bufferManagerRef.current?.startSession({
-				startedAt: Date.now(),
+
+			   // Start acquisition and get sessionFolder from Electron
+			   const startTime = new Date().toISOString();
+			   const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
+
+			   // Get adcChars if available
+			   const adcChars = device.getAdcCharacteristics?.() || {};
+
+			// Create session manifest at start with all metadata via SessionManager only
+			const now = Date.now();
+			SessionManager.createSession({
+				sessionId: `${now}`,
+				startedAt: now,
+				deviceType: device instanceof Maker ? "maker" : "sense",
 				sampleRate,
-				segment: segmentRef.current
+				channels: device.getChannels?.() ?? [],
+				sessionFolder,
+				adcChars
+			});
+			SessionManager.registerSegment({
+				index: segmentRef.current,
+				startedAt: now,
+				endedAt: null
 			});
 
-			window.electronAPI?.startAcquisition?.(new Date().toISOString());
-			// Only set buffer size if valid
-			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
-				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
-			}
+			   bufferManagerRef.current?.startSession({
+				   startedAt: Date.now(),
+				   sampleRate,
+				   segment: segmentRef.current
+			   });
 
-			persistSessionMetadata();
+			   // Only set buffer size if valid
+			   if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
+				   window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
+			   }
+
+			   persistSessionMetadata();
 
 			device.onFrames = data => {
 				if (data == null) return;
@@ -512,7 +561,7 @@ const Page = () => {
 	}, [initializePipeline, persistSessionMetadata])
 
 	const pause = useCallback(async () => {
-		console.log("[pause] Pausing acquisition\n");
+		console.log("\n[pause] Pausing acquisition\n");
 		if (!deviceRef.current) return
 
 		deviceRef.current.onError = () => {
@@ -523,7 +572,14 @@ const Page = () => {
 			await deviceRef.current.stopAcquisition?.()
 			bufferManagerRef.current?.flushChunk?.(false)
 
-			saveCurrentSegment()
+			// Update last segment's endedAt in manifest using API
+			const endedAt = Date.now();
+			SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
+
+			// Only for validation/testing
+			if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
+				saveCurrentSegment();
+			}
 
 			if (fullSessionFramesRef.current.length > 0) {
 				allSegmentsRef.current.push([...fullSessionFramesRef.current])
@@ -538,7 +594,7 @@ const Page = () => {
 	}, [saveCurrentSegment])
 
 	const resume = useCallback(async () => {
-		console.log("[resume] Resuming acquisition\n");
+		console.log("\n[resume] Resuming acquisition\n");
 		// Reset full session buffer for new segment (already saved at pause)
 		fullSessionFramesRef.current = [];
 		if (!deviceRef.current) return;
@@ -565,14 +621,24 @@ const Page = () => {
 			acquisitionStartedRef.current = false;
 
 			bufferManagerRef.current?.reset()
+			const now = Date.now();
 			bufferManagerRef.current?.startSession({
-				startedAt: Date.now(),
+				startedAt: now,
 				sampleRate: deviceRef.current.getSamplingRate?.() || 1000,
 				segment: segmentRef.current
 			})
 
-			window.electronAPI?.startAcquisition?.(new Date().toISOString())
+			// Explicitly await and document sessionFolder for consistency
+			// In resume, sessionFolder is not used, but we await for consistency and clarity
+			const resumedSessionFolder = await window.electronAPI?.startAcquisition?.(new Date().toISOString());
 			SessionManager.saveSegmentCount(segmentRef.current)
+
+			// Register new segment in manifest
+			SessionManager.registerSegment({
+				index: segmentRef.current,
+				startedAt: now,
+				endedAt: null
+			});
 
 			await deviceRef.current.startAcquisition?.()
 			setStatus(STATUS.ACQUIRING)
@@ -580,11 +646,11 @@ const Page = () => {
 			console.error(error)
 			setStatus(STATUS.CONNECTION_LOST)
 		}
-	}, []);
+	}, [])
 
 
 	const stop = useCallback(async () => {
-		console.log("[stop] Stopping acquisition\n");
+		console.log("\n[stop] Stopping acquisition\n");
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
@@ -593,6 +659,7 @@ const Page = () => {
 
 		setStatus(STATUS.STOPPING);
 
+		
 		try {
 			await deviceRef.current?.stopAcquisition();
 			await deviceRef.current?.disconnect();
@@ -600,6 +667,10 @@ const Page = () => {
 		} catch {
 			// ignore
 		}
+
+		// Update last segment's endedAt in manifest using API
+		const endedAt = Date.now();
+		SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
 
 		setStatus(STATUS.STOPPED);
 	}, []);
@@ -709,12 +780,16 @@ const Page = () => {
 						)
 					}}
 					onSubmit={async values => {
-						const { channelName } = values
-
-						localStorage.setItem(
-							"aq_channelNames",
-							JSON.stringify(channelName)
-						)
+						const { channelName } = values;
+						// Persist channel names in manifest
+						SessionManager.setChannelNames(channelName);
+						// For validation/testing: only write to localStorage if TESTING_STORAGE=1
+						if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
+							localStorage.setItem(
+								"aq_channelNames",
+								JSON.stringify(channelName)
+							);
+						}
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">

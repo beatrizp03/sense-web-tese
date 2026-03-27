@@ -10,6 +10,7 @@ import localFont from "@next/font/local"
 import { NoSSR, defaultScientISSTTheme } from "@scientisst/chakra-ui"
 
 import "../styles/global.css"
+import '../electron-api.d.ts';
 
 config.autoAddCss = false
 

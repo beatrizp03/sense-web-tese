@@ -42,10 +42,14 @@ class ChunkedDataWriter {
       this.currentStream.write(JSON.stringify(sample, null, 2));
       this.currentChunkHasData = true;
     }
+    this.lastFilename = this.currentStream.path;
     console.log(`[MAIN] Wrote chunk with ${frames.length} frames to ${this.currentStream.path}`);
-    this.finalizeChunk();
-  }
+    this.finalizeChunk();  }
 
+  getLastFilename() {
+    return this.lastFilename;
+  }
+  
   finalizeChunk() {
     if (this.currentStream) {
       this.currentStream.write('\n]');

@@ -49,7 +49,7 @@ async function listPorts() {
   clearRingBuffer(); // Always clear buffer before listing ports
   
   let ports = await SerialPort.list();
-  console.log('serial ports', ports);
+  //console.log('serial ports', ports);
 
   // normalize each entry to a usable string path; some drivers put the
   // COM path in `comName` or just `name`. drop anything where we can't
@@ -230,8 +230,7 @@ async function closeSerialPort(path) {
   serialBuffers[path] = Buffer.alloc(0);
 }
 
-contextBridge.exposeInMainWorld('electronAPI', {
-  // Transport-safe bridge methods
+contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge methods
   listSerialPorts: listPorts,
   requestPort: choosePort,
   writeSerialPort: async (path, data) => {
@@ -250,7 +249,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => port.off('data', handler);
   },
   // Acquisition/session control
-  startAcquisition: (startTime) => ipcRenderer.send('start-acquisition', startTime),
+  startAcquisition: async (startTime) => {
+    return await ipcRenderer.invoke('start-acquisition', startTime);
+  },
   stopAcquisition: () => ipcRenderer.send('stop-acquisition'),
   writeChunk: (chunk) => ipcRenderer.send('write-chunk', chunk),
   finalizeSession: () => ipcRenderer.send('finalize-session'),
@@ -260,6 +261,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onChunkWriteComplete: (cb) => {
     ipcRenderer.on('chunk-write-complete', (_event, info) => cb(info));
     return () => ipcRenderer.removeAllListeners('chunk-write-complete');
+  },
+  updateSessionManifest: (manifest) => ipcRenderer.send('update-session-manifest', manifest),
+  loadAllChunks: async () => {
+      return await ipcRenderer.invoke('load-all-chunks');
   },
   openSerialPort,
   readSerialPort,

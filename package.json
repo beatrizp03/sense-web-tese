@@ -9,7 +9,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev --parallel",
     "format": "prettier --write .",
-    "dev:desktop": "concurrently -k \"pnpm --filter sense-web exec next dev -p 3000 || true\" \"wait-on http://localhost:3000 && pnpm --filter sense-desktop start\"",
+    "dev:desktop": "concurrently -k \"cd apps/sense-web-v2 && pnpm dev 2>nul\" \"wait-on http://localhost:3000 && pnpm --filter sense-desktop start:no-warnings\"",
     "setup": "pnpm config set ignore-scripts false --location project && pnpm install",    
     "clean:all": "pnpm -w dlx rimraf node_modules **/node_modules pnpm-lock.yaml && pnpm -w store prune",
     "reinstall": "pnpm run clean:all && pnpm install",
