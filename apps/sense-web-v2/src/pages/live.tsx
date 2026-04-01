@@ -130,7 +130,7 @@ const Page = () => {
 			const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
 			const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
 			setXDomain([
-				Math.max(0, frameSequenceRef.current - graphBufferLimit),
+				frameSequenceRef.current - graphBufferLimit,
 				frameSequenceRef.current
 			]);
 			animationFrameRef.current = requestAnimationFrame(updateUI);
@@ -298,25 +298,32 @@ const Page = () => {
 			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
 				if (!frame) return;
 
-				graphBufferRef.current.push([frameSequenceRef.current, frame]);
-
 				const graphBufferLimit = Math.ceil(
 					(deviceRef.current?.getSamplingRate?.() || sampleRate) *
 					uiWindowSecondsRef.current
 				);
 
+				graphBufferRef.current.push([frameSequenceRef.current, frame]);
+
 				if (graphBufferRef.current.length > graphBufferLimit) {
 					graphBufferRef.current.shift();
 				}
 
-				frameSequenceRef.current += 1;
+				frameSequenceRef.current++;
+
+				// Match live_web behavior: do not clamp to 0
+				setXDomain([
+					frameSequenceRef.current - graphBufferLimit,
+					frameSequenceRef.current
+				]);
+
+				setGraphBuffer([...graphBufferRef.current]);
 
 				if (channelsRef.current.length === 0 && frame.channels) {
 					channelsRef.current = Object.keys(frame.channels).sort();
 					setChannels([...channelsRef.current]);
 				}
 
-				// Only setAcquisitionStarted(true) once
 				if (!acquisitionStartedRef.current) {
 					acquisitionStartedRef.current = true;
 					setAcquisitionStarted(true);

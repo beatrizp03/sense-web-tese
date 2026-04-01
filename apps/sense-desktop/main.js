@@ -40,6 +40,8 @@ function createWindow() {
     },
   });
 
+  //win.webContents.openDevTools({ mode: "detach" });
+
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     console.error("did-fail-load", { code, desc, url });
   });

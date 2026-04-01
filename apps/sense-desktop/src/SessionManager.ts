@@ -31,12 +31,7 @@ export class SessionManager {
       }
     };
     this._persistManifest();
-    // Validation/testing only
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      localStorage.setItem('aq_channels', JSON.stringify(meta.channels));
-      localStorage.setItem('aq_sampleRate', JSON.stringify(meta.sampleRate));
-      localStorage.setItem('aq_deviceType', meta.deviceType);
-    }
+    // Removed localStorage logic for TESTING flag; persistence is now only via chunk files.
   }
 
   static updateSessionMeta(patch) {
@@ -54,12 +49,7 @@ export class SessionManager {
       };
     }
     this._persistManifest();
-    // Validation/testing only
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      if (patch.channels) localStorage.setItem('aq_channels', JSON.stringify(patch.channels));
-      if (patch.sampleRate) localStorage.setItem('aq_sampleRate', JSON.stringify(patch.sampleRate));
-      if (patch.deviceType) localStorage.setItem('aq_deviceType', patch.deviceType);
-    }
+    // Removed localStorage logic for TESTING flag; persistence is now only via chunk files.
   }
 
   static registerSegment(segmentInfo) {
@@ -96,61 +86,6 @@ export class SessionManager {
         this.manifest = manifest;
         return manifest;
       });
-  }
-
-  static getLatestSession() {
-    // Not implemented: requires Electron preload/main support
-    return null;
-  }
-
-  // --- Validation/Testing Only ---
-  static saveChannels(channels) {
-    if (((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) && channels.length > 0) {
-      localStorage.setItem('aq_channels', JSON.stringify(channels));
-    }
-  }
-  static saveSampleRate(sampleRate) {
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      localStorage.setItem('aq_sampleRate', JSON.stringify(sampleRate));
-    }
-  }
-  static saveDeviceType(deviceType) {
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      localStorage.setItem('aq_deviceType', deviceType);
-    }
-  }
-  static saveSegmentCount(count) {
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      localStorage.setItem('aq_segments', JSON.stringify(count));
-    }
-  }
-  static saveSegmentFrames(segment, frames) {
-    if (!frames || frames.length === 0) return;
-    if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-      // Serialize frames for LocalStorage (validation only)
-      const serialized = frames
-        .map(frame => {
-          const f =
-            Array.isArray(frame) &&
-            frame.length === 2 &&
-            frame[1]?.channels
-              ? frame[1]
-              : frame;
-          return f?.serialize ? f.serialize() : JSON.stringify(f);
-        })
-        .join("");
-      localStorage.setItem(`aq_seg${segment}`, serialized);
-      localStorage.setItem(`aq_seg${segment}time`, JSON.stringify(Date.now()));
-    }
-  }
-
-  // Only for UI settings, not acquisition persistence
-  static clearSessionLocalState() {
-    for (const key in localStorage) {
-      if (key.startsWith('aq_')) {
-        localStorage.removeItem(key);
-      }
-    }
   }
 
   static updateSegmentEndedAt(index, endedAt) {
