@@ -57,17 +57,8 @@ const outlineColorLight =
 const outlineColorDark =
 	fullConfig.theme.colors["over-background-highest-dark"]
 
-
-function initTestingStorageFlag() {
-	if (typeof window !== 'undefined' && window.TESTING_STORAGE === undefined && typeof process !== 'undefined' && process.env && process.env.TESTING_STORAGE) {
-		window.TESTING_STORAGE = process.env.TESTING_STORAGE;
-	}
-}
-
-initTestingStorageFlag();
-
-
 const Page = () => {
+	const [channelGraphEnabled, setChannelGraphEnabled] = useState<Record<string, boolean>>({});
 	// Track all segments for summary export (for validation only)
 	const allSegmentsRef = useRef<any[][]>([]); // Only for LocalStorage validation
 	// Accumulates all frames for the current segment for summary export (for validation only)
@@ -681,8 +672,7 @@ const Page = () => {
 			{status === STATUS.CONNECTED && firmwareVersion !== null && (
 				<span>Firmware Version: {firmwareVersion}</span>
 			)}
-			<div className="flex flex-row gap-4">
-				{(status === STATUS.DISCONNECTED ||
+			<div className="flex flex-row gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
 					(status === STATUS.CONNECTION_LOST &&
@@ -744,63 +734,73 @@ const Page = () => {
 			)}
 			{status === STATUS.ACQUIRING && (
 				<Formik
+					enableReinitialize
 					initialValues={{
 						channelName: channels.reduce(
 							(acc, channel) => {
-							acc[channel] = channel
-							return acc
+							acc[channel] = channel || "";
+							return acc;
 							},
 							{} as Record<string, string>
 						)
 					}}
 					onSubmit={async values => {
 						const { channelName } = values;
-						// Persist channel names in manifest
 						SessionManager.setChannelNames(channelName);
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">
 						<FormikAutoSubmit delay={100} />
 						{channels.map(channel => {
+							const enabled = channelGraphEnabled[channel] !== false;
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row">
+									<div className="flex w-full flex-row items-center justify-between gap-2">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
 											className="mb-0"
 											placeholder={channel}
 										/>
+										<TextButton
+											type="button"
+											size={"base"}
+											onClick={() => setChannelGraphEnabled(prev => ({ ...prev, [channel]: !enabled }))}
+										>
+											{enabled ? "Disable" : "Enable"}
+										</TextButton>
 									</div>
-									<div className="bg-background-accent flex w-full flex-col rounded-md">
-										<div className="w-full p-4">
-											<CanvasChart
-												data={graphBuffer.map(
-													x => [
-														x[0],
-														x[1].channels[channel]
-													]
-												)}
-												xMin={xDomain[0]}
-												xMax={xDomain[1]}
-												className="h-64 w-full"
-												fontFamily="Lexend"
-												lineColor={
-													isDark
-														? lineColorDark
-														: lineColorLight
-												}
-												outlineColor={
-													isDark
-														? outlineColorDark
-														: outlineColorLight
-												}
-												yTicks={5}
-												xTicks={5}
-												xTickFormat={xTickFormatter}
-											/>
+									{enabled && (
+										<div className="bg-background-accent flex w-full flex-col rounded-md">
+											<div className="w-full p-4">
+												<CanvasChart
+													data={graphBuffer.map(
+														x => [
+															x[0],
+															x[1].channels[channel]
+														]
+													)}
+													xMin={xDomain[0]}
+													xMax={xDomain[1]}
+													className="h-64 w-full"
+													fontFamily="Lexend"
+													lineColor={
+														isDark
+															? lineColorDark
+															: lineColorLight
+													}
+													outlineColor={
+														isDark
+															? outlineColorDark
+															: outlineColorLight
+													}
+													yTicks={5}
+													xTicks={5}
+													xTickFormat={xTickFormatter}
+												/>
+											</div>
 										</div>
-									</div>
+									)}
 								</Fragment>
 							)
 						})}

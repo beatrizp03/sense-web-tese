@@ -154,16 +154,6 @@ const Page = () => {
 		let sampleRate = manifest.sampleRate;
 		let segmentsMeta = manifest.segments || [];
 
-		// For validation/testing: allow localStorage fallback if TESTING_STORAGE=1
-		if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-			try {
-				channels = JSON.parse(localStorage.getItem("aq_channels")) || channels;
-				deviceType = localStorage.getItem("aq_deviceType") || deviceType;
-				storedChannelNames = JSON.parse(localStorage.getItem("aq_channelNames") ?? "{}") || storedChannelNames;
-				sampleRate = JSON.parse(localStorage.getItem("aq_sampleRate")) || sampleRate;
-			} catch {}
-		}
-
 		if (!channels.length || !deviceType || !sampleRate) {
 			alert("Missing or incomplete manifest/session metadata.");
 			return;
@@ -297,29 +287,6 @@ const Page = () => {
 		let samplingRate = manifest.sampleRate;
 		// Use manifest.segments[segmentCount-1]?.startedAt for timestamp
 		let timestamp = new Date((segmentsMeta[segmentCount - 1] && segmentsMeta[segmentCount - 1].startedAt) || 0);
-
-		// For validation/testing: allow localStorage fallback if TESTING_STORAGE=1
-		if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-			try {
-				channels = JSON.parse(localStorage.getItem("aq_channels")) || channels;
-				segmentCount = JSON.parse(localStorage.getItem("aq_segments")) || segmentCount;
-				deviceType = localStorage.getItem("aq_deviceType") || deviceType;
-				storedChannelNames = JSON.parse(localStorage.getItem("aq_channelNames") ?? "{}") || storedChannelNames;
-				if (deviceType === "sense") {
-					frames = ScientISSTFrame.deserializeAll(localStorage.getItem(`aq_seg${segmentCount}`) ?? "", new Set(channels));
-				} else if (deviceType === "maker") {
-					frames = MakerFrame.deserializeAll(localStorage.getItem(`aq_seg${segmentCount}`) ?? "", new Set(channels));
-				}
-				// For testing, fallback to localStorage timestamp, else use manifest.segments
-				const testTime = localStorage.getItem(`aq_seg${segmentCount}time`);
-				if (testTime) {
-					timestamp = new Date(JSON.parse(testTime));
-				} else if (segmentsMeta[segmentCount - 1] && segmentsMeta[segmentCount - 1].startedAt) {
-					timestamp = new Date(segmentsMeta[segmentCount - 1].startedAt);
-				}
-				samplingRate = JSON.parse(localStorage.getItem("aq_sampleRate")) || samplingRate;
-			} catch {}
-		}
 
 		if (!channels.length || !deviceType || !samplingRate) {
 			alert("Missing or incomplete manifest/session metadata.");
