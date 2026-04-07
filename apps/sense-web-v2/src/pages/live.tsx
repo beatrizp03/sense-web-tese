@@ -66,11 +66,14 @@ function initTestingStorageFlag() {
 
 initTestingStorageFlag();
 
+
 const Page = () => {
 	// Track all segments for summary export (for validation only)
 	const allSegmentsRef = useRef<any[][]>([]); // Only for LocalStorage validation
 	// Accumulates all frames for the current segment for summary export (for validation only)
 	const fullSessionFramesRef = useRef<any[]>([]); // Only for LocalStorage validation
+	// Dedicated buffer for ALL acquired frames (for export/summary, not throttled)
+	const fullAcquisitionBufferRef = useRef<any[]>([]);
 	const storeBufferThresholdRef = useRef(10000);
 	// Track last chunk flush time and threshold for dynamic adjustment
 
@@ -98,25 +101,6 @@ const Page = () => {
 	const [channels, setChannels] = useState<string[]>([]);
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
-
-	// Save segment to LocalStorage for validation only (main persistence is chunk files)
-	// Testing-only: Save segment to LocalStorage for validation
-	const saveCurrentSegment = useCallback(() => {
-		if (typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') {
-			const segment = segmentRef.current;
-			const device = deviceRef.current;
-			const channels = device?.getChannels?.() ?? channelsRef.current;
-			const allFrames = fullSessionFramesRef.current;
-			SessionManager.saveSegmentFrames(segment, allFrames);
-			if (channels.length > 0) {
-				SessionManager.saveChannels(channels);
-			}
-			const sampleRate = device?.getSamplingRate?.() || 1000;
-			SessionManager.saveSampleRate(sampleRate);
-			SessionManager.saveSegmentCount(segment);
-			SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
-		}
-	}, []);
 
 	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
 	const animationFrameRef = useRef<number | null>(null);
@@ -161,6 +145,9 @@ const Page = () => {
 				const file = info.filename || `sample${segmentRef.current}_chunk${info.chunkIndex}.json`;
 				const segment = segmentRef.current;
 				SessionManager.appendChunkRecord(file, segment, info.final);
+				if (typeof SessionManager._persistManifest === 'function') {
+					SessionManager._persistManifest();
+				}
 			}
 		});
 
@@ -172,61 +159,37 @@ const Page = () => {
 			if (status !== STATUS.STOPPED) return;
 
 			try {
-				// Await final chunk write completion
-				const finalChunkPromise = new Promise(resolve => {
-					const unsubscribe = window.electronAPI?.onChunkWriteComplete?.((info) => {
-						if (info && info.final) {
+				const finalChunkPromise = new Promise<void>(resolve => {
+					const unsubscribe = window.electronAPI?.onChunkWriteComplete?.(info => {
+						if (info?.final) {
 							unsubscribe?.();
 							resolve();
 						}
 					});
 				});
-				try {
-					bufferManagerRef.current?.flushChunk?.(true);
-				} catch (e) {
-					console.error("[finalizeStop] flushChunk error", e);
-				}
+
+				bufferManagerRef.current?.flushChunk?.(true);
 				await finalChunkPromise;
 
-				// save current segment if needed
 				if (fullSessionFramesRef.current.length > 0) {
 					allSegmentsRef.current.push([...fullSessionFramesRef.current]);
 				}
 
-				// persist all segments to localStorage for validation/testing only
-				if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-					allSegmentsRef.current.forEach((segmentFrames, idx) => {
-						segmentRef.current = idx + 1;
-						fullSessionFramesRef.current = segmentFrames;
-						saveCurrentSegment();
-					});
-				}
+				SessionManager.finalizeSession(Date.now());
 
-				// Finalize manifest
-				await new Promise(resolve => {
-					SessionManager.finalizeSession(Date.now());
-					// Give a tick for manifest write to propagate
-					setTimeout(resolve, 50);
-				});
-
-				try {
-					window.electronAPI?.finalizeSession?.();
-				} catch (e) {
-					console.error("[finalizeStop] Error in finalizeSession", e);
-				}
+				window.electronAPI?.finalizeSession?.();
 
 				setStatus(STATUS.STOPPED_AND_SAVED);
-
 				await router.push("/summary");
 			} catch (error) {
-				console.error("[finalizeStop] Outer error", error);
+				console.error("[finalizeStop]", error);
 				setStatus(STATUS.STOPPED_AND_SAVED);
 			}
 		};
 
 		finalizeStop();
-	}, [status, router, saveCurrentSegment]);
-
+	}, [status, router]);
+	
 	const cleanupPipeline = useCallback(() => {
 		subscriptionsRef.current.forEach(unsubscribe => {
 			try {
@@ -276,48 +239,58 @@ const Page = () => {
 
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
-			cleanupPipeline()
+			cleanupPipeline();
 
-			frameSequenceRef.current = 0
-			graphBufferRef.current = []
-			channelsRef.current = []
+			frameSequenceRef.current = 0;
+			graphBufferRef.current = [];
+			channelsRef.current = [];
+			fullAcquisitionBufferRef.current = [];
 
-			setGraphBuffer([])
-			setChannels([])
-			setXDomain([0, 0])
-			setAcquisitionStarted(false)
+			setGraphBuffer([]);
+			setChannels([]);
+			setXDomain([0, 0]);
+			setAcquisitionStarted(false);
 			acquisitionStartedRef.current = false;
 
 			bufferManagerRef.current = new BufferManager({
 				uiWindowSize: uiWindowSecondsRef.current * sampleRate,
 				processingWindowSize: processingWindowSecondsRef.current * sampleRate,
 				chunkSize: storeBufferThresholdRef.current
-			})
+			});
 
 			// Fast UI path: direct from FramePublisher
+			// Throttle UI updates and always accumulate all frames for export
+			const lastUIUpdateRef = { current: Date.now() };
+			const UI_UPDATE_INTERVAL = 100; // ms
 			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
 				if (!frame) return;
+
+				// Always accumulate for export (full buffer, not throttled)
+				fullAcquisitionBufferRef.current.push(frame);
 
 				const graphBufferLimit = Math.ceil(
 					(deviceRef.current?.getSamplingRate?.() || sampleRate) *
 					uiWindowSecondsRef.current
 				);
 
+				// Only keep a small window for the UI
 				graphBufferRef.current.push([frameSequenceRef.current, frame]);
-
 				if (graphBufferRef.current.length > graphBufferLimit) {
 					graphBufferRef.current.shift();
 				}
 
 				frameSequenceRef.current++;
 
-				// Match live_web behavior: do not clamp to 0
-				setXDomain([
-					frameSequenceRef.current - graphBufferLimit,
-					frameSequenceRef.current
-				]);
-
-				setGraphBuffer([...graphBufferRef.current]);
+				// Throttle UI updates
+				const now = Date.now();
+				if (now - lastUIUpdateRef.current > UI_UPDATE_INTERVAL) {
+					setGraphBuffer([...graphBufferRef.current]);
+					setXDomain([
+						frameSequenceRef.current - graphBufferLimit,
+						frameSequenceRef.current
+					]);
+					lastUIUpdateRef.current = now;
+				}
 
 				if (channelsRef.current.length === 0 && frame.channels) {
 					channelsRef.current = Object.keys(frame.channels).sort();
@@ -332,72 +305,53 @@ const Page = () => {
 
 			// Storage + processing path: through BufferManager
 			const unsubscribeBufferManagerPublisher = framePublisher.subscribeFrame(frame => {
-				bufferManagerRef.current?.ingest(frame)
-			})
+				bufferManagerRef.current?.ingest(frame);
+			});
 
 			const unsubscribeStorage = bufferManagerRef.current?.subscribeStorage(chunk => {
 				onChunkReady(chunk, chunk => {
 					console.log("[onChunkReady] writing chunk to electron: ", chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0);
 					if (chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0) {
-						writeChunkToElectron(chunk)
+						writeChunkToElectron(chunk);
 					}
-				})
-			})
+				});
+			});
 
 			const unsubscribeProcessing = bufferManagerRef.current?.subscribeProcessing(
 				window => {
 					onProcessingWindow(
-						window,
-						{
-							process: SignalProcessor.extractFeatures
-						},
-						_results => {
-							// optionally handle results
-						}
-					)
+					window,
+					{
+						process: SignalProcessor.extractFeatures
+					},
+					_results => {
+						// optionally handle results
+					}
+				)
 				}
-			)
+			);
 
 			subscriptionsRef.current = [
 				unsubscribeUIPublisher,
 				unsubscribeBufferManagerPublisher,
 				unsubscribeStorage,
 				unsubscribeProcessing
-			].filter(Boolean) as Array<() => void>
+			].filter(Boolean) as Array<() => void>;
 		},
 		[cleanupPipeline, writeChunkToElectron]
-	)
+	);
 
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
 		if (!device) return;
-
-			   // Update manifest/session.json (session metadata) via SessionManager only
-			   SessionManager.updateSessionMeta({
-				   segment: segmentRef.current,
-				   channels: device.getChannels?.() ?? [],
-				   sampleRate: device.getSamplingRate?.() || 1000,
-				   deviceType: device instanceof Maker ? "maker" : "sense",
-				   timestamp: Date.now()
-			   });
-
-		// For validation/testing: only write to LocalStorage if TESTING_STORAGE=1
-		if (typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') {
-			SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
-			const adcCharacteristics = device.getAdcCharacteristics?.();
-			if (adcCharacteristics !== null && adcCharacteristics !== undefined) {
-				localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON());
-			}
-			SessionManager.saveSegmentCount(segmentRef.current);
-			const samplingRate = device.getSamplingRate?.();
-			if (samplingRate) {
-				SessionManager.saveSampleRate(samplingRate);
-			}
-			const currentChannels = device.getChannels?.() ?? [];
-			if (currentChannels.length > 0) {
-				SessionManager.saveChannels(currentChannels);
-			}
-		}
+			// Update manifest/session.json (session metadata) via SessionManager only
+			SessionManager.updateSessionMeta({
+				segment: segmentRef.current,
+				channels: device.getChannels?.() ?? [],
+				sampleRate: device.getSamplingRate?.() || 1000,
+				deviceType: device instanceof Maker ? "maker" : "sense",
+				timestamp: Date.now()
+			});
 	}, []);
 
 	const connect = useCallback(async () => {
@@ -405,9 +359,7 @@ const Page = () => {
 		setAcquisitionStarted(false)
 		cleanupPipeline(); // Reset all state and BufferManager before connect
 
-		const settings = JSON.parse(
-			localStorage.getItem("settings") || "{}"
-		) as Record<string, unknown>
+		 const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>;
 
 		try {
 			switch (settings.deviceType ?? "sense") {
@@ -464,29 +416,32 @@ const Page = () => {
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
 			console.error(error)
+			deviceRef.current = null
 
 			if (error instanceof CancelledByUserException) {
 				setStatus(STATUS.DISCONNECTED)
 				return
 			}
-
-			deviceRef.current = null
 			setStatus(STATUS.CONNECTION_FAILED)
 		}
 	}, [cleanupPipeline])
 
 	const disconnect = useCallback(async () => {
 		try {
-			framePublisher.reset();
-			cleanupPipeline();
+			deviceRef.current!.onError = () => {
+				// ignore controlled disconnect errors
+			};
+
 			await deviceRef.current?.disconnect?.();
 		} catch {
 			// ignore disconnect errors
 		} finally {
+			framePublisher.reset();
+			cleanupPipeline();
 			deviceRef.current = null;
 			setStatus(STATUS.DISCONNECTED);
 		}
-	}, [cleanupPipeline])
+	}, [cleanupPipeline]);
 
 	const start = useCallback(async () => {
 		console.log("\n[start] Starting acquisition\n");
@@ -497,18 +452,18 @@ const Page = () => {
 			// Clear session/segment buffers only at the start of a new acquisition
 			fullSessionFramesRef.current = [];
 			allSegmentsRef.current = [];
+			fullAcquisitionBufferRef.current = [];
 
 			// cleanupPipeline is already called inside initializePipeline
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
+			// Start acquisition and get sessionFolder from Electron
+			const startTime = new Date().toISOString();
+			const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
 
-			   // Start acquisition and get sessionFolder from Electron
-			   const startTime = new Date().toISOString();
-			   const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
-
-			   // Get adcChars if available
-			   const adcChars = device.getAdcCharacteristics?.() || {};
+			// Get adcChars if available
+			const adcChars = device.getAdcCharacteristics?.() || {};
 
 			// Create session manifest at start with all metadata via SessionManager only
 			const now = Date.now();
@@ -527,18 +482,18 @@ const Page = () => {
 				endedAt: null
 			});
 
-			   bufferManagerRef.current?.startSession({
-				   startedAt: Date.now(),
-				   sampleRate,
-				   segment: segmentRef.current
-			   });
+			bufferManagerRef.current?.startSession({
+				startedAt: Date.now(),
+				sampleRate,
+				segment: segmentRef.current
+			});
 
-			   // Only set buffer size if valid
-			   if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
-				   window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
-			   }
+			// Only set buffer size if valid
+			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
+				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
+			}
 
-			   persistSessionMetadata();
+			persistSessionMetadata();
 
 			device.onFrames = data => {
 				if (data == null) return;
@@ -546,16 +501,25 @@ const Page = () => {
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
 					framePublisher.publishFrames(validFrames);
-					// Accumulate all frames for summary export
+					// Accumulate all frames for summary export (legacy)
 					fullSessionFramesRef.current.push(...validFrames);
+					// Accumulate all frames for export (new, not throttled)
+					fullAcquisitionBufferRef.current.push(...validFrames);
 				} else {
 					framePublisher.publishFrame(data);
 					fullSessionFramesRef.current.push(data);
+					fullAcquisitionBufferRef.current.push(data);
 				}
-			}            
+			};
 
 			device.onError = error => {
 				console.error(error);
+				// Flush any pending frames to disk before finalizing chunk
+				bufferManagerRef.current?.flushChunk?.(true);
+				if (window.electronAPI?.acquisitionError && sessionFolder) {
+					window.electronAPI.acquisitionError(sessionFolder);
+				}
+				console.log("\n[device.onError] Device error, disconnecting and updating status\n");
 				setStatus(STATUS.CONNECTION_LOST);
 			};
 
@@ -563,6 +527,7 @@ const Page = () => {
 			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
 			console.error(error);
+			console.log("\n[start] Connection failed, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST);
 		}
 	}, [initializePipeline, persistSessionMetadata])
@@ -582,10 +547,8 @@ const Page = () => {
 			// Update last segment's endedAt in manifest using API
 			const endedAt = Date.now();
 			SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
-
-			// Only for validation/testing
-			if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-				saveCurrentSegment();
+			if (typeof SessionManager._persistManifest === 'function') {
+				SessionManager._persistManifest();
 			}
 
 			if (fullSessionFramesRef.current.length > 0) {
@@ -596,49 +559,49 @@ const Page = () => {
 			setStatus(STATUS.PAUSED)
 		} catch (error) {
 			console.error(error)
+			console.log("\n[pause] Error during pause, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST)
 		}
-	}, [saveCurrentSegment])
+	}, [])
 
 	const resume = useCallback(async () => {
 		console.log("\n[resume] Resuming acquisition\n");
-		// Reset full session buffer for new segment (already saved at pause)
-		fullSessionFramesRef.current = [];
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = error => {
 			console.error(error);
 			deviceRef.current?.disconnect?.().finally(() => {
 				deviceRef.current = null;
+				console.log("\n[device.onError] Device error during resume, disconnecting and updating status\n");
 				setStatus(STATUS.CONNECTION_LOST);
 			});
 		};
 
 		try {
-			segmentRef.current += 1
+			segmentRef.current += 1;
 
-			frameSequenceRef.current = 0
-			graphBufferRef.current = []
-			channelsRef.current = []
-
-			setGraphBuffer([])
-			setChannels([])
-			setXDomain([0, 0])
-			setAcquisitionStarted(false)
+			// Reset UI window and buffers like live_web
+			frameSequenceRef.current = 0;
+			graphBufferRef.current = [];
+			channelsRef.current = [];
+			setGraphBuffer([]);
+			setChannels([]);
+			setXDomain([0, 0]);
+			setAcquisitionStarted(false);
 			acquisitionStartedRef.current = false;
+			fullSessionFramesRef.current = [];
 
-			bufferManagerRef.current?.reset()
+			// Reset BufferManager for new segment
+			bufferManagerRef.current?.reset();
 			const now = Date.now();
 			bufferManagerRef.current?.startSession({
 				startedAt: now,
 				sampleRate: deviceRef.current.getSamplingRate?.() || 1000,
 				segment: segmentRef.current
-			})
+			});
 
-			// Explicitly await and document sessionFolder for consistency
-			// In resume, sessionFolder is not used, but we await for consistency and clarity
-			const resumedSessionFolder = await window.electronAPI?.startAcquisition?.(new Date().toISOString());
-			SessionManager.saveSegmentCount(segmentRef.current)
+			// Electron chunk writer rollover: get new session folder/chunk base
+			await window.electronAPI?.startAcquisition?.(new Date().toISOString());
 
 			// Register new segment in manifest
 			SessionManager.registerSegment({
@@ -647,11 +610,12 @@ const Page = () => {
 				endedAt: null
 			});
 
-			await deviceRef.current.startAcquisition?.()
-			setStatus(STATUS.ACQUIRING)
+			await deviceRef.current.startAcquisition?.();
+			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
-			console.error(error)
-			setStatus(STATUS.CONNECTION_LOST)
+			console.error(error);
+			console.log("\n[resume] Error during resume, updating status\n");
+			setStatus(STATUS.CONNECTION_LOST);
 		}
 	}, [])
 
@@ -665,19 +629,22 @@ const Page = () => {
 		};
 
 		setStatus(STATUS.STOPPING);
-
 		
 		try {
-			await deviceRef.current?.stopAcquisition();
-			await deviceRef.current?.disconnect();
-			deviceRef.current = null;
+			await deviceRef.current.stopAcquisition?.();
+			await deviceRef.current.disconnect?.();
 		} catch {
-			// ignore
+			// ignore controlled stop errors
+		} finally {
+			deviceRef.current = null;
 		}
 
 		// Update last segment's endedAt in manifest using API
 		const endedAt = Date.now();
 		SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
+		if (typeof SessionManager._persistManifest === 'function') {
+			SessionManager._persistManifest();
+		}
 
 		setStatus(STATUS.STOPPED);
 	}, []);
@@ -790,13 +757,6 @@ const Page = () => {
 						const { channelName } = values;
 						// Persist channel names in manifest
 						SessionManager.setChannelNames(channelName);
-						// For validation/testing: only write to localStorage if TESTING_STORAGE=1
-						if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-							localStorage.setItem(
-								"aq_channelNames",
-								JSON.stringify(channelName)
-							);
-						}
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">

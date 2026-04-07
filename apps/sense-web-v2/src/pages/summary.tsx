@@ -48,12 +48,6 @@ const addSvgToPDF = async (
 
 
 const Page = () => {
-	useEffect(() => {
-		if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.time('[ELECTRON] summary-compile');
-		return () => {
-			if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.timeEnd('[ELECTRON] summary-compile');
-		};
-	}, []);
 	const router = useRouter();
 	const [chunkSegments, setChunkSegments] = useState<any[][]>([]);
 	const [manifest, setManifest] = useState<any>({});
@@ -152,95 +146,92 @@ const Page = () => {
 
 	// Use chunkSegments and manifest for CSV export
 
-		const convertToCSV = useCallback(() => {
-			   if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.time('[ELECTRON] csv-export');
-			// Use manifest/chunk files as source of truth
-			let channels = manifest.channels || [];
-			let deviceType = manifest.deviceType;
-			let storedChannelNames = manifest.channelNames || {};
-			let sampleRate = manifest.sampleRate;
-			let segmentsMeta = manifest.segments || [];
+	const convertToCSV = useCallback(() => {
+		// Use manifest/chunk files as source of truth
+		let channels = manifest.channels || [];
+		let deviceType = manifest.deviceType;
+		let storedChannelNames = manifest.channelNames || {};
+		let sampleRate = manifest.sampleRate;
+		let segmentsMeta = manifest.segments || [];
 
-			// For validation/testing: allow localStorage fallback if TESTING_STORAGE=1
-			if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
-				try {
-					channels = JSON.parse(localStorage.getItem("aq_channels")) || channels;
-					deviceType = localStorage.getItem("aq_deviceType") || deviceType;
-					storedChannelNames = JSON.parse(localStorage.getItem("aq_channelNames") ?? "{}") || storedChannelNames;
-					sampleRate = JSON.parse(localStorage.getItem("aq_sampleRate")) || sampleRate;
-				} catch {}
-			}
+		// For validation/testing: allow localStorage fallback if TESTING_STORAGE=1
+		if ((typeof process !== 'undefined' && process.env.TESTING_STORAGE === '1') || (typeof window !== 'undefined' && window.TESTING_STORAGE === '1')) {
+			try {
+				channels = JSON.parse(localStorage.getItem("aq_channels")) || channels;
+				deviceType = localStorage.getItem("aq_deviceType") || deviceType;
+				storedChannelNames = JSON.parse(localStorage.getItem("aq_channelNames") ?? "{}") || storedChannelNames;
+				sampleRate = JSON.parse(localStorage.getItem("aq_sampleRate")) || sampleRate;
+			} catch {}
+		}
 
-			if (!channels.length || !deviceType || !sampleRate) {
-				alert("Missing or incomplete manifest/session metadata.");
-				return;
-			}
-			if (!segmentChunkMap.length || segmentChunkMap.every(entry => !entry.chunk || entry.chunk.length === 0)) {
-				alert("No chunk data found. Export aborted.");
-				return;
-			}
-			if (deviceType !== "sense" && deviceType !== "maker") {
-				alert("Device type not supported yet.");
-				return;
-			}
+		if (!channels.length || !deviceType || !sampleRate) {
+			alert("Missing or incomplete manifest/session metadata.");
+			return;
+		}
+		if (!segmentChunkMap.length || segmentChunkMap.every(entry => !entry.chunk || entry.chunk.length === 0)) {
+			alert("No chunk data found. Export aborted.");
+			return;
+		}
+		if (deviceType !== "sense" && deviceType !== "maker") {
+			alert("Device type not supported yet.");
+			return;
+		}
 
-			const zip = new JSZip();
-			let firstTimestamp = 0;
+		const zip = new JSZip();
+		let firstTimestamp = 0;
 
-			for (let i = 0; i < segmentChunkMap.length; i++) {
-				const { segment, chunk } = segmentChunkMap[i];
-				if (!segment || !chunk || chunk.length === 0) continue;
-				const fileContent = [];
-				const frames = chunk;
-				const resolutionBits = [];
-				for (let j = 0; j < channels.length; j++) {
-					resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
-				}
-				// Use segment.startedAt for timestamp
-				const timestamp = new Date(segment.startedAt || 0);
-				if (firstTimestamp === 0) {
-					firstTimestamp = timestamp.getTime();
-				}
-				const metadata = {
-					Device:
-						deviceType === "sense"
-							? "ScientISST Sense"
-							: "ScientISST Maker",
-					Channels: channels,
-					"Sampling rate (Hz)": sampleRate,
-					"ISO 8601": timestamp.toISOString(),
-					Timestamp: timestamp.getTime(),
-					"Resolution (bits)": deviceType === "sense" ? resolutionBits : undefined
-				};
-				fileContent.push("#" + JSON.stringify(metadata, null, null));
-				fileContent.push(
-					"#NSeq," +
-					channels
-						.map(channel => storedChannelNames[channel] ?? channel)
-						.join(",")
-				);
-				for (let j = 0; j < frames.length; j++) {
-					const frameContent = [];
-					frameContent.push(frames[j].sequence);
-					for (let k = 0; k < channels.length; k++) {
-						frameContent.push(frames[j].channels[channels[k]]);
-					}
-					fileContent.push(frameContent.join(","));
-				}
-				zip.file(`segment_${i + 1}.csv`, fileContent.join("\n"));
+		for (let i = 0; i < segmentChunkMap.length; i++) {
+			const { segment, chunk } = segmentChunkMap[i];
+			if (!segment || !chunk || chunk.length === 0) continue;
+			const fileContent = [];
+			const frames = chunk;
+			const resolutionBits = [];
+			for (let j = 0; j < channels.length; j++) {
+				resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
 			}
+			// Use segment.startedAt for timestamp
+			const timestamp = new Date(segment.startedAt || 0);
 			if (firstTimestamp === 0) {
-				firstTimestamp = new Date().getTime();
+				firstTimestamp = timestamp.getTime();
 			}
-			const timestampISO = new Date(firstTimestamp).toISOString();
-			zip.generateAsync({ type: "blob" }).then(content => {
-				   FileSaver.saveAs(content, `${timestampISO}.zip`);
-				   if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.timeEnd('[ELECTRON] csv-export');
-			});
-		}, [segmentChunkMap, manifest]);
+			const metadata = {
+				Device:
+					deviceType === "sense"
+						? "ScientISST Sense"
+						: "ScientISST Maker",
+				Channels: channels,
+				"Sampling rate (Hz)": sampleRate,
+				"ISO 8601": timestamp.toISOString(),
+				Timestamp: timestamp.getTime(),
+				"Resolution (bits)": deviceType === "sense" ? resolutionBits : undefined
+			};
+			fileContent.push("#" + JSON.stringify(metadata, null, null));
+			fileContent.push(
+				"#NSeq," +
+				channels
+					.map(channel => storedChannelNames[channel] ?? channel)
+					.join(",")
+			);
+			for (let j = 0; j < frames.length; j++) {
+				const frameContent = [];
+				frameContent.push(frames[j].sequence);
+				for (let k = 0; k < channels.length; k++) {
+					frameContent.push(frames[j].channels[channels[k]]);
+				}
+				fileContent.push(frameContent.join(","));
+			}
+			zip.file(`segment_${i + 1}.csv`, fileContent.join("\n"));
+		}
+		if (firstTimestamp === 0) {
+			firstTimestamp = new Date().getTime();
+		}
+		const timestampISO = new Date(firstTimestamp).toISOString();
+		zip.generateAsync({ type: "blob" }).then(content => {
+				FileSaver.saveAs(content, `${timestampISO}.zip`);
+		});
+	}, [segmentChunkMap, manifest]);
 
 	const convertToPDF = useCallback(async () => {
-		if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.time('[ELECTRON] pdf-export');
 		const pdf = new JsPDF({
 			orientation: "landscape",
 			unit: "mm",
@@ -677,11 +668,9 @@ const Page = () => {
 
 		const timestampISO = new Date(timestamp).toISOString()
 		pdf.save(`${timestampISO}.pdf`)
-		if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.timeEnd('[ELECTRON] pdf-export');
 	}, [chunkSegments, manifest])
 
 
-		if (typeof window !== 'undefined' && window.electronPerformance) window.electronPerformance.timeEnd('[ELECTRON] summary-compile end');
 		return (
 			<SenseLayout
 				title="Summary"

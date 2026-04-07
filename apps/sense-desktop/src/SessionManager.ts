@@ -1,4 +1,5 @@
 // SessionManager: handles session metadata and segment persistence
+import { MakerFrame, ScientISSTFrame } from "@scientisst/sense/future"
 
 export class SessionManager {
   // Disk-backed session manifest path (set on create/load)
@@ -10,6 +11,12 @@ export class SessionManager {
     // meta: { sessionId, startedAt, deviceType, sampleRate, channels, sessionFolder, ... }
     const sessionFolder = meta.sessionFolder;
     this.manifestPath = `${sessionFolder}/session.json`;
+    
+    const resolutionBits = [];
+    for (let j = 0; j < meta.channels.length; j++) {
+      resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[meta.channels[j]]);
+    }
+    
     this.manifest = {
       sessionId: meta.sessionId,
       startedAt: meta.startedAt,
@@ -22,12 +29,15 @@ export class SessionManager {
       chunks: [],
       // CSV-style header for graph/data reconstruction
       csvHeader: {
-        Device: meta.deviceType || meta.device || '',
+        Device:
+          meta.deviceType === "sense"
+            ? "ScientISST Sense"
+            : "ScientISST Maker",
         Channels: meta.channels || [],
         "Sampling rate (Hz)": meta.sampleRate || 0,
         "ISO 8601": meta.iso8601 || (meta.startedAt ? new Date(meta.startedAt).toISOString() : ''),
         Timestamp: meta.timestamp || meta.startedAt || 0,
-        "Resolution (bits)": meta.resolutionBits || meta.resolution || [],
+        "Resolution (bits)": meta.deviceType === "sense" ? resolutionBits : undefined
       }
     };
     this._persistManifest();
@@ -37,15 +47,22 @@ export class SessionManager {
   static updateSessionMeta(patch) {
     if (!this.manifest) return;
     Object.assign(this.manifest, patch);
+    const resolutionBits = [];
+    for (let j = 0; j < this.manifest.channels.length; j++) {
+      resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[this.manifest.channels[j]]);
+    }
+    
     // If patch contains any csvHeader-relevant fields, update csvHeader as well
     if (patch.deviceType || patch.device || patch.channels || patch.sampleRate || patch.iso8601 || patch.timestamp || patch.resolutionBits || patch.resolution) {
       this.manifest.csvHeader = {
-        Device: patch.deviceType || patch.device || this.manifest.deviceType || '',
+        Device: patch.deviceType === "sense"
+						? "ScientISST Sense"
+						: "ScientISST Maker",
         Channels: patch.channels || this.manifest.channels || [],
         "Sampling rate (Hz)": patch.sampleRate || this.manifest.sampleRate || 0,
         "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (this.manifest.startedAt ? new Date(this.manifest.startedAt).toISOString() : '')),
         Timestamp: patch.timestamp || patch.startedAt || this.manifest.timestamp || this.manifest.startedAt || 0,
-        "Resolution (bits)": patch.resolutionBits || patch.resolution || this.manifest.resolutionBits || this.manifest.resolution || [],
+        "Resolution (bits)": this.manifest.deviceType === "sense" ? resolutionBits : undefined
       };
     }
     this._persistManifest();
@@ -78,14 +95,22 @@ export class SessionManager {
   }
 
   static loadSession(sessionPath) {
-    // Loads manifest from disk (renderer: fetch, Electron: not implemented)
     this.manifestPath = sessionPath;
-    return fetch(sessionPath)
-      .then((res) => res.json())
-      .then((manifest) => {
-        this.manifest = manifest;
-        return manifest;
-      });
+    if (window?.electronAPI?.readSessionManifest) {
+      return window.electronAPI.readSessionManifest(sessionPath)
+        .then((manifest) => {
+          this.manifest = manifest;
+          return manifest;
+        });
+    } else {
+      // fallback for web (if needed)
+      return fetch(sessionPath)
+        .then((res) => res.json())
+        .then((manifest) => {
+          this.manifest = manifest;
+          return manifest;
+        });
+    }
   }
 
   static updateSegmentEndedAt(index, endedAt) {
@@ -96,7 +121,7 @@ export class SessionManager {
       this._persistManifest();
     }
   }
-  
+
   // --- Internal ---
   static _persistManifest() {
     if (window?.electronAPI?.updateSessionManifest && this.manifest) {

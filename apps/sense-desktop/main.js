@@ -151,6 +151,25 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
   return sessionFolder;
 });
 
+// IPC handler to finalize chunk on acquisition error
+ipcMain.handle('acquisition-error', async (_event, errorMsg) => {
+  if (sampleWriter) {
+    sampleWriter.finalizeChunk();
+    // Update session.json manifest if available
+    if (sessionFolder) {
+      const manifestPath = path.join(sessionFolder, 'session.json');
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        console.log('[main] Updated session manifest after acquisition error.');
+      } catch (e) {
+        console.error('[main] Failed to update session manifest after acquisition error:', e);
+      }
+    }
+    console.log('[main] Finalized chunk due to acquisition error:', errorMsg);
+  }
+});
+
 // Handle manifest/session.json updates from renderer
 ipcMain.on('update-session-manifest', (_event, manifest) => {
   if (!sessionFolder) return;
@@ -227,9 +246,16 @@ ipcMain.on('finalize-session', () => {
   }
 });
 
-// Example: Add a sample (replace with your actual sample acquisition logic)
-// This should be called whenever you acquire a new sample from the device
-// Remove onNewSample and any frame-by-frame batching logic
+// IPC handler for read-session-manifest to allow renderer to read session.json from disk
+ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
+    return manifest;
+  } catch (e) {
+    console.error('[read-session-manifest] Failed to read manifest:', e);
+    throw e;
+  }
+});
 
 // Example: Flush remaining samples on app exit
 app.on('before-quit', () => {

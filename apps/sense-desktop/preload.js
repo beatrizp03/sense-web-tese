@@ -269,5 +269,11 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   openSerialPort,
   readSerialPort,
   closeSerialPort,
-  clearRingBuffer
+  clearRingBuffer,
+  readSessionManifest: async (sessionPath) => {
+    return await ipcRenderer.invoke('read-session-manifest', sessionPath);
+  },
+  acquisitionError: async (sessionPath) => {
+    return await ipcRenderer.invoke('acquisition-error', sessionPath);
+  }
 });
