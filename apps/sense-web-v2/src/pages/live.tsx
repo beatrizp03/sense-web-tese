@@ -439,8 +439,7 @@ const Page = () => {
 		const device = deviceRef.current
 		if (!device) return
 
-		try {
-			// Clear session/segment buffers only at the start of a new acquisition
+		try {	
 			fullSessionFramesRef.current = [];
 			allSegmentsRef.current = [];
 			fullAcquisitionBufferRef.current = [];
@@ -610,7 +609,6 @@ const Page = () => {
 		}
 	}, [])
 
-
 	const stop = useCallback(async () => {
 		console.log("\n[stop] Stopping acquisition\n");
 		if (!deviceRef.current) return;
@@ -640,7 +638,6 @@ const Page = () => {
 		setStatus(STATUS.STOPPED);
 	}, []);
 
-
 	useEffect(() => {
 		return () => {
 			cleanupPipeline()
@@ -661,6 +658,27 @@ const Page = () => {
 
 		return seconds < 10 ? `${minutes}:0${seconds}` : `${minutes}:${seconds}`
 	}, [])
+
+	const [showCloseModal, setShowCloseModal] = useState(false);
+
+	useEffect(() => {
+		// Listen for Electron close (X) event
+		let removeCloseListener: (() => void) | undefined;
+		if (window.electronAPI?.onShowCloseWarning) {
+			removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
+				console.log("[onShowCloseWarning] Status: ", STATUS[status]);
+				if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
+					setShowCloseModal(true);
+				} else {
+					// If not acquiring, allow close
+					window.electronAPI?.confirmClose?.(true);
+				}
+			});
+		}
+		return () => {
+			removeCloseListener && removeCloseListener();
+		};
+	}, [status]);
 
 	return (
 		<SenseLayout
@@ -806,6 +824,25 @@ const Page = () => {
 						})}
 					</Form>
 				</Formik>
+			)}
+			{showCloseModal && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+					<div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 max-w-md w-full opacity-100">
+						<h2 className="text-xl font-bold mb-4 text-red-600">Ongoing Acquisition</h2>
+						<p className="mb-4">
+							An acquisition is currently running. If you stop it now, click on the Stop button.
+						</p>
+						<div className="flex justify-end gap-4">
+							<TextButton
+								type="button"
+								size={"base"}
+								onClick={() => setShowCloseModal(false)}
+							>
+								Ok
+							</TextButton>
+						</div>
+					</div>
+				</div>
 			)}
 		</SenseLayout>
 	)

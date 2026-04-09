@@ -275,5 +275,10 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   },
   acquisitionError: async (sessionPath) => {
     return await ipcRenderer.invoke('acquisition-error', sessionPath);
-  }
+  },
+  onShowCloseWarning: (callback) => {
+    ipcRenderer.on('show-close-warning', callback);
+    return () => ipcRenderer.removeAllListeners('show-close-warning');
+  },
+  confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose)
 });

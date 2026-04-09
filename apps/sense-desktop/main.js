@@ -19,7 +19,6 @@ app.commandLine.appendSwitch("enable-experimental-web-platform-features");
 
 console.log(`FRAME_TIMING_LOGS: ${process.env.FRAME_TIMING_LOGS}`);
 console.log(`BUFFER_MANAGER_LOGS: ${process.env.BUFFER_MANAGER_LOGS}`);
-console.log(`TESTING_STORAGE: ${process.env.TESTING_STORAGE}`);
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -40,6 +39,13 @@ function createWindow() {
     },
   });
 
+  // Intercept window close to warn if acquisition is running
+  win.on('close', (e) => {
+    if (sessionFolder && sampleWriter) {
+      e.preventDefault();
+      win.webContents.send('show-close-warning');
+    }
+  });
   //win.webContents.openDevTools({ mode: "detach" });
 
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
@@ -94,6 +100,15 @@ app.whenReady().then(() => {
       _event.sender.send('chunk-write-complete', { saveTime, chunkIndex, final, filename });
     } else {
       console.error('[main] sampleWriter is undefined!');
+    }
+  });
+
+  ipcMain.on('confirm-close', (event, shouldClose) => {
+    if (shouldClose) {
+      console.log('[main] User confirmed close. Finalizing session and exiting.');  
+      if (sampleWriter) sampleWriter.finalizeSession();
+      sessionFolder = undefined;
+      BrowserWindow.getAllWindows().forEach(win => win.destroy());
     }
   });
 

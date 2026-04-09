@@ -14,6 +14,5 @@ declare global {
       updateSessionManifest?: (manifest: any) => void;
       loadAllChunks?: () => Promise<{ segments: any[][], meta: any }>;
     };
-    TESTING_STORAGE?: string;
   }
 }
