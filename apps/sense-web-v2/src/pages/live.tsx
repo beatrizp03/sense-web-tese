@@ -95,32 +95,26 @@ const Page = () => {
 
 	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
 	const animationFrameRef = useRef<number | null>(null);
-	// Only run RAF UI loop when acquiring or paused
-	useEffect(() => {
-		let running = false;
-		function updateUI() {
-			if (!running) return;
-			setGraphBuffer([...graphBufferRef.current]);
-			// Compute xDomain based on frameSequenceRef and graphBufferLimit
-			const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
-			const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
-			setXDomain([
-				frameSequenceRef.current - graphBufferLimit,
-				frameSequenceRef.current
-			]);
-			animationFrameRef.current = requestAnimationFrame(updateUI);
-		}
-		if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
-			running = true;
-			animationFrameRef.current = requestAnimationFrame(updateUI);
-		}
-		return () => {
-			running = false;
-			if (animationFrameRef.current !== null) {
-				cancelAnimationFrame(animationFrameRef.current);
-			}
-		};
-	}, [status]);
+	// Use setInterval to update the graph UI even when window is not focused
+    useEffect(() => {
+        let intervalId: NodeJS.Timeout | null = null;
+        function updateUI() {
+            setGraphBuffer([...graphBufferRef.current]);
+            // Compute xDomain based on frameSequenceRef and graphBufferLimit
+            const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
+            const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
+            setXDomain([
+                frameSequenceRef.current - graphBufferLimit,
+                frameSequenceRef.current
+            ]);
+        }
+        if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
+            intervalId = setInterval(updateUI, 100); // 10 FPS
+        }
+        return () => {
+            if (intervalId) clearInterval(intervalId);
+        };
+    }, [status]);
 
 
 	useEffect(() => {

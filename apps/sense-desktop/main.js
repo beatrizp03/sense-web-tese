@@ -36,6 +36,8 @@ function createWindow() {
       // enableBlinkFeatures: "Serial,WebBluetooth",
       // preload script exposes serial helpers
       preload: require("path").join(__dirname, "preload.js"),
+      // CRITICAL: Prevent Chromium from throttling timers/storage when window is backgrounded
+      backgroundThrottling: false,
     },
   });
 
