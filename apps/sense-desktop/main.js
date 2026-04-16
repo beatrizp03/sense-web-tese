@@ -3,8 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
 
-// Use external ChunkedDataWriter module
+// Use external modules
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
+const { BufferManager } = require('./dist/BufferManager.js');
+const { onChunkReady } = require('./dist/StorageSubscriber.js');
+// SessionManager for manifest/session logic
+const { SessionManager } = require('./src/SessionManager.js');
 
 // serial/USB only; BLE experimental code was removed to simplify the
 // desktop build.  Port enumeration is handled via the native bridge.
@@ -88,20 +92,27 @@ app.whenReady().then(() => {
     return response;
   });
 
-  // Listen for new samples from renderer process
-  // IPC handler for chunk writing
-  ipcMain.on('write-chunk', (_event, chunk) => {
-    if (sampleWriter) {
-      const start = Date.now();
-      const chunkIndex = sampleWriter.chunkIndex || 0;
-      const final = !!chunk.final;
-      sampleWriter.writeChunk(chunk);
-      const saveTime = Date.now() - start;
-      const filename = sampleWriter.getLastFilename ? sampleWriter.getLastFilename() : undefined;
-      // Send info object back to renderer, including filename
-      _event.sender.send('chunk-write-complete', { saveTime, chunkIndex, final, filename });
-    } else {
-      console.error('[main] sampleWriter is undefined!');
+  // IPC handler to flush BufferManager chunk (e.g., on pause/stop)
+  ipcMain.on('flush-chunk', (_event, { final }) => {
+    if (bufferManager && typeof bufferManager.flushChunk === 'function') {
+      bufferManager.flushChunk(!!final);
+    }
+  });
+
+  // IPC handler to read a chunk file by path (from renderer)
+  ipcMain.handle('read-chunk-file', async (_event, filePath) => {
+    try {
+      // If filePath is not absolute, resolve relative to session folder
+      let absPath = filePath;
+      if (!path.isAbsolute(filePath)) {
+        const folder = sessionFolder || lastSessionFolder;
+        absPath = path.join(folder, filePath);
+      }
+      const data = fs.readFileSync(absPath, 'utf-8');
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[read-chunk-file] Failed to read chunk file:', filePath, e);
+      return null;
     }
   });
 
@@ -114,20 +125,6 @@ app.whenReady().then(() => {
     }
   });
 
-  function parseBlePayload(buf) {
-    // BLE notifications deliver raw bytes from the device. the
-    // ScientISST hardware uses exactly the same framing protocol whether
-    // we read it over serial or BLE, so the application-side code already
-    // knows how to make sense of these bytes. the existing
-    // `ScientISSTFrameReader` (see packages/sense-api/src/future/readers)
-    // implements the parser used by sense-web-v2.
-    //
-    // here we simply timestamp and forward the unmodified byte stream
-    // to the renderer, leaving interpretation to whatever transport or
-    // frame reader the UI chooses to use.
-    return { ts: Date.now(), bytes: [...buf] };
-  }
-
   createWindow();
 });
 
@@ -135,13 +132,12 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Example: Instantiate ChunkedDataWriter in Electron main process
-// IPC handler to get current buffer size
-// Create a new subfolder named by recording start time (ISO string)
-let sampleWriter = undefined;
+// BufferManager/StorageSubscriber for main-process acquisition
+let bufferManager = null;
 let segmentNumber = 1;
 let sessionFolder = undefined;
 let lastSessionFolder = undefined;
+let sampleWriter = undefined;
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
   // Only create session folder if not already set (first acquisition)
@@ -162,10 +158,74 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
     outputDir: sessionFolder,
     baseFilename: `sample${segmentNumber}`
   });
+  // Instantiate BufferManager for this session
+  bufferManager = new BufferManager({ chunkSize });
+  // Subscribe StorageSubscriber to BufferManager for chunk writing
+  bufferManager.subscribeStorage(chunk => {
+    onChunkReady(chunk, (chunkToWrite) => {
+      const start = Date.now();
+      const chunkIndex = sampleWriter.chunkIndex || 0;
+      const segment = segmentNumber;
+      const final = !!chunkToWrite.final;
+      try {
+        sampleWriter.writeChunk(chunkToWrite, (filename) => {
+          // Now guaranteed the file is flushed and closed
+          if (filename && fs.existsSync(filename)) {
+            SessionManager.appendChunkRecord(filename, segment, final);
+            console.log(`[main] Chunk ${chunkIndex} for segment ${segment} written to ${filename} (final: ${final}).`);
+            console.log(`[main] manifest.chunks.length: ${SessionManager.manifest ? SessionManager.manifest.chunks.length : 'N/A'}`);
+            const saveTime = Date.now() - start;
+            BrowserWindow.getAllWindows().forEach(win => {
+              win.webContents.send('chunk-write-complete', { saveTime, chunkIndex, segment, final, filename });
+            });
+            if (bufferManager && typeof bufferManager.updateChunkThreshold === 'function') {
+              bufferManager.updateChunkThreshold(saveTime);
+            }
+          } else {
+            console.error(`[main] Chunk file missing or empty: ${filename}`);
+          }
+        });
+      } catch (err) {
+        console.error('[main] Error writing chunk:', err);
+      }
+    });
+  });
   if (process.env.BUFFER_MANAGER_LOGS === '1') {
     console.log(`[electron] Acquisition started. Folder: ${sessionFolder}, baseFilename: sample${segmentNumber}`);
   }
   return sessionFolder;
+});
+
+// IPC: Receive frames from renderer and ingest into BufferManager
+ipcMain.on('send-frame', (_event, frame) => {
+  if (bufferManager) {
+    bufferManager.ingest(frame);
+  }
+});
+
+// IPC handlers for session/manifest management
+ipcMain.handle('createSession', (_event, meta) => {
+  SessionManager.createSession(meta);
+});
+
+ipcMain.handle('registerSegment', (_event, segmentInfo) => {
+  SessionManager.registerSegment(segmentInfo);
+});
+
+ipcMain.handle('updateSessionMeta', (_event, patch) => {
+  SessionManager.updateSessionMeta(patch);
+});
+
+ipcMain.handle('updateSegmentEndedAt', (_event, index, endedAt) => {
+  SessionManager.updateSegmentEndedAt(index, endedAt);
+});
+
+ipcMain.handle('setChannelNames', (_event, names) => {
+  SessionManager.setChannelNames(names);
+});
+
+ipcMain.handle('finalizeSession', (_event, endedAt) => {
+  SessionManager.finalizeSession(endedAt);
 });
 
 // IPC handler to finalize chunk on acquisition error
@@ -250,6 +310,12 @@ ipcMain.on('set-buffer-size', (_event, size) => {
       console.log(`[electron] Updated chunk size: ${size}`);
     }
   }
+  if (bufferManager && typeof size === 'number') {
+    bufferManager.setChunkSize(size);
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[electron] Updated BufferManager chunk size: ${size}`);
+    }
+  }
 });
 
 // Listen for session finalization from renderer
@@ -276,7 +342,22 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
 
 // Example: Flush remaining samples on app exit
 app.on('before-quit', () => {
-  if (sampleWriter) {
-    sampleWriter.finalizeSession();
+  try {
+    if (sampleWriter) {
+      sampleWriter.finalizeSession();
+      // Wait briefly to ensure file handles are closed
+      const wait = ms => new Promise(res => setTimeout(res, ms));
+      wait(200);
+    }
+    // If you have a serial port or device, close it here
+    if (global.device && typeof global.device.close === 'function') {
+      try {
+        global.device.close();
+      } catch (err) {
+        console.error('[main] Error closing device:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[main] Error during before-quit cleanup:', err);
   }
 });

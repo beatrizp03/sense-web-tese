@@ -31,10 +31,6 @@ export class BufferManager {
           sampleRate * 10
         )
       );
-      // Notify Electron preload to update buffer size
-      if (typeof window !== 'undefined' && window.electronAPI?.setBufferSize) {
-        window.electronAPI.setBufferSize(this.storageChunkThreshold);
-      }
       if (process.env.BUFFER_MANAGER_LOGS === '1') {
         console.log(`[BufferManager] Updated chunk threshold: ${this.storageChunkThreshold} (saveTime: ${saveTime}ms)`);
       }
@@ -76,7 +72,6 @@ export class BufferManager {
   }
   setChunkSize(size: number) {
     this.storageChunkThreshold = size;
-    this.storageChunkBuffer = [];
   }
 
   startSession(meta?: SessionMeta) {

@@ -29,11 +29,7 @@ import CanvasChart from "../components/charts/CanvasChart"
 import SenseLayout from "../components/layout/SenseLayout"
 
 import { framePublisher } from "../../../sense-desktop/src/FramePublisher"
-import { BufferManager } from "../../../sense-desktop/src/BufferManager"
-import { SignalProcessor } from "../../../sense-desktop/src/SignalProcessor"
-import { onChunkReady } from '../../../sense-desktop/src/StorageSubscriber';
-import { onProcessingWindow } from '../../../sense-desktop/src/ProcessingSubscriber';
-import { SessionManager } from '../../../sense-desktop/src/SessionManager';
+
 
 enum STATUS {
 	DISCONNECTED,
@@ -61,8 +57,6 @@ const Page = () => {
 	const [channelGraphEnabled, setChannelGraphEnabled] = useState<Record<string, boolean>>({});
 	// Track all segments for summary export (for validation only)
 	const allSegmentsRef = useRef<any[][]>([]); // Only for LocalStorage validation
-	// Accumulates all frames for the current segment for summary export (for validation only)
-	const fullSessionFramesRef = useRef<any[]>([]); // Only for LocalStorage validation
 	// Dedicated buffer for ALL acquired frames (for export/summary, not throttled)
 	const fullAcquisitionBufferRef = useRef<any[]>([]);
 	const storeBufferThresholdRef = useRef(10000);
@@ -72,7 +66,7 @@ const Page = () => {
 	const isDark = useDarkTheme();
 
 	const deviceRef = useRef<Device | null>(null);
-	const bufferManagerRef = useRef<BufferManager | null>(null);
+	// BufferManager is now in main process
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
@@ -93,8 +87,6 @@ const Page = () => {
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
 
-	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
-	const animationFrameRef = useRef<number | null>(null);
 	// Use setInterval to update the graph UI even when window is not focused
     useEffect(() => {
         let intervalId: NodeJS.Timeout | null = null;
@@ -116,54 +108,42 @@ const Page = () => {
         };
     }, [status]);
 
-
 	useEffect(() => {
 		if (!window.electronAPI?.onChunkWriteComplete) return;
-
-		// Expect info: { saveTime: number, chunkIndex: number, final: boolean }
-		const unsubscribe = window.electronAPI.onChunkWriteComplete((info: { saveTime: number, chunkIndex: number, final: boolean, filename?: string }) => {
-			if (info && Number.isFinite(info.saveTime)) {
-				bufferManagerRef.current?.updateChunkThreshold?.(info.saveTime);
-			}
-			// Append chunk record to manifest
-			if (typeof SessionManager.appendChunkRecord === 'function') {
-				const file = info.filename || `sample${segmentRef.current}_chunk${info.chunkIndex}.json`;
-				const segment = segmentRef.current;
-				SessionManager.appendChunkRecord(file, segment, info.final);
-				if (typeof SessionManager._persistManifest === 'function') {
-					SessionManager._persistManifest();
-				}
-			}
+		const unsubscribe = window.electronAPI.onChunkWriteComplete((_info) => {
+			// Manifest update now handled in main process
 		});
-
 		return unsubscribe;
 	}, []);
+
 
 	useEffect(() => {
 		const finalizeStop = async () => {
 			if (status !== STATUS.STOPPED) return;
-
 			try {
-				const finalChunkPromise = new Promise<void>(resolve => {
+				window.electronAPI?.flushChunk?.(true);
+				await new Promise<void>(resolve => {
+					let resolved = false;
+					const timeout = setTimeout(() => {
+						if (!resolved) {
+							resolved = true;
+							unsubscribe?.();
+							resolve();
+						}
+					}, 200);
 					const unsubscribe = window.electronAPI?.onChunkWriteComplete?.(info => {
-						if (info?.final) {
+						if (info?.final && !resolved) {
+							resolved = true;
+							clearTimeout(timeout);
 							unsubscribe?.();
 							resolve();
 						}
 					});
 				});
-
-				bufferManagerRef.current?.flushChunk?.(true);
-				await finalChunkPromise;
-
-				if (fullSessionFramesRef.current.length > 0) {
-					allSegmentsRef.current.push([...fullSessionFramesRef.current]);
+				if (fullAcquisitionBufferRef.current.length > 0) {
+					allSegmentsRef.current.push([...fullAcquisitionBufferRef.current]);
 				}
-
-				SessionManager.finalizeSession(Date.now());
-
-				window.electronAPI?.finalizeSession?.();
-
+				window.electronAPI?.finalizeSession?.(Date.now());
 				setStatus(STATUS.STOPPED_AND_SAVED);
 				await router.push("/summary");
 			} catch (error) {
@@ -171,7 +151,6 @@ const Page = () => {
 				setStatus(STATUS.STOPPED_AND_SAVED);
 			}
 		};
-
 		finalizeStop();
 	}, [status, router]);
 	
@@ -182,11 +161,6 @@ const Page = () => {
 			} catch {}
 		});
 		subscriptionsRef.current = [];
-
-		if (bufferManagerRef.current) {
-			bufferManagerRef.current.reset?.();
-		}
-		bufferManagerRef.current = null;
 
 		frameSequenceRef.current = 0;
 		graphBufferRef.current = [];
@@ -200,28 +174,9 @@ const Page = () => {
 	}, []);
 
 
-	const writeChunkToElectron = useCallback(
-		(chunk: any) => {
-			if (!chunk) return;
-			try {
-				if (window.electronAPI?.writeChunk) {
-					window.electronAPI.writeChunk(chunk);
-				} else if (window.electronAPI?.sendSample) {
-					// Support chunk objects with .frames property
-					const frames = Array.isArray(chunk?.frames) ? chunk.frames : (Array.isArray(chunk) ? chunk : []);
-					frames.forEach(frame => {
-						window.electronAPI?.sendSample?.({ type: "frame", value: frame });
-					});
-					window.electronAPI?.flushSamples?.();
-				}
-			} catch (error) {
-				console.error(error);
-				setStatus(STATUS.OUT_OF_STORAGE);
-			}
-		},
-		[]
-	);
 
+
+	// No BufferManager/StorageSubscriber in renderer; only UI pipeline
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
 			cleanupPipeline();
@@ -236,12 +191,6 @@ const Page = () => {
 			setXDomain([0, 0]);
 			setAcquisitionStarted(false);
 			acquisitionStartedRef.current = false;
-
-			bufferManagerRef.current = new BufferManager({
-				uiWindowSize: uiWindowSecondsRef.current * sampleRate,
-				processingWindowSize: processingWindowSecondsRef.current * sampleRate,
-				chunkSize: storeBufferThresholdRef.current
-			});
 
 			// Fast UI path: direct from FramePublisher
 			// Throttle UI updates and always accumulate all frames for export
@@ -288,55 +237,23 @@ const Page = () => {
 				}
 			});
 
-			// Storage + processing path: through BufferManager
-			const unsubscribeBufferManagerPublisher = framePublisher.subscribeFrame(frame => {
-				bufferManagerRef.current?.ingest(frame);
-			});
-
-			const unsubscribeStorage = bufferManagerRef.current?.subscribeStorage(chunk => {
-				onChunkReady(chunk, chunk => {
-					console.log("[onChunkReady] writing chunk to electron: ", chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0);
-					if (chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0) {
-						writeChunkToElectron(chunk);
-					}
-				});
-			});
-
-			const unsubscribeProcessing = bufferManagerRef.current?.subscribeProcessing(
-				window => {
-					onProcessingWindow(
-					window,
-					{
-						process: SignalProcessor.extractFeatures
-					},
-					_results => {
-						// optionally handle results
-					}
-				)
-				}
-			);
-
 			subscriptionsRef.current = [
-				unsubscribeUIPublisher,
-				unsubscribeBufferManagerPublisher,
-				unsubscribeStorage,
-				unsubscribeProcessing
-			].filter(Boolean) as Array<() => void>;
+				unsubscribeUIPublisher
+			];
 		},
-		[cleanupPipeline, writeChunkToElectron]
+		[cleanupPipeline]
 	);
 
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
 		if (!device) return;
-			// Update manifest/session.json (session metadata) via SessionManager only
-			SessionManager.updateSessionMeta({
-				segment: segmentRef.current,
-				channels: device.getChannels?.() ?? [],
-				sampleRate: device.getSamplingRate?.() || 1000,
-				deviceType: device instanceof Maker ? "maker" : "sense",
-				timestamp: Date.now()
-			});
+		window.electronAPI?.updateSessionMeta?.({
+			segment: segmentRef.current,
+			channels: device.getChannels?.() ?? [],
+			sampleRate: device.getSamplingRate?.() || 1000,
+			deviceType: device instanceof Maker ? "maker" : "sense",
+			timestamp: Date.now()
+		});
 	}, []);
 
 	const connect = useCallback(async () => {
@@ -430,28 +347,23 @@ const Page = () => {
 
 	const start = useCallback(async () => {
 		console.log("\n[start] Starting acquisition\n");
-		const device = deviceRef.current
-		if (!device) return
+		const device = deviceRef.current;
+		if (!device) return;
 
-		try {	
-			fullSessionFramesRef.current = [];
+		try {
 			allSegmentsRef.current = [];
 			fullAcquisitionBufferRef.current = [];
 
-			// cleanupPipeline is already called inside initializePipeline
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
-			// Start acquisition and get sessionFolder from Electron
 			const startTime = new Date().toISOString();
 			const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
 
-			// Get adcChars if available
 			const adcChars = device.getAdcCharacteristics?.() || {};
 
-			// Create session manifest at start with all metadata via SessionManager only
 			const now = Date.now();
-			SessionManager.createSession({
+			await window.electronAPI?.createSession?.({
 				sessionId: `${now}`,
 				startedAt: now,
 				deviceType: device instanceof Maker ? "maker" : "sense",
@@ -460,16 +372,10 @@ const Page = () => {
 				sessionFolder,
 				adcChars
 			});
-			SessionManager.registerSegment({
+			await window.electronAPI?.registerSegment?.({
 				index: segmentRef.current,
 				startedAt: now,
 				endedAt: null
-			});
-
-			bufferManagerRef.current?.startSession({
-				startedAt: Date.now(),
-				sampleRate,
-				segment: segmentRef.current
 			});
 
 			// Only set buffer size if valid
@@ -481,25 +387,23 @@ const Page = () => {
 
 			device.onFrames = data => {
 				if (data == null) return;
-				// Always pass every frame to BufferManager via framePublisher
+				// Always pass every frame to main process BufferManager via sendFrame
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
-					framePublisher.publishFrames(validFrames);
-					// Accumulate all frames for summary export (legacy)
-					fullSessionFramesRef.current.push(...validFrames);
-					// Accumulate all frames for export (new, not throttled)
-					fullAcquisitionBufferRef.current.push(...validFrames);
+					validFrames.forEach(frame => {
+						window.electronAPI?.sendFrame?.(frame);
+						// Publish to framePublisher for UI graph
+						framePublisher.publishFrame(frame);
+					});
 				} else {
+					window.electronAPI?.sendFrame?.(data);
 					framePublisher.publishFrame(data);
-					fullSessionFramesRef.current.push(data);
-					fullAcquisitionBufferRef.current.push(data);
 				}
 			};
 
 			device.onError = error => {
 				console.error(error);
-				// Flush any pending frames to disk before finalizing chunk
-				bufferManagerRef.current?.flushChunk?.(true);
+				// No BufferManager in renderer; main process handles chunking
 				if (window.electronAPI?.acquisitionError && sessionFolder) {
 					window.electronAPI.acquisitionError(sessionFolder);
 				}
@@ -518,35 +422,31 @@ const Page = () => {
 
 	const pause = useCallback(async () => {
 		console.log("\n[pause] Pausing acquisition\n");
-		if (!deviceRef.current) return
+		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
 			// ignore during controlled pause
-		}
+		};
 
 		try {
-			await deviceRef.current.stopAcquisition?.()
-			bufferManagerRef.current?.flushChunk?.(false)
+			await deviceRef.current.stopAcquisition?.();
+			window.electronAPI?.flushChunk?.(false);
 
-			// Update last segment's endedAt in manifest using API
 			const endedAt = Date.now();
-			SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
-			if (typeof SessionManager._persistManifest === 'function') {
-				SessionManager._persistManifest();
+			window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
+
+			if (fullAcquisitionBufferRef.current.length > 0) {
+				allSegmentsRef.current.push([...fullAcquisitionBufferRef.current]);
 			}
 
-			if (fullSessionFramesRef.current.length > 0) {
-				allSegmentsRef.current.push([...fullSessionFramesRef.current])
-			}
-
-			fullSessionFramesRef.current = []
-			setStatus(STATUS.PAUSED)
+			fullAcquisitionBufferRef.current = [];
+			setStatus(STATUS.PAUSED);
 		} catch (error) {
-			console.error(error)
+			console.error(error);
 			console.log("\n[pause] Error during pause, updating status\n");
-			setStatus(STATUS.CONNECTION_LOST)
+			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [])
+	}, []);
 
 	const resume = useCallback(async () => {
 		console.log("\n[resume] Resuming acquisition\n");
@@ -564,7 +464,6 @@ const Page = () => {
 		try {
 			segmentRef.current += 1;
 
-			// Reset UI window and buffers like live_web
 			frameSequenceRef.current = 0;
 			graphBufferRef.current = [];
 			channelsRef.current = [];
@@ -573,22 +472,12 @@ const Page = () => {
 			setXDomain([0, 0]);
 			setAcquisitionStarted(false);
 			acquisitionStartedRef.current = false;
-			fullSessionFramesRef.current = [];
+			fullAcquisitionBufferRef.current = [];
 
-			// Reset BufferManager for new segment
-			bufferManagerRef.current?.reset();
-			const now = Date.now();
-			bufferManagerRef.current?.startSession({
-				startedAt: now,
-				sampleRate: deviceRef.current.getSamplingRate?.() || 1000,
-				segment: segmentRef.current
-			});
-
-			// Electron chunk writer rollover: get new session folder/chunk base
 			await window.electronAPI?.startAcquisition?.(new Date().toISOString());
 
-			// Register new segment in manifest
-			SessionManager.registerSegment({
+			const now = Date.now();
+			await window.electronAPI?.registerSegment?.({
 				index: segmentRef.current,
 				startedAt: now,
 				endedAt: null
@@ -601,7 +490,7 @@ const Page = () => {
 			console.log("\n[resume] Error during resume, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [])
+	}, []);
 
 	const stop = useCallback(async () => {
 		console.log("\n[stop] Stopping acquisition\n");
@@ -612,7 +501,7 @@ const Page = () => {
 		};
 
 		setStatus(STATUS.STOPPING);
-		
+    
 		try {
 			await deviceRef.current.stopAcquisition?.();
 			await deviceRef.current.disconnect?.();
@@ -622,12 +511,8 @@ const Page = () => {
 			deviceRef.current = null;
 		}
 
-		// Update last segment's endedAt in manifest using API
 		const endedAt = Date.now();
-		SessionManager.updateSegmentEndedAt(segmentRef.current, endedAt);
-		if (typeof SessionManager._persistManifest === 'function') {
-			SessionManager._persistManifest();
-		}
+		window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
 
 		setStatus(STATUS.STOPPED);
 	}, []);
@@ -660,11 +545,10 @@ const Page = () => {
 		let removeCloseListener: (() => void) | undefined;
 		if (window.electronAPI?.onShowCloseWarning) {
 			removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
-				console.log("[onShowCloseWarning] Status: ", STATUS[status]);
+				// Always allow close, but show warning if acquiring/paused
 				if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
 					setShowCloseModal(true);
 				} else {
-					// If not acquiring, allow close
 					window.electronAPI?.confirmClose?.(true);
 				}
 			});
@@ -672,7 +556,9 @@ const Page = () => {
 		return () => {
 			removeCloseListener && removeCloseListener();
 		};
-	}, [status]);
+		// Only set up once on mount, always check latest status in handler
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 
 	return (
 		<SenseLayout
@@ -752,13 +638,13 @@ const Page = () => {
 							(acc, channel) => {
 							acc[channel] = channel || "";
 							return acc;
-							},
-							{} as Record<string, string>
-						)
+						},
+						{} as Record<string, string>
+					)
 					}}
 					onSubmit={async values => {
 						const { channelName } = values;
-						SessionManager.setChannelNames(channelName);
+						window.electronAPI?.setChannelNames?.(channelName);
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">
@@ -775,7 +661,6 @@ const Page = () => {
 											placeholder={channel}
 										/>
 										<TextButton
-											type="button"
 											size={"base"}
 											onClick={() => setChannelGraphEnabled(prev => ({ ...prev, [channel]: !enabled }))}
 										>
@@ -820,17 +705,19 @@ const Page = () => {
 				</Formik>
 			)}
 			{showCloseModal && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
 					<div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 max-w-md w-full opacity-100">
 						<h2 className="text-xl font-bold mb-4 text-red-600">Ongoing Acquisition</h2>
 						<p className="mb-4">
-							An acquisition is currently running. If you stop it now, click on the Stop button.
+							An acquisition is currently running. If you want to close the tab, please stop the acquisition first.
 						</p>
 						<div className="flex justify-end gap-4">
 							<TextButton
-								type="button"
 								size={"base"}
-								onClick={() => setShowCloseModal(false)}
+								onClick={() => {
+									setShowCloseModal(false);
+									window.electronAPI?.confirmClose?.(false);
+								}}
 							>
 								Ok
 							</TextButton>

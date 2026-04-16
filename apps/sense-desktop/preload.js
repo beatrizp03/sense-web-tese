@@ -231,6 +231,10 @@ async function closeSerialPort(path) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge methods
+  // Read a chunk file by absolute path (returns parsed JSON)
+  readChunkFile: async (filePath) => {
+    return await ipcRenderer.invoke('read-chunk-file', filePath);
+  },
   listSerialPorts: listPorts,
   requestPort: choosePort,
   writeSerialPort: async (path, data) => {
@@ -253,10 +257,19 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
     return await ipcRenderer.invoke('start-acquisition', startTime);
   },
   stopAcquisition: () => ipcRenderer.send('stop-acquisition'),
-  writeChunk: (chunk) => ipcRenderer.send('write-chunk', chunk),
-  finalizeSession: () => ipcRenderer.send('finalize-session'),
-  flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
+  // Remove legacy writeChunk and flushSamples APIs
+  finalizeSession: (endedAt) => ipcRenderer.invoke('finalizeSession', endedAt),
+  // Session/manifest management
+  createSession: (meta) => ipcRenderer.invoke('createSession', meta),
+  registerSegment: (segmentInfo) => ipcRenderer.invoke('registerSegment', segmentInfo),
+  updateSessionMeta: (patch) => ipcRenderer.invoke('updateSessionMeta', patch),
+  updateSegmentEndedAt: (index, endedAt) => ipcRenderer.invoke('updateSegmentEndedAt', index, endedAt),
+  setChannelNames: (names) => ipcRenderer.invoke('setChannelNames', names),
+  // New: flush BufferManager chunk in main process
+  flushChunk: (final = false) => ipcRenderer.send('flush-chunk', { final }),
   setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
+  // Send a frame to main process BufferManager
+  sendFrame: (frame) => ipcRenderer.send('send-frame', frame),
   // Listen for chunk write completion (info object)
   onChunkWriteComplete: (cb) => {
     ipcRenderer.on('chunk-write-complete', (_event, info) => cb(info));

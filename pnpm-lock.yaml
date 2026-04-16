@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@scientisst/sense':
+        specifier: ^2.0.2
+        version: 2.0.2
     devDependencies:
       '@scientisst/eslint-config-next':
         specifier: workspace:*
@@ -1373,6 +1377,9 @@ packages:
 
   '@scientisst/sense@1.3.2':
     resolution: {integrity: sha512-xW2dY/+ulYAl2nWkE52eM9q8sMtxFv+TUzNeVgYHNiqQxnT6l1cv1Vmbgdy6RLpifFxpKRr1jZR1X7/ENOPOzQ==}
+
+  '@scientisst/sense@2.0.2':
+    resolution: {integrity: sha512-74QlefTYThpwZ9J+lds6MHHYJSHUQl/amBMcnP/eM60pcJlVSndbc98J5TstG54H13OdJokUOKYmkt3nj0IDSA==}
 
   '@serialport/binding-mock@10.2.2':
     resolution: {integrity: sha512-HAFzGhk9OuFMpuor7aT5G1ChPgn5qSsklTFOTUX72Rl6p0xwcSVsRtG/xaGp6bxpN7fI9D/S8THLBWbBgS6ldw==}
@@ -7853,6 +7860,8 @@ snapshots:
       tailwindcss: 3.4.19
 
   '@scientisst/sense@1.3.2': {}
+
+  '@scientisst/sense@2.0.2': {}
 
   '@serialport/binding-mock@10.2.2':
     dependencies:

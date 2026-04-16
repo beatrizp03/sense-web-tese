@@ -44,9 +44,6 @@ const addSvgToPDF = async (
 	canvas.remove()
 }
 
-
-
-
 const Page = () => {
 	const router = useRouter();
 	const [chunkSegments, setChunkSegments] = useState<any[][]>([]);
@@ -137,17 +134,18 @@ const Page = () => {
 	}, [manifest, chunkSegments]);
 
 
-	// Only redirect to home if all attempts fail and still no data
+	// Show a user-friendly message if all attempts fail and still no data
+	const [noData, setNoData] = useState(false);
 	useEffect(() => {
 		if (!loading && loadAttempts >= MAX_ATTEMPTS && (!segmentChunkMap.length || segmentChunkMap.every(entry => !entry.chunk || entry.chunk.length === 0))) {
-			router.push("/");
+			setNoData(true);
 		}
-	}, [loading, segmentChunkMap, router, loadAttempts]);
+	}, [loading, segmentChunkMap, loadAttempts]);
 
 	// Use chunkSegments and manifest for CSV export
 
-	const convertToCSV = useCallback(() => {
-		// Use manifest/chunk files as source of truth
+	const convertToCSV = useCallback(async () => {
+		// Use manifest/chunk files as source of truth, but stream chunk files one by one
 		let channels = manifest.channels || [];
 		let deviceType = manifest.deviceType;
 		let storedChannelNames = manifest.channelNames || {};
@@ -158,8 +156,8 @@ const Page = () => {
 			alert("Missing or incomplete manifest/session metadata.");
 			return;
 		}
-		if (!segmentChunkMap.length || segmentChunkMap.every(entry => !entry.chunk || entry.chunk.length === 0)) {
-			alert("No chunk data found. Export aborted.");
+		if (!manifest.chunks || manifest.chunks.length === 0) {
+			alert("No chunk files found in manifest. Export aborted.");
 			return;
 		}
 		if (deviceType !== "sense" && deviceType !== "maker") {
@@ -169,18 +167,21 @@ const Page = () => {
 
 		const zip = new JSZip();
 		let firstTimestamp = 0;
-
-		for (let i = 0; i < segmentChunkMap.length; i++) {
-			const { segment, chunk } = segmentChunkMap[i];
-			if (!segment || !chunk || chunk.length === 0) continue;
+		// Group chunk files by segment
+		const segmentFiles = {};
+		for (const chunkRec of manifest.chunks) {
+			if (!segmentFiles[chunkRec.segment]) segmentFiles[chunkRec.segment] = [];
+			segmentFiles[chunkRec.segment].push(chunkRec.file);
+		}
+		// For each segment, process chunk files sequentially
+		for (const [segmentIdx, files] of Object.entries(segmentFiles)) {
+			const segment = segmentsMeta.find(s => s.index == segmentIdx);
 			const fileContent = [];
-			const frames = chunk;
 			const resolutionBits = [];
 			for (let j = 0; j < channels.length; j++) {
 				resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
 			}
-			// Use segment.startedAt for timestamp
-			const timestamp = new Date(segment.startedAt || 0);
+			const timestamp = new Date(segment?.startedAt || 0);
 			if (firstTimestamp === 0) {
 				firstTimestamp = timestamp.getTime();
 			}
@@ -202,24 +203,34 @@ const Page = () => {
 					.map(channel => storedChannelNames[channel] ?? channel)
 					.join(",")
 			);
-			for (let j = 0; j < frames.length; j++) {
-				const frameContent = [];
-				frameContent.push(frames[j].sequence);
-				for (let k = 0; k < channels.length; k++) {
-					frameContent.push(frames[j].channels[channels[k]]);
+			// For each chunk file in this segment, load and stream frames
+			for (const chunkFile of files) {
+				try {
+					// Use Electron API to read chunk file from disk
+					const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
+					const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
+					for (let j = 0; j < frames.length; j++) {
+						const frameContent = [];
+						frameContent.push(frames[j].sequence);
+						for (let k = 0; k < channels.length; k++) {
+							frameContent.push(frames[j].channels[channels[k]]);
+						}
+						fileContent.push(frameContent.join(","));
+					}
+				} catch (e) {
+					console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
 				}
-				fileContent.push(frameContent.join(","));
 			}
-			zip.file(`segment_${i + 1}.csv`, fileContent.join("\n"));
+			zip.file(`segment_${segmentIdx}.csv`, fileContent.join("\n"));
 		}
 		if (firstTimestamp === 0) {
 			firstTimestamp = new Date().getTime();
 		}
 		const timestampISO = new Date(firstTimestamp).toISOString();
 		zip.generateAsync({ type: "blob" }).then(content => {
-				FileSaver.saveAs(content, `${timestampISO}.zip`);
+			FileSaver.saveAs(content, `${timestampISO}.zip`);
 		});
-	}, [segmentChunkMap, manifest]);
+	}, [manifest]);
 
 	const convertToPDF = useCallback(async () => {
 		const pdf = new JsPDF({
@@ -646,6 +657,11 @@ const Page = () => {
 			>
 				{loading ? (
 					<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
+				) : noData ? (
+					<div className="text-red-600 text-center text-base border border-red-300 rounded p-4 bg-red-50 max-w-full">
+						<b>No valid acquisition data found.</b>
+						<div className="mt-2 text-xs">No chunk files with data were found for this session. Please check your acquisition and try again.</div>
+					</div>
 				) : (
 					<>
 						<span>End of acquisition!</span>

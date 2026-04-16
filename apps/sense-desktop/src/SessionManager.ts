@@ -1,5 +1,5 @@
 // SessionManager: handles session metadata and segment persistence
-import { MakerFrame, ScientISSTFrame } from "@scientisst/sense/future"
+import { ScientISSTFrame } from "@scientisst/sense/future"
 
 export class SessionManager {
   // Disk-backed session manifest path (set on create/load)
