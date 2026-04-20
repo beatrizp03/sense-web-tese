@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { useRouter } from "next/router"
 
@@ -46,105 +46,61 @@ const addSvgToPDF = async (
 
 const Page = () => {
 	const router = useRouter();
-	const [chunkSegments, setChunkSegments] = useState<any[][]>([]);
 	const [manifest, setManifest] = useState<any>({});
 	const [loading, setLoading] = useState(true);
-	const [segmentChunkMap, setSegmentChunkMap] = useState<any[]>([]);
-	const [mappingWarnings, setMappingWarnings] = useState<string[]>([]);
-
-
-	// Retry logic for loading chunk files and manifest
 	const [loadAttempts, setLoadAttempts] = useState(0);
 	const MAX_ATTEMPTS = 8;
-	const RETRY_DELAY_MS = 250;
 
+	// Sequential retry: wait for session.json to be written before giving up
 	useEffect(() => {
-		let cancelled = false;
-		async function loadChunks() {
-			if (typeof window !== 'undefined' && window.electronAPI?.loadAllChunks) {
+		let mounted = true;
+		async function tryLoad() {
+			if (typeof window === 'undefined' || !window.electronAPI?.loadAllChunks) {
+				if (mounted) setLoading(false);
+				return;
+			}
+			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+				if (!mounted) return;
+				setLoadAttempts(attempt);
 				try {
-					const { segments, meta } = await window.electronAPI.loadAllChunks();
-					if (!cancelled) {
-						setChunkSegments(segments);
+					const { meta } = await window.electronAPI.loadAllChunks();
+					if (!mounted) return;
+					if (meta) {
 						setManifest(meta);
 						setLoading(false);
+						return;
 					}
 				} catch (e) {
-					// ignore, will retry
+					// session.json may not be written yet, retry
 				}
-			} else {
-				setLoading(false);
+				await new Promise(res => setTimeout(res, 1000));
 			}
+			if (mounted) setLoading(false);
 		}
-		if (loadAttempts < MAX_ATTEMPTS) {
-			loadChunks();
-			const timeout = setTimeout(() => setLoadAttempts(a => a + 1), RETRY_DELAY_MS);
-			return () => {
-				cancelled = true;
-				clearTimeout(timeout);
-			};
-		} else {
-			setLoading(false);
-		}
-	}, [loadAttempts]);
+		tryLoad();
+		return () => { mounted = false; };
+	}, []);
 
-	// Robustly map manifest.segments to chunkSegments by startedAt (or fallback to index)
-	useEffect(() => {
-		if (!manifest || !Array.isArray(manifest.segments) || !Array.isArray(chunkSegments)) {
-			setSegmentChunkMap([]);
-			setMappingWarnings([]);
-			return;
-		}
-		const segmentsMeta = manifest.segments;
-		// Build a map from chunk group to segment by startedAt (if available)
-		// Assume chunkSegments[i] corresponds to segmentsMeta[i] if no better key
-		// If chunkSegments have meta info, use it; else, rely on order
-		// Warn if lengths mismatch
+	const noData = !loading && !manifest?.chunks?.length;
+
+	// Warnings derived from manifest alone — no frame data needed
+	const mappingWarnings = useMemo(() => {
+		if (!Array.isArray(manifest?.segments) || !Array.isArray(manifest?.chunks)) return [];
 		const warnings: string[] = [];
-		let map: { segment: any, chunk: any[], index: number }[] = [];
-		if (segmentsMeta.length !== chunkSegments.length) {
-			warnings.push(`Mismatch: manifest.segments (${segmentsMeta.length}) vs chunk groups (${chunkSegments.length}). Some data may be missing or extra.`);
-		}
-		// Try to match by startedAt if possible
-		// If chunkSegments have meta, use it; else, fallback to index
-		// For now, fallback to index, but validate startedAt if present
-		for (let i = 0; i < Math.max(segmentsMeta.length, chunkSegments.length); i++) {
-			const segment = segmentsMeta[i];
-			const chunk = chunkSegments[i];
-			// Optionally, check for startedAt alignment if chunk has meta
-			if (segment && chunk && Array.isArray(chunk) && chunk.length > 0) {
-				// If chunk[0] has a timestamp, compare to segment.startedAt
-				if (segment.startedAt && chunk[0]?.timestamp) {
-					const dt = Math.abs(new Date(segment.startedAt).getTime() - new Date(chunk[0].timestamp).getTime());
-					if (dt > 10000) { // 10s tolerance
-						warnings.push(`Segment ${i + 1}: startedAt in manifest and first chunk frame timestamp differ by >10s.`);
-					}
-				}
-				map.push({ segment, chunk, index: i });
-			} else if (segment && (!chunk || !Array.isArray(chunk) || chunk.length === 0)) {
-				warnings.push(`Segment ${i + 1}: Manifest segment present but no chunk data found.`);
-				map.push({ segment, chunk: [], index: i });
-			} else if (!segment && chunk && Array.isArray(chunk) && chunk.length > 0) {
-				warnings.push(`Chunk group ${i + 1}: Chunk data present but no manifest segment found.`);
-				map.push({ segment: null, chunk, index: i });
+		const chunksBySegment: Record<number, number> = {};
+		manifest.chunks.forEach((c: any) => {
+			chunksBySegment[c.segment] = (chunksBySegment[c.segment] || 0) + 1;
+		});
+		manifest.segments.forEach((seg: any, i: number) => {
+			if (!chunksBySegment[seg.index]) {
+				warnings.push(`Segment ${i + 1}: manifest segment present but no chunk data found.`);
 			}
-		}
-		setSegmentChunkMap(map);
-		setMappingWarnings(warnings);
-	}, [manifest, chunkSegments]);
-
-
-	// Show a user-friendly message if all attempts fail and still no data
-	const [noData, setNoData] = useState(false);
-	useEffect(() => {
-		if (!loading && loadAttempts >= MAX_ATTEMPTS && (!segmentChunkMap.length || segmentChunkMap.every(entry => !entry.chunk || entry.chunk.length === 0))) {
-			setNoData(true);
-		}
-	}, [loading, segmentChunkMap, loadAttempts]);
-
-	// Use chunkSegments and manifest for CSV export
+		});
+		return warnings;
+	}, [manifest]);
 
 	const convertToCSV = useCallback(async () => {
+		const csvExportStart = Date.now();
 		// Use manifest/chunk files as source of truth, but stream chunk files one by one
 		let channels = manifest.channels || [];
 		let deviceType = manifest.deviceType;
@@ -229,10 +185,12 @@ const Page = () => {
 		const timestampISO = new Date(firstTimestamp).toISOString();
 		zip.generateAsync({ type: "blob" }).then(content => {
 			FileSaver.saveAs(content, `${timestampISO}.zip`);
+			window.electronAPI?.logPerfEvent?.('csv_export', Date.now() - csvExportStart);
 		});
 	}, [manifest]);
 
 	const convertToPDF = useCallback(async () => {
+		const pdfExportStart = Date.now();
 		const pdf = new JsPDF({
 			orientation: "landscape",
 			unit: "mm",
@@ -288,21 +246,25 @@ const Page = () => {
 		pdf.addFileToVFS("Lexend-Light.ttf", lexendLightFontBase64)
 		pdf.addFont("Lexend-Light.ttf", "Lexend", "light")
 
-		// Use manifest/chunk files as source of truth
-		let channels = manifest.channels || [];
-		let segmentCount = chunkSegments.length;
-		let deviceType = manifest.deviceType;
-		let storedChannelNames = manifest.channelNames || {};
-		let frames = chunkSegments[segmentCount - 1] || [];
-		let segmentsMeta = manifest.segments || [];
-		let samplingRate = manifest.sampleRate;
-		// Use manifest.segments[segmentCount-1]?.startedAt for timestamp
-		let timestamp = new Date((segmentsMeta[segmentCount - 1] && segmentsMeta[segmentCount - 1].startedAt) || 0);
+		// Use manifest as source of truth
+		const channels = manifest.channels || [];
+		const segmentsMeta = manifest.segments || [];
+		const segmentCount = segmentsMeta.length;
+		const deviceType = manifest.deviceType;
+		const storedChannelNames = manifest.channelNames || {};
+		const samplingRate = manifest.sampleRate;
+		const timestamp = new Date((segmentsMeta[segmentCount - 1]?.startedAt) || 0);
+		const lastSampleNum = segmentsMeta[segmentCount - 1]?.index ?? segmentCount;
 
 		if (!channels.length || !deviceType || !samplingRate) {
 			alert("Missing or incomplete manifest/session metadata.");
 			return;
 		}
+
+		// Load only the last 10 seconds of frames needed for the chart preview
+		const svgWidth = samplingRate * 10;
+		const frames = await window.electronAPI?.loadPreviewFrames?.(lastSampleNum, svgWidth) ?? [];
+
 		if (!frames || frames.length === 0) {
 			alert("No frames found. Export aborted.");
 			return;
@@ -646,7 +608,8 @@ const Page = () => {
 
 		const timestampISO = new Date(timestamp).toISOString()
 		pdf.save(`${timestampISO}.pdf`)
-	}, [chunkSegments, manifest])
+		window.electronAPI?.logPerfEvent?.('pdf_export', Date.now() - pdfExportStart);
+	}, [manifest])
 
 
 		return (

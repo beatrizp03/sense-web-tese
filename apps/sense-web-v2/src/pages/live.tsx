@@ -120,6 +120,7 @@ const Page = () => {
 	useEffect(() => {
 		const finalizeStop = async () => {
 			if (status !== STATUS.STOPPED) return;
+			const stopTime = Date.now();
 			try {
 				window.electronAPI?.flushChunk?.(true);
 				await new Promise<void>(resolve => {
@@ -143,7 +144,8 @@ const Page = () => {
 				if (fullAcquisitionBufferRef.current.length > 0) {
 					allSegmentsRef.current.push([...fullAcquisitionBufferRef.current]);
 				}
-				window.electronAPI?.finalizeSession?.(Date.now());
+				window.electronAPI?.logPerfEvent?.('acquisition_end', Date.now() - stopTime);
+				await window.electronAPI?.finalizeSession?.(Date.now());
 				setStatus(STATUS.STOPPED_AND_SAVED);
 				await router.push("/summary");
 			} catch (error) {
@@ -302,7 +304,9 @@ const Page = () => {
 					throw new Error("Device type not supported.")
 			}
 
+			const connectStart = Date.now();
 			await deviceRef.current.connect()
+			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
 			setFirmwareVersion(
@@ -350,6 +354,7 @@ const Page = () => {
 		const device = deviceRef.current;
 		if (!device) return;
 
+		const startAcqTime = Date.now();
 		try {
 			allSegmentsRef.current = [];
 			fullAcquisitionBufferRef.current = [];
@@ -412,6 +417,7 @@ const Page = () => {
 			};
 
 			await device.startAcquisition?.();
+			window.electronAPI?.logPerfEvent?.('acquisition_start', Date.now() - startAcqTime);
 			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
 			console.error(error);
@@ -422,6 +428,7 @@ const Page = () => {
 
 	const pause = useCallback(async () => {
 		console.log("\n[pause] Pausing acquisition\n");
+		const pauseTime = Date.now();
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
@@ -440,6 +447,7 @@ const Page = () => {
 			}
 
 			fullAcquisitionBufferRef.current = [];
+			window.electronAPI?.logPerfEvent?.('acquisition_pause', Date.now() - pauseTime);
 			setStatus(STATUS.PAUSED);
 		} catch (error) {
 			console.error(error);
@@ -450,6 +458,7 @@ const Page = () => {
 
 	const resume = useCallback(async () => {
 		console.log("\n[resume] Resuming acquisition\n");
+		const resumeTime = Date.now();
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = error => {
@@ -484,6 +493,7 @@ const Page = () => {
 			});
 
 			await deviceRef.current.startAcquisition?.();
+			window.electronAPI?.logPerfEvent?.('acquisition_resume', Date.now() - resumeTime);
 			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
 			console.error(error);
@@ -519,11 +529,14 @@ const Page = () => {
 
 	useEffect(() => {
 		return () => {
-			cleanupPipeline()
-			deviceRef.current?.disconnect?.().catch(() => {
-				// ignore cleanup errors
-			})
-		}
+			cleanupPipeline();
+			deviceRef.current?.disconnect?.().catch(() => {});
+			// Reset main-process session state when navigating away.
+			// If finalizeSession was already called (normal stop flow), this is a no-op.
+			// If the user left without stopping, this ensures the next acquisition
+			// gets a fresh session folder instead of continuing the abandoned one.
+			window.electronAPI?.resetSession?.();
+		};
 	}, [cleanupPipeline])
 
 	const xTickFormatter = useCallback((value: number) => {
@@ -540,25 +553,35 @@ const Page = () => {
 
 	const [showCloseModal, setShowCloseModal] = useState(false);
 
+	// Ref so event handlers always see the latest status without stale closures
+	const statusRef = useRef(status);
+	useEffect(() => { statusRef.current = status; }, [status]);
+
+	// Electron X button: warn if acquiring, else allow close
 	useEffect(() => {
-		// Listen for Electron close (X) event
-		let removeCloseListener: (() => void) | undefined;
-		if (window.electronAPI?.onShowCloseWarning) {
-			removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
-				// Always allow close, but show warning if acquiring/paused
-				if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
-					setShowCloseModal(true);
-				} else {
-					window.electronAPI?.confirmClose?.(true);
-				}
-			});
-		}
-		return () => {
-			removeCloseListener && removeCloseListener();
+		if (!window.electronAPI?.onShowCloseWarning) return;
+		const removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
+			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
+				setShowCloseModal(true);
+			} else {
+				window.electronAPI?.confirmClose?.(true);
+			}
+		});
+		return removeCloseListener;
+	}, []); // set up once — statusRef always has the latest value
+
+	// In-app navigation (home button): block if acquiring or paused
+	useEffect(() => {
+		const handleRouteChange = (url: string) => {
+			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
+				setShowCloseModal(true);
+				router.events.emit('routeChangeError', 'aborted', url);
+				throw 'Navigation blocked during acquisition.';
+			}
 		};
-		// Only set up once on mount, always check latest status in handler
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+		router.events.on('routeChangeStart', handleRouteChange);
+		return () => { router.events.off('routeChangeStart', handleRouteChange); };
+	}, [router.events]);
 
 	return (
 		<SenseLayout
@@ -630,7 +653,7 @@ const Page = () => {
 			{status === STATUS.OUT_OF_STORAGE && (
 				<span>Ran out of local storage!</span>
 			)}
-			{status === STATUS.ACQUIRING && (
+			{status === STATUS.ACQUIRING && channels.length > 0 && (
 				<Formik
 					enableReinitialize
 					initialValues={{
@@ -662,7 +685,7 @@ const Page = () => {
 										/>
 										<TextButton
 											size={"base"}
-											onClick={() => setChannelGraphEnabled(prev => ({ ...prev, [channel]: !enabled }))}
+											onClick={(e) => { e.preventDefault(); setChannelGraphEnabled(prev => ({ ...prev, [channel]: !enabled })); }}
 										>
 											{enabled ? "Disable" : "Enable"}
 										</TextButton>

@@ -10,13 +10,20 @@ declare global {
       onSerialData?: (path: string, cb: (data: Uint8Array) => void) => () => void;
       startAcquisition?: (startTime: string) => Promise<string>;
       stopAcquisition?: () => void;
-      finalizeSession?: () => void;
+      finalizeSession?: (endedAt: number) => Promise<void>;
       flushChunk?: (final?: boolean) => void;
       setBufferSize?: (size: number) => void;
       sendFrame?: (frame: any) => void;
       onChunkWriteComplete?: (callback: (info: { saveTime: number, chunkIndex: number, final: boolean, filename?: string }) => void) => () => void;
       updateSessionManifest?: (manifest: any) => void;
-      loadAllChunks?: () => Promise<{ segments: any[][], meta: any }>;
+      createSession?: (meta: any) => Promise<void>;
+      registerSegment?: (segmentInfo: any) => Promise<void>;
+      updateSessionMeta?: (patch: any) => Promise<void>;
+      updateSegmentEndedAt?: (index: number, endedAt: number) => Promise<void>;
+      setChannelNames?: (names: Record<string, string>) => Promise<void>;
+      readChunkFile?: (filePath: string) => Promise<any>;
+      loadAllChunks?: () => Promise<{ meta: any }>;
+      loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
       openSerialPort?: (path: string, options?: any) => Promise<void>;
       readSerialPort?: (path: string, bytes: number, timeout: number) => Promise<Uint8Array>;
       closeSerialPort?: (path: string) => Promise<void>;
@@ -25,6 +32,8 @@ declare global {
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
       confirmClose?: (shouldClose: boolean) => void;
+      resetSession?: () => void;
+      logPerfEvent?: (name: string, durationMs?: number) => void;
     };
   }
 }

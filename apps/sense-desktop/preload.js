@@ -6,6 +6,35 @@ const openPorts = new Map();
 // Only expose secure bridge APIs, no buffering or business logic
 const serialBuffers = {};
 const serialDataHandlers = new Map();
+const serialCloseHandlers = new Map();
+const serialErrorHandlers = new Map();
+
+function cleanupPortState(path, port) {
+  const target = port || openPorts.get(path);
+  if (target) {
+    const onData = serialDataHandlers.get(path);
+    if (onData) {
+      target.off("data", onData);
+      serialDataHandlers.delete(path);
+    }
+    const onClose = serialCloseHandlers.get(path);
+    if (onClose) {
+      target.off("close", onClose);
+      serialCloseHandlers.delete(path);
+    }
+    const onError = serialErrorHandlers.get(path);
+    if (onError) {
+      target.off("error", onError);
+      serialErrorHandlers.delete(path);
+    }
+  } else {
+    serialDataHandlers.delete(path);
+    serialCloseHandlers.delete(path);
+    serialErrorHandlers.delete(path);
+  }
+  openPorts.delete(path);
+  serialBuffers[path] = Buffer.alloc(0);
+}
 
 // run a PowerShell command to enumerate Bluetooth devices and
 // return a map from instance ID to friendly name. this allows us to
@@ -171,16 +200,27 @@ async function openSerialPort(path, options = {}) {
   const onData = (chunk) => {
     serialBuffers[path] = Buffer.concat([serialBuffers[path], chunk]);
   };
+  const onClose = () => cleanupPortState(path, port);
+  const onError = () => cleanupPortState(path, port);
   serialDataHandlers.set(path, onData);
+  serialCloseHandlers.set(path, onClose);
+  serialErrorHandlers.set(path, onError);
   port.on("data", onData);
-
-  port.removeAllListeners("error");
-  port.removeAllListeners("close");
+  port.on("close", onClose);
+  port.on("error", onError);
 
   return new Promise((resolve, reject) => {
     port.open((err) => {
-      if (err) reject(err);
-      else resolve();
+      if (err) {
+        cleanupPortState(path, port);
+        if (/1167/.test(err.message || "")) {
+          reject(new Error(`Opening ${path} failed: device is disconnected or unavailable (Windows 1167)`));
+          return;
+        }
+        reject(err);
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -210,24 +250,25 @@ async function readSerialPort(path, bytes, timeout) {
 
 async function closeSerialPort(path) {
   const port = openPorts.get(path);
-  if (!port) {
-    serialBuffers[path] = Buffer.alloc(0);
-    serialDataHandlers.delete(path);
-    return;
+  try {
+    if (port && port.isOpen) {
+      await new Promise((resolve, reject) => {
+        port.close(err => {
+          if (!err) {
+            resolve();
+            return;
+          }
+          if (/port is not open/i.test(err.message || "")) {
+            resolve();
+            return;
+          }
+          reject(err);
+        });
+      });
+    }
+  } finally {
+    cleanupPortState(path, port);
   }
-  // Remove listeners
-  const onData = serialDataHandlers.get(path);
-  if (onData) {
-    port.off("data", onData);
-    serialDataHandlers.delete(path);
-  }
-  port.removeAllListeners("error");
-  port.removeAllListeners("close");
-  await new Promise((resolve, reject) => {
-    port.close(err => err ? reject(err) : resolve());
-  });
-  openPorts.delete(path);
-  serialBuffers[path] = Buffer.alloc(0);
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge methods
@@ -241,8 +282,14 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
     const port = ensurePort(path);
     return new Promise((resolve, reject) => {
       port.write(Buffer.from(data), err => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          if (/port is not open/i.test(err.message || "")) {
+            cleanupPortState(path, port);
+          }
+          reject(err);
+          return;
+        }
+        resolve();
       });
     });
   },
@@ -277,7 +324,10 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   },
   updateSessionManifest: (manifest) => ipcRenderer.send('update-session-manifest', manifest),
   loadAllChunks: async () => {
-      return await ipcRenderer.invoke('load-all-chunks');
+    return await ipcRenderer.invoke('load-all-chunks');
+  },
+  loadPreviewFrames: async (sampleNum, frameCount) => {
+    return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
   },
   openSerialPort,
   readSerialPort,
@@ -293,5 +343,7 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
     ipcRenderer.on('show-close-warning', callback);
     return () => ipcRenderer.removeAllListeners('show-close-warning');
   },
-  confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose)
+  confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose),
+  resetSession: () => ipcRenderer.send('reset-session'),
+  logPerfEvent: (name, durationMs) => ipcRenderer.send('log-perf-event', { name, durationMs })
 });

@@ -9,6 +9,7 @@
     -   [Installing the Prerequisites](#installing-the-prerequisites)
     -   [Running the Development Environment](#running-the-development-environment)
     -   [Building the Repository](#building-the-repository)
+-   [sense-desktop (Electron Desktop App)](#sense-desktop)
 -   [Contributing](#contributing)
 -   [Disclaimer](#disclaimer)
 -   [Acknowledgements](#acknowledgements)
@@ -179,6 +180,44 @@ This command will build all of the applications and packages in the repository,
 creating a production-ready build that can be deployed to a live environment.
 The build artifacts will be stored in a directory within each application and
 package.
+
+# sense-desktop
+
+## Overview
+
+`sense-desktop` is the Electron-based desktop version of SENSE WEB. It wraps the `sense-web-v2` Next.js app, providing a native desktop experience for data acquisition, export, and device integration.
+
+## Requirements
+
+-   Node.js v20.20.0 or higher
+-   pnpm v10.30.1 or higher
+-   Windows, macOS, or Linux (tested on Windows)
+
+## Setup & Installation
+
+1. **Clone the repository and install dependencies:**
+   ```bash
+   git clone <repo-url>
+   cd sense-web-tese
+   git checkout electron-version
+   pnpm install
+   ```
+
+2. **Build the web app (sense-web-v2):**
+   This step is handled automatically when running the desktop app. No need to run or build `sense-web-v2` manually.
+
+3. **Run the Electron desktop app:**
+   ```bash
+   pnpm dev:desktop
+   ```
+
+   This command will start both the Next.js server and the Electron app in development mode. The Electron window will open automatically.
+
+## Notes
+
+-   You do **not** need to run `sense-web-v2` separately; the desktop app handles everything.
+-   All development and production builds are managed via pnpm scripts.
+-   For production builds, refer to the Electron and Next.js documentation for packaging and distribution.
 
 # Contributing
 

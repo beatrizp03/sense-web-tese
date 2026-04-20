@@ -9,6 +9,7 @@ const { BufferManager } = require('./dist/BufferManager.js');
 const { onChunkReady } = require('./dist/StorageSubscriber.js');
 // SessionManager for manifest/session logic
 const { SessionManager } = require('./src/SessionManager.js');
+const PerformanceLogger = require('./src/PerformanceLogger.js');
 
 // serial/USB only; BLE experimental code was removed to simplify the
 // desktop build.  Port enumeration is handled via the native bridge.
@@ -92,6 +93,11 @@ app.whenReady().then(() => {
     return response;
   });
 
+  // IPC handler to log a named event (with optional duration) from the renderer
+  ipcMain.on('log-perf-event', (_event, { name, durationMs }) => {
+    if (perfLogger) perfLogger.logEvent(name, durationMs);
+  });
+
   // IPC handler to flush BufferManager chunk (e.g., on pause/stop)
   ipcMain.on('flush-chunk', (_event, { final }) => {
     if (bufferManager && typeof bufferManager.flushChunk === 'function') {
@@ -138,12 +144,16 @@ let segmentNumber = 1;
 let sessionFolder = undefined;
 let lastSessionFolder = undefined;
 let sampleWriter = undefined;
+let perfLogger = null;
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
   // Only create session folder if not already set (first acquisition)
   if (!sessionFolder) {
     sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
     segmentNumber = 1;
+    // Start performance logging once per session (not on each resume)
+    perfLogger = new PerformanceLogger(path.join(sessionFolder, 'performance.csv'), 1000);
+    perfLogger.start();
   } else {
     // On resume, finalize previous writer before incrementing segmentNumber
     if (sampleWriter) {
@@ -226,6 +236,31 @@ ipcMain.handle('setChannelNames', (_event, names) => {
 
 ipcMain.handle('finalizeSession', (_event, endedAt) => {
   SessionManager.finalizeSession(endedAt);
+  // Acquisition is fully saved — clear the close guard so the window can close normally
+  if (sampleWriter) {
+    sampleWriter.finalizeSession();
+    sampleWriter = undefined;
+  }
+  // Keep perfLogger running for CSV/PDF exports on summary page
+  lastSessionFolder = sessionFolder;
+  sessionFolder = undefined;
+});
+
+// Called when live.tsx unmounts (navigation away or page close).
+// If the session was not properly finalized (user left without pressing Stop),
+// this resets main-process state so the next start-acquisition creates a new folder.
+ipcMain.on('reset-session', () => {
+  if (!sessionFolder) return; // already clean (finalizeSession was called normally)
+  console.log('[main] Session abandoned — resetting state for next acquisition');
+  if (sampleWriter) {
+    sampleWriter.finalizeSession();
+    sampleWriter = undefined;
+  }
+  if (perfLogger) { perfLogger.stop(); perfLogger = null; }
+  bufferManager = null;
+  lastSessionFolder = sessionFolder;
+  sessionFolder = undefined;
+  segmentNumber = 1;
 });
 
 // IPC handler to finalize chunk on acquisition error
@@ -258,47 +293,43 @@ ipcMain.on('update-session-manifest', (_event, manifest) => {
   }
 });
 
-// Handler to load all chunk files and manifest for summary/export
+// Handler to load manifest for summary page — no frame data, just session.json
 ipcMain.handle('load-all-chunks', async () => {
   const folder = sessionFolder || lastSessionFolder;
-  if (!folder) return { segments: [], meta: null };
+  if (!folder) return { meta: null };
   try {
     const manifestPath = path.join(folder, 'session.json');
     const meta = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    // Find all chunk files in the session folder
-    const files = fs.readdirSync(folder)
-      .filter(f => /^sample\d+_chunk\d+\.json$/.test(f))
-      .sort((a, b) => {
-        // Extract sample and chunk numbers
-        const matchA = a.match(/^sample(\d+)_chunk(\d+)\.json$/);
-        const matchB = b.match(/^sample(\d+)_chunk(\d+)\.json$/);
-        if (!matchA || !matchB) return a.localeCompare(b);
-        const sampleA = parseInt(matchA[1], 10);
-        const chunkA = parseInt(matchA[2], 10);
-        const sampleB = parseInt(matchB[1], 10);
-        const chunkB = parseInt(matchB[2], 10);
-        if (sampleA !== sampleB) return sampleA - sampleB;
-        return chunkA - chunkB;
-      });
-    // Group files by sample number (segment)
-    const segmentMap = new Map();
-    for (const f of files) {
-      const match = f.match(/^sample(\d+)_chunk(\d+)\.json$/);
-      if (!match) continue;
-      const sampleNum = parseInt(match[1], 10);
-      const chunkData = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf-8'));
-      const frames = Array.isArray(chunkData.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
-      if (!segmentMap.has(sampleNum)) segmentMap.set(sampleNum, []);
-      segmentMap.get(sampleNum).push(frames);
-    }
-    // For each segment, concatenate all its chunk frames in order
-    const segments = Array.from(segmentMap.keys()).sort((a, b) => a - b).map(sampleNum => {
-      return segmentMap.get(sampleNum).flat();
-    });
-    return { segments, meta };
+    return { meta };
   } catch (e) {
-    console.error('[load-all-chunks] Failed to load session:', e);
-    return { segments: [], meta: null };
+    console.error('[load-all-chunks] Failed to load session manifest:', e);
+    return { meta: null };
+  }
+});
+
+// Load only the last N frames from a specific sample number's chunks (for PDF preview)
+ipcMain.handle('load-preview-frames', async (_event, { sampleNum, frameCount }) => {
+  const folder = sessionFolder || lastSessionFolder;
+  if (!folder) return [];
+  try {
+    const files = fs.readdirSync(folder)
+      .filter(f => new RegExp(`^sample${sampleNum}_chunk\\d+\\.json$`).test(f))
+      .sort((a, b) => {
+        const nA = parseInt(a.match(/chunk(\d+)/)[1], 10);
+        const nB = parseInt(b.match(/chunk(\d+)/)[1], 10);
+        return nA - nB;
+      });
+    const frames = [];
+    // Read from the end until we have enough frames for the preview
+    for (let i = files.length - 1; i >= 0 && frames.length < frameCount; i--) {
+      const chunkData = JSON.parse(fs.readFileSync(path.join(folder, files[i]), 'utf-8'));
+      const chunkFrames = Array.isArray(chunkData.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
+      frames.unshift(...chunkFrames);
+    }
+    return frames.slice(-frameCount);
+  } catch (e) {
+    console.error('[load-preview-frames] Failed:', e);
+    return [];
   }
 });
 
@@ -345,6 +376,10 @@ app.on('before-quit', () => {
   try {
     if (sampleWriter) {
       sampleWriter.finalizeSession();
+      if (perfLogger) {
+        perfLogger.stop();
+        perfLogger = null;
+      }
       // Wait briefly to ensure file handles are closed
       const wait = ms => new Promise(res => setTimeout(res, ms));
       wait(200);
