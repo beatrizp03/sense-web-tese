@@ -10,6 +10,58 @@ const { onChunkReady } = require('./dist/StorageSubscriber.js');
 // SessionManager for manifest/session logic
 const { SessionManager } = require('./src/SessionManager.js');
 const PerformanceLogger = require('./src/PerformanceLogger.js');
+const SESSION_SETTINGS_HISTORY_FILE = 'session-settings-history.json';
+const MAX_SESSION_SETTINGS_HISTORY = 5;
+
+function getSessionSettingsHistoryPath() {
+  return path.join(app.getPath('userData'), SESSION_SETTINGS_HISTORY_FILE);
+}
+
+function normalizeSessionSettingsHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(item => item && typeof item === 'object' && item.settings)
+    .slice(0, MAX_SESSION_SETTINGS_HISTORY);
+}
+
+function getSettingsFingerprint(settings) {
+  if (!settings || typeof settings !== 'object') return '';
+  const channels = Array.isArray(settings.channels)
+    ? [...settings.channels].map(String).sort()
+    : [];
+
+  return JSON.stringify({
+    deviceType: settings.deviceType ?? null,
+    communication: settings.communication ?? null,
+    baudRate: settings.baudRate ?? null,
+    samplingRate: settings.samplingRate ?? null,
+    channels
+  });
+}
+
+function loadSessionSettingsHistoryFromDisk() {
+  try {
+    const historyPath = getSessionSettingsHistoryPath();
+    if (!fs.existsSync(historyPath)) return [];
+    const data = fs.readFileSync(historyPath, 'utf-8');
+    return normalizeSessionSettingsHistory(JSON.parse(data));
+  } catch (error) {
+    console.error('[main] Failed to load session settings history:', error);
+    return [];
+  }
+}
+
+function saveSessionSettingsHistoryToDisk(history) {
+  try {
+    const historyPath = getSessionSettingsHistoryPath();
+    const normalized = normalizeSessionSettingsHistory(history);
+    fs.writeFileSync(historyPath, JSON.stringify(normalized, null, 2));
+    return normalized;
+  } catch (error) {
+    console.error('[main] Failed to save session settings history:', error);
+    return [];
+  }
+}
 
 // serial/USB only; BLE experimental code was removed to simplify the
 // desktop build.  Port enumeration is handled via the native bridge.
@@ -232,6 +284,32 @@ ipcMain.handle('updateSegmentEndedAt', (_event, index, endedAt) => {
 
 ipcMain.handle('setChannelNames', (_event, names) => {
   SessionManager.setChannelNames(names);
+});
+
+ipcMain.handle('load-session-settings-history', () => {
+  return loadSessionSettingsHistoryFromDisk();
+});
+
+ipcMain.handle('save-session-settings-snapshot', (_event, snapshot) => {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return loadSessionSettingsHistoryFromDisk();
+  }
+
+  const history = loadSessionSettingsHistoryFromDisk();
+  const fingerprint = getSettingsFingerprint(snapshot.settings);
+  const alreadyExists = history.some(item => getSettingsFingerprint(item.settings) === fingerprint);
+  if (alreadyExists) {
+    return history;
+  }
+
+  const nextHistory = [snapshot, ...history]
+    .filter((item, index, all) => {
+      const key = `${item.id}-${item.savedAt}`;
+      return all.findIndex(candidate => `${candidate.id}-${candidate.savedAt}` === key) === index;
+    })
+    .slice(0, MAX_SESSION_SETTINGS_HISTORY);
+
+  return saveSessionSettingsHistoryToDisk(nextHistory);
 });
 
 ipcMain.handle('finalizeSession', (_event, endedAt) => {

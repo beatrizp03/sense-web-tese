@@ -27,6 +27,10 @@ import resolveConfig from "tailwindcss/resolveConfig"
 import tailwindConfig from "../../tailwind.config"
 import CanvasChart from "../components/charts/CanvasChart"
 import SenseLayout from "../components/layout/SenseLayout"
+import {
+	SessionSettings,
+	saveLastSessionSettingsPersistent
+} from "../utils/sessionSettingsHistory"
 
 import { framePublisher } from "../../../sense-desktop/src/FramePublisher"
 
@@ -48,6 +52,8 @@ enum STATUS {
 const fullConfig = resolveConfig(tailwindConfig)
 const lineColorLight = fullConfig.theme.colors["primary-light"]
 const lineColorDark = fullConfig.theme.colors["primary-dark"]
+const backgroundDarkColor =
+	(fullConfig.theme as any)?.colors?.["background-dark"] ?? "#1C1C1E"
 const outlineColorLight =
 	fullConfig.theme.colors["over-background-highest-light"]
 const outlineColorDark =
@@ -306,6 +312,7 @@ const Page = () => {
 
 			const connectStart = Date.now();
 			await deviceRef.current.connect()
+			await saveLastSessionSettingsPersistent(settings as SessionSettings)
 			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
@@ -729,7 +736,10 @@ const Page = () => {
 			)}
 			{showCloseModal && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-					<div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 max-w-md w-full opacity-100">
+					<div
+						className="rounded-lg shadow-lg p-8 max-w-md w-full text-white"
+						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
+					>
 						<h2 className="text-xl font-bold mb-4 text-red-600">Ongoing Acquisition</h2>
 						<p className="mb-4">
 							An acquisition is currently running. If you want to close the tab, please stop the acquisition first.

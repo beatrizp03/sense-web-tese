@@ -1,6 +1,13 @@
 // TypeScript global augmentation for Electron API
 export {};
 
+type SessionSettingsSnapshot = {
+  id: string;
+  label: string;
+  savedAt: number;
+  settings: Record<string, unknown>;
+};
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -34,6 +41,8 @@ declare global {
       confirmClose?: (shouldClose: boolean) => void;
       resetSession?: () => void;
       logPerfEvent?: (name: string, durationMs?: number) => void;
+      loadSessionSettingsHistory?: () => Promise<SessionSettingsSnapshot[]>;
+      saveSessionSettingsSnapshot?: (snapshot: SessionSettingsSnapshot) => Promise<SessionSettingsSnapshot[]>;
     };
   }
 }
