@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 
 import Image from "next/image"
 
+import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import { faToolbox, faWaveSquare } from "@fortawesome/free-solid-svg-icons"
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
 import {
@@ -24,6 +25,7 @@ import CoreTop from "../assets/boards/core-top.svg"
 import SenseLayout from "../components/layout/SenseLayout"
 import {
 	applySessionSettingsSnapshot,
+	clearLastSessionSettingsPersistent,
 	loadLastSessionSettingsPersistent,
 	SessionSettingsSnapshot
 } from "../utils/sessionSettingsHistory"
@@ -64,8 +66,13 @@ const primaryDarkColor =
 	(fullConfig.theme as any)?.colors?.["background-dark"] ?? "#1C1C1E"
 const backgroundAccentDarkColor =
 	(fullConfig.theme as any)?.colors?.["background-accent-dark"] ?? "#2C2C2E"
+const primaryLightColor =
+	(fullConfig.theme as any)?.colors?.["background-light"] ?? "#FFFFFF"
+const backgroundAccentLightColor =
+	(fullConfig.theme as any)?.colors?.["background-accent-light"] ?? "#F2F2F7"
 
 const Page = () => {
+	const isDark = useDarkTheme()
 	const [loaded, setLoaded] = useState(false)
 	const [showHistoryModal, setShowHistoryModal] = useState(false)
 	const [settingsHistory, setSettingsHistory] =
@@ -418,7 +425,7 @@ const Page = () => {
 								<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
 									<div
 										className="w-full max-w-xl rounded-lg p-6 shadow-lg"
-										style={{ backgroundColor: `${primaryDarkColor}E6` }}
+										style={{ backgroundColor: isDark ? `${primaryDarkColor}E6` : `${primaryLightColor}E6` }}
 									>
 										<h2 className="mb-3 text-xl font-bold">Last sessions' history</h2>
 										<p className="mb-4 text-sm opacity-80">
@@ -434,12 +441,21 @@ const Page = () => {
 														<button
 															type="button"
 															className="w-full transform-gpu cursor-pointer rounded-md px-4 py-3 text-left transition-transform duration-150 ease-out hover:scale-[0.98] active:scale-[0.97]"
-															style={{ backgroundColor: backgroundAccentDarkColor }}
+															style={{ backgroundColor: isDark ? backgroundAccentDarkColor : backgroundAccentLightColor }}
 															onClick={() => {
-																const nextValues = {
-																	...defaultValues,
-																	...applySessionSettingsSnapshot(snapshot)
+															const snapshotSettings = applySessionSettingsSnapshot(snapshot)
+															const nextValues = {
+																...defaultValues,
+																...snapshotSettings
+															}
+															
+															// Ensure required fields for Sense device
+															if ((snapshotSettings.deviceType ?? nextValues.deviceType) === "sense") {
+																if (!Array.isArray(nextValues.channels) || nextValues.channels.length === 0) {
+																	nextValues.channels = defaultValues.channels
 																}
+															}
+															
 																setDefaultValues(nextValues)
 																setValues(nextValues)
 																localStorage.setItem("settings", JSON.stringify(nextValues))
@@ -456,7 +472,18 @@ const Page = () => {
 											</ul>
 										)}
 
-										<div className="flex justify-end">
+										<div className="flex justify-between">
+											<TextButton
+												size={"base"}
+												onClick={() => {
+													void (async () => {
+														await clearLastSessionSettingsPersistent()
+														setSettingsHistory([])
+													})()
+												}}
+											>
+												Reset History
+											</TextButton>
 											<TextButton
 												size={"base"}
 												onClick={() => {

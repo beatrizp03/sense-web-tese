@@ -70,7 +70,7 @@ function saveSessionSettingsHistoryToDisk(history) {
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
+app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors,CalculateNativeWinOcclusion");
 // Required for Web Serial / Web Bluetooth APIs inside Electron
 app.commandLine.appendSwitch("enable-experimental-web-platform-features");
 
@@ -147,7 +147,33 @@ app.whenReady().then(() => {
 
   // IPC handler to log a named event (with optional duration) from the renderer
   ipcMain.on('log-perf-event', (_event, { name, durationMs }) => {
-    if (perfLogger) perfLogger.logEvent(name, durationMs);
+    if (!perfLogger) return;
+
+    perfLogger.logEvent(name, durationMs);
+
+    if (name === 'csv_export') exportEventsCompleted.csv = true;
+    if (name === 'pdf_export') exportEventsCompleted.pdf = true;
+
+    // Keep logger alive after disconnect/finalize and stop only after
+    // both export actions are triggered on summary.
+    if (exportEventsCompleted.csv && exportEventsCompleted.pdf) {
+      perfLogger.stop();
+      perfLogger = null;
+    }
+  });
+
+  ipcMain.handle('stop-perf-logger-if-pending', (_event, status = {}) => {
+    const csvExported = Boolean(status.csvExported);
+    const pdfExported = Boolean(status.pdfExported);
+
+    if (!csvExported || !pdfExported) {
+      if (perfLogger) {
+        perfLogger.stop();
+        perfLogger = null;
+      }
+    }
+
+    return { stopped: !perfLogger };
   });
 
   // IPC handler to flush BufferManager chunk (e.g., on pause/stop)
@@ -197,12 +223,19 @@ let sessionFolder = undefined;
 let lastSessionFolder = undefined;
 let sampleWriter = undefined;
 let perfLogger = null;
+let exportEventsCompleted = { csv: false, pdf: false };
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
   // Only create session folder if not already set (first acquisition)
   if (!sessionFolder) {
+    if (perfLogger) {
+      perfLogger.stop();
+      perfLogger = null;
+    }
+
     sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
     segmentNumber = 1;
+    exportEventsCompleted = { csv: false, pdf: false };
     // Start performance logging once per session (not on each resume)
     perfLogger = new PerformanceLogger(path.join(sessionFolder, 'performance.csv'), 1000);
     perfLogger.start();
@@ -310,6 +343,19 @@ ipcMain.handle('save-session-settings-snapshot', (_event, snapshot) => {
     .slice(0, MAX_SESSION_SETTINGS_HISTORY);
 
   return saveSessionSettingsHistoryToDisk(nextHistory);
+});
+
+ipcMain.handle('clear-session-settings-history', () => {
+  try {
+    const historyPath = getSessionSettingsHistoryPath();
+    if (fs.existsSync(historyPath)) {
+      fs.unlinkSync(historyPath);
+    }
+    return [];
+  } catch (error) {
+    console.error('[main] Failed to clear session settings history:', error);
+    return [];
+  }
 });
 
 ipcMain.handle('finalizeSession', (_event, endedAt) => {

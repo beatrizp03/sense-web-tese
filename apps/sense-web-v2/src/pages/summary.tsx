@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { useRouter } from "next/router"
 
@@ -49,7 +49,30 @@ const Page = () => {
 	const [manifest, setManifest] = useState<any>({});
 	const [loading, setLoading] = useState(true);
 	const [loadAttempts, setLoadAttempts] = useState(0);
+	const [csvDownloading, setCsvDownloading] = useState(false)
+	const csvExportedRef = useRef(false)
+	const pdfExportedRef = useRef(false)
 	const MAX_ATTEMPTS = 8;
+
+	useEffect(() => {
+		const stopIfPending = () => {
+			void window.electronAPI?.stopPerfLoggerIfPending?.({
+				csvExported: csvExportedRef.current,
+				pdfExported: pdfExportedRef.current
+			})
+		}
+
+		const handleRouteChangeStart = (url: string) => {
+			if (url !== router.asPath) {
+				stopIfPending()
+			}
+		}
+
+		router.events.on("routeChangeStart", handleRouteChangeStart)
+		return () => {
+			router.events.off("routeChangeStart", handleRouteChangeStart)
+		}
+	}, [router.asPath, router.events])
 
 	// Sequential retry: wait for session.json to be written before giving up
 	useEffect(() => {
@@ -100,94 +123,100 @@ const Page = () => {
 	}, [manifest]);
 
 	const convertToCSV = useCallback(async () => {
+		if (csvDownloading) return
+		setCsvDownloading(true)
 		const csvExportStart = Date.now();
-		// Use manifest/chunk files as source of truth, but stream chunk files one by one
-		let channels = manifest.channels || [];
-		let deviceType = manifest.deviceType;
-		let storedChannelNames = manifest.channelNames || {};
-		let sampleRate = manifest.sampleRate;
-		let segmentsMeta = manifest.segments || [];
+		try {
+			// Use manifest/chunk files as source of truth, but stream chunk files one by one
+			let channels = manifest.channels || [];
+			let deviceType = manifest.deviceType;
+			let storedChannelNames = manifest.channelNames || {};
+			let sampleRate = manifest.sampleRate;
+			let segmentsMeta = manifest.segments || [];
 
-		if (!channels.length || !deviceType || !sampleRate) {
-			alert("Missing or incomplete manifest/session metadata.");
-			return;
-		}
-		if (!manifest.chunks || manifest.chunks.length === 0) {
-			alert("No chunk files found in manifest. Export aborted.");
-			return;
-		}
-		if (deviceType !== "sense" && deviceType !== "maker") {
-			alert("Device type not supported yet.");
-			return;
-		}
+			if (!channels.length || !deviceType || !sampleRate) {
+				alert("Missing or incomplete manifest/session metadata.");
+				return;
+			}
+			if (!manifest.chunks || manifest.chunks.length === 0) {
+				alert("No chunk files found in manifest. Export aborted.");
+				return;
+			}
+			if (deviceType !== "sense" && deviceType !== "maker") {
+				alert("Device type not supported yet.");
+				return;
+			}
 
-		const zip = new JSZip();
-		let firstTimestamp = 0;
-		// Group chunk files by segment
-		const segmentFiles = {};
-		for (const chunkRec of manifest.chunks) {
-			if (!segmentFiles[chunkRec.segment]) segmentFiles[chunkRec.segment] = [];
-			segmentFiles[chunkRec.segment].push(chunkRec.file);
-		}
-		// For each segment, process chunk files sequentially
-		for (const [segmentIdx, files] of Object.entries(segmentFiles)) {
-			const segment = segmentsMeta.find(s => s.index == segmentIdx);
-			const fileContent = [];
-			const resolutionBits = [];
-			for (let j = 0; j < channels.length; j++) {
-				resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
+			const zip = new JSZip();
+			let firstTimestamp = 0;
+			// Group chunk files by segment
+			const segmentFiles: Record<string, string[]> = {};
+			for (const chunkRec of manifest.chunks) {
+				if (!segmentFiles[chunkRec.segment]) segmentFiles[chunkRec.segment] = [];
+				segmentFiles[chunkRec.segment].push(chunkRec.file);
 			}
-			const timestamp = new Date(segment?.startedAt || 0);
-			if (firstTimestamp === 0) {
-				firstTimestamp = timestamp.getTime();
-			}
-			const metadata = {
-				Device:
-					deviceType === "sense"
-						? "ScientISST Sense"
-						: "ScientISST Maker",
-				Channels: channels,
-				"Sampling rate (Hz)": sampleRate,
-				"ISO 8601": timestamp.toISOString(),
-				Timestamp: timestamp.getTime(),
-				"Resolution (bits)": deviceType === "sense" ? resolutionBits : undefined
-			};
-			fileContent.push("#" + JSON.stringify(metadata, null, null));
-			fileContent.push(
-				"#NSeq," +
-				channels
-					.map(channel => storedChannelNames[channel] ?? channel)
-					.join(",")
-			);
-			// For each chunk file in this segment, load and stream frames
-			for (const chunkFile of files) {
-				try {
-					// Use Electron API to read chunk file from disk
-					const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
-					const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
-					for (let j = 0; j < frames.length; j++) {
-						const frameContent = [];
-						frameContent.push(frames[j].sequence);
-						for (let k = 0; k < channels.length; k++) {
-							frameContent.push(frames[j].channels[channels[k]]);
-						}
-						fileContent.push(frameContent.join(","));
-					}
-				} catch (e) {
-					console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
+			// For each segment, process chunk files sequentially
+			for (const [segmentIdx, files] of Object.entries(segmentFiles)) {
+				const segment = segmentsMeta.find(s => s.index == segmentIdx);
+				const fileContent = [];
+				const resolutionBits = [];
+				for (let j = 0; j < channels.length; j++) {
+					resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
 				}
+				const timestamp = new Date(segment?.startedAt || 0);
+				if (firstTimestamp === 0) {
+					firstTimestamp = timestamp.getTime();
+				}
+				const metadata = {
+					Device:
+						deviceType === "sense"
+							? "ScientISST Sense"
+							: "ScientISST Maker",
+					Channels: channels,
+					"Sampling rate (Hz)": sampleRate,
+					"ISO 8601": timestamp.toISOString(),
+					Timestamp: timestamp.getTime(),
+					"Resolution (bits)": deviceType === "sense" ? resolutionBits : undefined
+				};
+				fileContent.push("#" + JSON.stringify(metadata, null, null));
+				fileContent.push(
+					"#NSeq," +
+					channels
+						.map(channel => storedChannelNames[channel] ?? channel)
+						.join(",")
+				);
+				// For each chunk file in this segment, load and stream frames
+				for (const chunkFile of files) {
+					try {
+						// Use Electron API to read chunk file from disk
+						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
+						const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
+						for (let j = 0; j < frames.length; j++) {
+							const frameContent = [];
+							frameContent.push(frames[j].sequence);
+							for (let k = 0; k < channels.length; k++) {
+								frameContent.push(frames[j].channels[channels[k]]);
+							}
+							fileContent.push(frameContent.join(","));
+						}
+					} catch (e) {
+						console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
+					}
+				}
+				zip.file(`segment_${segmentIdx}.csv`, fileContent.join("\n"));
 			}
-			zip.file(`segment_${segmentIdx}.csv`, fileContent.join("\n"));
-		}
-		if (firstTimestamp === 0) {
-			firstTimestamp = new Date().getTime();
-		}
-		const timestampISO = new Date(firstTimestamp).toISOString();
-		zip.generateAsync({ type: "blob" }).then(content => {
+			if (firstTimestamp === 0) {
+				firstTimestamp = new Date().getTime();
+			}
+			const timestampISO = new Date(firstTimestamp).toISOString();
+			const content = await zip.generateAsync({ type: "blob" })
 			FileSaver.saveAs(content, `${timestampISO}.zip`);
+			csvExportedRef.current = true
 			window.electronAPI?.logPerfEvent?.('csv_export', Date.now() - csvExportStart);
-		});
-	}, [manifest]);
+		} finally {
+			setCsvDownloading(false)
+		}
+	}, [manifest, csvDownloading]);
 
 	const convertToPDF = useCallback(async () => {
 		const pdfExportStart = Date.now();
@@ -608,6 +637,7 @@ const Page = () => {
 
 		const timestampISO = new Date(timestamp).toISOString()
 		pdf.save(`${timestampISO}.pdf`)
+		pdfExportedRef.current = true
 		window.electronAPI?.logPerfEvent?.('pdf_export', Date.now() - pdfExportStart);
 	}, [manifest])
 
@@ -642,6 +672,7 @@ const Page = () => {
 							<TextButton
 								size="base"
 								className="flex-grow"
+								disabled={csvDownloading}
 								onClick={convertToCSV}
 							>
 								Download as CSV
@@ -653,6 +684,11 @@ const Page = () => {
 							>
 								Download as PDF
 							</TextButton>
+						</div>
+						<div className="text-xs text-gray-500">
+							{csvDownloading && (
+								<span>Downloading CSV ...</span>
+							)}
 						</div>
 					</>
 				)}

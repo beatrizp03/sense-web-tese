@@ -346,6 +346,8 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose),
   resetSession: () => ipcRenderer.send('reset-session'),
   logPerfEvent: (name, durationMs) => ipcRenderer.send('log-perf-event', { name, durationMs }),
+  stopPerfLoggerIfPending: (status) => ipcRenderer.invoke('stop-perf-logger-if-pending', status),
   loadSessionSettingsHistory: () => ipcRenderer.invoke('load-session-settings-history'),
-  saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot)
+  saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot),
+  clearSessionSettingsHistory: () => ipcRenderer.invoke('clear-session-settings-history')
 });

@@ -43,13 +43,22 @@ function safeParse<T>(value: string | null, fallback: T): T {
 function getSettingsLabel(settings: SessionSettings): string {
 	const deviceType = settings.deviceType ?? "sense"
 	if (deviceType === "maker") {
-		return `Maker • ${settings.baudRate ?? 9600} baud`
+		return `Maker - ${settings.baudRate ?? 9600} baud`
 	}
 
-	const channels = Array.isArray(settings.channels) ? settings.channels.length : 0
+	const channelsLabel = Array.isArray(settings.channels) && settings.channels.length > 0
+		? settings.channels.map(String).join(", ")
+		: "No channels"
 	const rate = settings.samplingRate ?? 1000
 	const mode = settings.communication === 0 ? "WiFi" : "Bluetooth"
-	return `Sense • ${channels} ch • ${rate} Hz • ${mode}`
+	return `Sense - ${channelsLabel} - ${rate} Hz - ${mode}`
+}
+
+function normalizeSnapshotLabels(snapshots: SessionSettingsSnapshot[]): SessionSettingsSnapshot[] {
+	return snapshots.map(snapshot => ({
+		...snapshot,
+		label: getSettingsLabel(snapshot.settings ?? {})
+	}))
 }
 
 function getSettingsFingerprint(settings: SessionSettings): string {
@@ -77,7 +86,8 @@ export function loadLastSessionSettings(): SessionSettingsSnapshot[] {
 		window.localStorage.getItem(LAST_SESSION_SETTINGS_KEY),
 		[]
 	)
-	return Array.isArray(snapshots) ? snapshots : []
+	if (!Array.isArray(snapshots)) return []
+	return normalizeSnapshotLabels(snapshots)
 }
 
 export function saveLastSessionSettings(settings: SessionSettings): SessionSettingsSnapshot[] {
@@ -109,7 +119,8 @@ export function saveLastSessionSettings(settings: SessionSettings): SessionSetti
 export async function loadLastSessionSettingsPersistent(): Promise<SessionSettingsSnapshot[]> {
 	if (hasElectronHistoryApi()) {
 		const snapshots = await window.electronAPI!.loadSessionSettingsHistory!()
-		return Array.isArray(snapshots) ? snapshots.slice(0, MAX_HISTORY) : []
+		if (!Array.isArray(snapshots)) return []
+		return normalizeSnapshotLabels(snapshots.slice(0, MAX_HISTORY))
 	}
 	return loadLastSessionSettings()
 }
@@ -139,4 +150,15 @@ export function applySessionSettingsSnapshot(snapshot: SessionSettingsSnapshot):
 export function clearLastSessionSettings(): void {
 	if (!hasLocalStorage()) return
 	window.localStorage.removeItem(LAST_SESSION_SETTINGS_KEY)
+}
+
+export async function clearLastSessionSettingsPersistent(): Promise<void> {
+	clearLastSessionSettings()
+	
+	if (
+		hasElectronHistoryApi() && 
+		typeof window.electronAPI?.clearSessionSettingsHistory === "function"
+	) {
+		await window.electronAPI.clearSessionSettingsHistory!()
+	}
 }

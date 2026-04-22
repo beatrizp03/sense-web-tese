@@ -15,7 +15,6 @@ import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import {
 	CancelledByUserException,
 	Device,
-	Frame,
 	Maker,
 	SCIENTISST_CHANNEL,
 	SCIENTISST_COMUNICATION_MODE,
@@ -59,12 +58,110 @@ const outlineColorLight =
 const outlineColorDark =
 	fullConfig.theme.colors["over-background-highest-dark"]
 
+const UI_WINDOW_SECONDS = 5
+const UI_BUCKETS = 300
+const UI_TICK_MS = 66
+
+type ChannelPoint = [number, number | null]
+type ChannelSeries = Record<string, ChannelPoint[]>
+
+interface MinMaxBucketState {
+	count: number
+	min: number
+	max: number
+	minSeq: number
+	maxSeq: number
+}
+
+class RingBuffer<T> {
+	private buf: T[]
+	private head = 0
+	private count = 0
+	private version = 0
+	private snapshotVersion = -1
+	private snapshot: T[] = []
+
+	constructor(private capacity: number) {
+		this.buf = new Array<T>(capacity)
+	}
+
+	push(item: T) {
+		this.buf[this.head] = item
+		this.head = (this.head + 1) % this.capacity
+		if (this.count < this.capacity) this.count++
+		this.version++
+	}
+
+	toArray(): T[] {
+		if (this.snapshotVersion === this.version) {
+			return this.snapshot
+		}
+
+		if (this.count < this.capacity) {
+			this.snapshot = this.buf.slice(0, this.count)
+		} else {
+			this.snapshot = [
+				...this.buf.slice(this.head),
+				...this.buf.slice(0, this.head)
+			]
+		}
+
+		this.snapshotVersion = this.version
+		return this.snapshot
+	}
+
+	clear() {
+		this.head = 0
+		this.count = 0
+		this.version++
+		this.snapshotVersion = -1
+		this.snapshot = []
+	}
+}
+
+const flushBucketToRing = (
+	state: MinMaxBucketState,
+	ring: RingBuffer<ChannelPoint>
+) => {
+	if (state.count === 0) return
+
+	if (state.minSeq === state.maxSeq) {
+		ring.push([state.minSeq, state.min])
+	} else if (state.minSeq < state.maxSeq) {
+		ring.push([state.minSeq, state.min])
+		ring.push([state.maxSeq, state.max])
+	} else {
+		ring.push([state.maxSeq, state.max])
+		ring.push([state.minSeq, state.min])
+	}
+
+	state.count = 0
+}
+
+const flushAllBuckets = (
+	buckets: Map<string, MinMaxBucketState>,
+	buffers: Map<string, RingBuffer<ChannelPoint>>,
+	channels: string[]
+) => {
+	for (const channel of channels) {
+		const bucket = buckets.get(channel)
+		const ring = buffers.get(channel)
+		if (!bucket || !ring) continue
+		flushBucketToRing(bucket, ring)
+	}
+}
+
+const channelSeriesEqual = (a: ChannelSeries, b: ChannelSeries) => {
+	const aKeys = Object.keys(a)
+	const bKeys = Object.keys(b)
+	if (aKeys.length !== bKeys.length) return false
+	for (const key of aKeys) {
+		if (a[key] !== b[key]) return false
+	}
+	return true
+}
+
 const Page = () => {
-	const [channelGraphEnabled, setChannelGraphEnabled] = useState<Record<string, boolean>>({});
-	// Track all segments for summary export (for validation only)
-	const allSegmentsRef = useRef<any[][]>([]); // Only for LocalStorage validation
-	// Dedicated buffer for ALL acquired frames (for export/summary, not throttled)
-	const fullAcquisitionBufferRef = useRef<any[]>([]);
 	const storeBufferThresholdRef = useRef(10000);
 	// Track last chunk flush time and threshold for dynamic adjustment
 
@@ -76,9 +173,7 @@ const Page = () => {
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
-
-	const uiWindowSecondsRef = useRef(5);
-	const processingWindowSecondsRef = useRef(5);
+	const finalizingAfterErrorRef = useRef(false)
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
 
@@ -86,28 +181,61 @@ const Page = () => {
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
 	const acquisitionStartedRef = useRef(false);
 
-	const graphBufferRef = useRef<Array<[number, Frame]>>([]);
-	const [graphBuffer, setGraphBuffer] = useState<Array<[number, Frame]>>([]);
+	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
+	const channelBucketsRef = useRef<Map<string, MinMaxBucketState>>(new Map());
+	const [channelData, setChannelData] = useState<ChannelSeries>({});
 	const channelsRef = useRef<string[]>([]);
 	const [channels, setChannels] = useState<string[]>([]);
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
+	const uiWindowFramesRef = useRef(0);
+	const xAxisOffsetFramesRef = useRef(0);
 
 	// Use setInterval to update the graph UI even when window is not focused
     useEffect(() => {
         let intervalId: NodeJS.Timeout | null = null;
         function updateUI() {
-            setGraphBuffer([...graphBufferRef.current]);
-            // Compute xDomain based on frameSequenceRef and graphBufferLimit
-            const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
-            const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
-            setXDomain([
-                frameSequenceRef.current - graphBufferLimit,
-                frameSequenceRef.current
-            ]);
+			// While acquiring, only finalized buckets should be emitted (ingest path).
+			// Flushing partial buckets every UI tick over-emits points and shrinks
+			// the effective visible time span due to ring buffer eviction.
+			if (status === STATUS.PAUSED) {
+				flushAllBuckets(
+					channelBucketsRef.current,
+					channelBuffersRef.current,
+					channelsRef.current
+				)
+			}
+
+			const windowFrames = uiWindowFramesRef.current
+			const windowStart = Math.max(0, frameSequenceRef.current - windowFrames)
+			xAxisOffsetFramesRef.current = windowStart
+
+			const nextData: ChannelSeries = {};
+			for (const channel of channelsRef.current) {
+				const channelSeries =
+					channelBuffersRef.current.get(channel)?.toArray() ?? []
+				nextData[channel] = channelSeries.map(point => [
+					point[0] - windowStart,
+					point[1]
+				])
+			}
+
+			setChannelData(prev =>
+				channelSeriesEqual(prev, nextData) ? prev : nextData
+			)
+
+				const nextDomain: [number, number] = [
+				0,
+				windowFrames
+			]
+			setXDomain(prev =>
+				prev[0] === nextDomain[0] && prev[1] === nextDomain[1]
+					? prev
+					: nextDomain
+			)
         }
-        if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
-            intervalId = setInterval(updateUI, 100); // 10 FPS
+		if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
+			intervalId = setInterval(updateUI, UI_TICK_MS);
         }
         return () => {
             if (intervalId) clearInterval(intervalId);
@@ -147,9 +275,6 @@ const Page = () => {
 						}
 					});
 				});
-				if (fullAcquisitionBufferRef.current.length > 0) {
-					allSegmentsRef.current.push([...fullAcquisitionBufferRef.current]);
-				}
 				window.electronAPI?.logPerfEvent?.('acquisition_end', Date.now() - stopTime);
 				await window.electronAPI?.finalizeSession?.(Date.now());
 				setStatus(STATUS.STOPPED_AND_SAVED);
@@ -171,10 +296,14 @@ const Page = () => {
 		subscriptionsRef.current = [];
 
 		frameSequenceRef.current = 0;
-		graphBufferRef.current = [];
+		channelBuffersRef.current.forEach(buffer => buffer.clear())
+		channelBuffersRef.current.clear()
+		channelBucketsRef.current.clear()
 		channelsRef.current = [];
+		uiWindowFramesRef.current = 0
+		xAxisOffsetFramesRef.current = 0
 
-		setGraphBuffer([]);
+		setChannelData({});
 		setChannels([]);
 		setXDomain([0, 0]);
 		setAcquisitionStarted(false);
@@ -189,54 +318,71 @@ const Page = () => {
 		(sampleRate: number) => {
 			cleanupPipeline();
 
-			frameSequenceRef.current = 0;
-			graphBufferRef.current = [];
-			channelsRef.current = [];
-			fullAcquisitionBufferRef.current = [];
+			const uiWindowFrames = Math.ceil(sampleRate * UI_WINDOW_SECONDS)
+			const bucketSize = Math.max(
+				1,
+				Math.ceil(uiWindowFrames / Math.max(1, UI_BUCKETS))
+			)
+			uiWindowFramesRef.current = uiWindowFrames
 
-			setGraphBuffer([]);
-			setChannels([]);
-			setXDomain([0, 0]);
-			setAcquisitionStarted(false);
-			acquisitionStartedRef.current = false;
-
-			// Fast UI path: direct from FramePublisher
-			// Throttle UI updates and always accumulate all frames for export
-			const lastUIUpdateRef = { current: Date.now() };
-			const UI_UPDATE_INTERVAL = 100; // ms
 			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
 				if (!frame) return;
 
-				// Always accumulate for export (full buffer, not throttled)
-				fullAcquisitionBufferRef.current.push(frame);
-
-				const graphBufferLimit = Math.ceil(
-					(deviceRef.current?.getSamplingRate?.() || sampleRate) *
-					uiWindowSecondsRef.current
-				);
-
-				// Only keep a small window for the UI
-				graphBufferRef.current.push([frameSequenceRef.current, frame]);
-				if (graphBufferRef.current.length > graphBufferLimit) {
-					graphBufferRef.current.shift();
-				}
-
-				frameSequenceRef.current++;
-
-				// Throttle UI updates
-				const now = Date.now();
-				if (now - lastUIUpdateRef.current > UI_UPDATE_INTERVAL) {
-					setGraphBuffer([...graphBufferRef.current]);
-					setXDomain([
-						frameSequenceRef.current - graphBufferLimit,
-						frameSequenceRef.current
-					]);
-					lastUIUpdateRef.current = now;
-				}
+				const seq = frameSequenceRef.current++
+				const channelValues = frame.channels as
+					| Record<string, number>
+					| undefined
+				if (!channelValues) return
 
 				if (channelsRef.current.length === 0 && frame.channels) {
 					channelsRef.current = Object.keys(frame.channels).sort();
+					channelsRef.current.forEach(channel => {
+						channelBuffersRef.current.set(
+							channel,
+							new RingBuffer<ChannelPoint>(UI_BUCKETS * 2)
+						)
+						channelBucketsRef.current.set(channel, {
+							count: 0,
+							min: 0,
+							max: 0,
+							minSeq: 0,
+							maxSeq: 0
+						})
+					})
 					setChannels([...channelsRef.current]);
+				}
+
+				for (const channel of channelsRef.current) {
+					const valueRaw = channelValues[channel]
+					if (valueRaw == null) continue
+					const value = Number(valueRaw)
+					if (!Number.isFinite(value)) continue
+
+					let bucket = channelBucketsRef.current.get(channel)
+					const ring = channelBuffersRef.current.get(channel)
+					if (!ring) continue
+					if (!bucket) continue
+
+					if (bucket.count === 0) {
+						bucket.min = value
+						bucket.max = value
+						bucket.minSeq = seq
+						bucket.maxSeq = seq
+					} else {
+						if (value < bucket.min) {
+							bucket.min = value
+							bucket.minSeq = seq
+						}
+						if (value > bucket.max) {
+							bucket.max = value
+							bucket.maxSeq = seq
+						}
+					}
+
+					bucket.count += 1
+					if (bucket.count >= bucketSize) {
+						flushBucketToRing(bucket, ring)
+					}
 				}
 
 				if (!acquisitionStartedRef.current) {
@@ -312,7 +458,15 @@ const Page = () => {
 
 			const connectStart = Date.now();
 			await deviceRef.current.connect()
-			await saveLastSessionSettingsPersistent(settings as SessionSettings)
+			
+			// Only save to history if valid configuration
+			const isValidConfig = 
+				(settings.deviceType === "sense" && Array.isArray(settings.channels) && settings.channels.length > 0) ||
+				(settings.deviceType === "maker")
+			if (isValidConfig) {
+				await saveLastSessionSettingsPersistent(settings as SessionSettings)
+			}
+			
 			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
@@ -356,16 +510,40 @@ const Page = () => {
 		}
 	}, [cleanupPipeline]);
 
+	const handleUnexpectedAcquisitionStop = useCallback(() => {
+		if (finalizingAfterErrorRef.current) return
+		finalizingAfterErrorRef.current = true
+		window.electronAPI?.logPerfEvent?.('connection_lost')
+
+		const finalizeAfterError = async () => {
+			try {
+				await deviceRef.current?.stopAcquisition?.()
+			} catch {
+				// ignore controlled stop errors after connection loss
+			}
+
+			try {
+				await deviceRef.current?.disconnect?.()
+			} catch {
+				// ignore disconnect errors after connection loss
+			}
+
+			deviceRef.current = null
+			window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, Date.now())
+			setStatus(STATUS.STOPPED)
+		}
+
+		void finalizeAfterError()
+	}, [])
+
 	const start = useCallback(async () => {
 		console.log("\n[start] Starting acquisition\n");
 		const device = deviceRef.current;
 		if (!device) return;
+		finalizingAfterErrorRef.current = false
 
 		const startAcqTime = Date.now();
 		try {
-			allSegmentsRef.current = [];
-			fullAcquisitionBufferRef.current = [];
-
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
@@ -420,7 +598,7 @@ const Page = () => {
 					window.electronAPI.acquisitionError(sessionFolder);
 				}
 				console.log("\n[device.onError] Device error, disconnecting and updating status\n");
-				setStatus(STATUS.CONNECTION_LOST);
+				handleUnexpectedAcquisitionStop()
 			};
 
 			await device.startAcquisition?.();
@@ -431,7 +609,7 @@ const Page = () => {
 			console.log("\n[start] Connection failed, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [initializePipeline, persistSessionMetadata])
+	}, [initializePipeline, persistSessionMetadata, handleUnexpectedAcquisitionStop])
 
 	const pause = useCallback(async () => {
 		console.log("\n[pause] Pausing acquisition\n");
@@ -448,20 +626,14 @@ const Page = () => {
 
 			const endedAt = Date.now();
 			window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
-
-			if (fullAcquisitionBufferRef.current.length > 0) {
-				allSegmentsRef.current.push([...fullAcquisitionBufferRef.current]);
-			}
-
-			fullAcquisitionBufferRef.current = [];
 			window.electronAPI?.logPerfEvent?.('acquisition_pause', Date.now() - pauseTime);
 			setStatus(STATUS.PAUSED);
 		} catch (error) {
 			console.error(error);
 			console.log("\n[pause] Error during pause, updating status\n");
-			setStatus(STATUS.CONNECTION_LOST);
+			handleUnexpectedAcquisitionStop()
 		}
-	}, []);
+	}, [handleUnexpectedAcquisitionStop]);
 
 	const resume = useCallback(async () => {
 		console.log("\n[resume] Resuming acquisition\n");
@@ -470,25 +642,14 @@ const Page = () => {
 
 		deviceRef.current.onError = error => {
 			console.error(error);
-			deviceRef.current?.disconnect?.().finally(() => {
-				deviceRef.current = null;
-				console.log("\n[device.onError] Device error during resume, disconnecting and updating status\n");
-				setStatus(STATUS.CONNECTION_LOST);
-			});
+			console.log("\n[device.onError] Device error during resume, disconnecting and updating status\n");
+			handleUnexpectedAcquisitionStop()
 		};
 
 		try {
 			segmentRef.current += 1;
-
-			frameSequenceRef.current = 0;
-			graphBufferRef.current = [];
-			channelsRef.current = [];
-			setGraphBuffer([]);
-			setChannels([]);
-			setXDomain([0, 0]);
-			setAcquisitionStarted(false);
-			acquisitionStartedRef.current = false;
-			fullAcquisitionBufferRef.current = [];
+			const sampleRate = deviceRef.current.getSamplingRate?.() || 1000
+			initializePipeline(sampleRate)
 
 			await window.electronAPI?.startAcquisition?.(new Date().toISOString());
 
@@ -505,9 +666,9 @@ const Page = () => {
 		} catch (error) {
 			console.error(error);
 			console.log("\n[resume] Error during resume, updating status\n");
-			setStatus(STATUS.CONNECTION_LOST);
+			handleUnexpectedAcquisitionStop()
 		}
-	}, []);
+	}, [initializePipeline, handleUnexpectedAcquisitionStop]);
 
 	const stop = useCallback(async () => {
 		console.log("\n[stop] Stopping acquisition\n");
@@ -531,6 +692,7 @@ const Page = () => {
 		const endedAt = Date.now();
 		window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
 
+		finalizingAfterErrorRef.current = false
 		setStatus(STATUS.STOPPED);
 	}, []);
 
@@ -548,7 +710,8 @@ const Page = () => {
 
 	const xTickFormatter = useCallback((value: number) => {
 		const samplingRate = deviceRef.current?.getSamplingRate?.() || 1
-		const time = samplingRate !== 0 ? value / samplingRate : value
+		const absoluteValue = value + xAxisOffsetFramesRef.current
+		const time = samplingRate !== 0 ? absoluteValue / samplingRate : absoluteValue
 
 		if (time < 0) return "0:00"
 
@@ -680,54 +843,40 @@ const Page = () => {
 					<Form className="flex w-full flex-col gap-4">
 						<FormikAutoSubmit delay={100} />
 						{channels.map(channel => {
-							const enabled = channelGraphEnabled[channel] !== false;
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row items-center justify-between gap-2">
+									<div className="flex w-full flex-row">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
 											className="mb-0"
 											placeholder={channel}
 										/>
-										<TextButton
-											size={"base"}
-											onClick={(e) => { e.preventDefault(); setChannelGraphEnabled(prev => ({ ...prev, [channel]: !enabled })); }}
-										>
-											{enabled ? "Disable" : "Enable"}
-										</TextButton>
 									</div>
-									{enabled && (
-										<div className="bg-background-accent flex w-full flex-col rounded-md">
-											<div className="w-full p-4">
-												<CanvasChart
-													data={graphBuffer.map(
-														x => [
-															x[0],
-															x[1].channels[channel]
-														]
-													)}
-													xMin={xDomain[0]}
-													xMax={xDomain[1]}
-													className="h-64 w-full"
-													fontFamily="Lexend"
-													lineColor={
-														isDark
-															? lineColorDark
-															: lineColorLight
-													}
-													outlineColor={
-														isDark
-															? outlineColorDark
-															: outlineColorLight
-													}
-													yTicks={5}
-													xTicks={5}
-													xTickFormat={xTickFormatter}
-												/>
-											</div>
+									<div className="bg-background-accent flex w-full flex-col rounded-md">
+										<div className="w-full p-4">
+											<CanvasChart
+												data={channelData[channel] ?? []}
+												xMin={xDomain[0]}
+												xMax={xDomain[1]}
+												className="h-64 w-full"
+												fontFamily="Lexend"
+												lineColor={
+													isDark
+														? lineColorDark
+														: lineColorLight
+												}
+												outlineColor={
+													isDark
+														? outlineColorDark
+														: outlineColorLight
+												}
+												yTicks={5}
+												xTicks={5}
+												xTickFormat={xTickFormatter}
+											/>
 										</div>
-									)}
+									</div>
 								</Fragment>
 							)
 						})}

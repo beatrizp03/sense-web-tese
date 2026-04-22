@@ -41,8 +41,10 @@ declare global {
       confirmClose?: (shouldClose: boolean) => void;
       resetSession?: () => void;
       logPerfEvent?: (name: string, durationMs?: number) => void;
+      stopPerfLoggerIfPending?: (status: { csvExported?: boolean; pdfExported?: boolean }) => Promise<{ stopped: boolean }>;
       loadSessionSettingsHistory?: () => Promise<SessionSettingsSnapshot[]>;
       saveSessionSettingsSnapshot?: (snapshot: SessionSettingsSnapshot) => Promise<SessionSettingsSnapshot[]>;
+      clearSessionSettingsHistory?: () => Promise<void>;
     };
   }
 }
