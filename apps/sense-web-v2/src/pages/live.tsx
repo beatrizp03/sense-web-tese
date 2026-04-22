@@ -15,7 +15,6 @@ import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import {
 	CancelledByUserException,
 	Device,
-	Frame,
 	Maker,
 	SCIENTISST_CHANNEL,
 	SCIENTISST_COMUNICATION_MODE,
@@ -27,13 +26,13 @@ import resolveConfig from "tailwindcss/resolveConfig"
 import tailwindConfig from "../../tailwind.config"
 import CanvasChart from "../components/charts/CanvasChart"
 import SenseLayout from "../components/layout/SenseLayout"
+import {
+	SessionSettings,
+	saveLastSessionSettingsPersistent
+} from "../utils/sessionSettingsHistory"
 
 import { framePublisher } from "../../../sense-desktop/src/FramePublisher"
-import { BufferManager } from "../../../sense-desktop/src/BufferManager"
-import { SignalProcessor } from "../../../sense-desktop/src/SignalProcessor"
-import { onChunkReady } from '../../../sense-desktop/src/StorageSubscriber';
-import { onProcessingWindow } from '../../../sense-desktop/src/ProcessingSubscriber';
-import { SessionManager } from '../../../sense-desktop/src/SessionManager';
+
 
 enum STATUS {
 	DISCONNECTED,
@@ -52,30 +51,117 @@ enum STATUS {
 const fullConfig = resolveConfig(tailwindConfig)
 const lineColorLight = fullConfig.theme.colors["primary-light"]
 const lineColorDark = fullConfig.theme.colors["primary-dark"]
+const backgroundDarkColor =
+	(fullConfig.theme as any)?.colors?.["background-dark"] ?? "#1C1C1E"
 const outlineColorLight =
 	fullConfig.theme.colors["over-background-highest-light"]
 const outlineColorDark =
 	fullConfig.theme.colors["over-background-highest-dark"]
 
-declare global {
-	interface Window {
-		electronAPI?: {
-			sendSample?: (sample: any) => void
-			setBufferSize?: (size: number) => void
-			startAcquisition?: (timestamp: string) => void
-			flushSamples?: (finalize?: boolean) => void
-			writeChunk?: (chunk: any) => void
-			finalizeSession?: () => void
-			onChunkWriteComplete?: ( callback: (info: { saveTime: number, chunkIndex: number, final: boolean }) => void) => () => void
+const UI_WINDOW_SECONDS = 5
+const UI_BUCKETS = 300
+const UI_TICK_MS = 66
+
+type ChannelPoint = [number, number | null]
+type ChannelSeries = Record<string, ChannelPoint[]>
+
+interface MinMaxBucketState {
+	count: number
+	min: number
+	max: number
+	minSeq: number
+	maxSeq: number
+}
+
+class RingBuffer<T> {
+	private buf: T[]
+	private head = 0
+	private count = 0
+	private version = 0
+	private snapshotVersion = -1
+	private snapshot: T[] = []
+
+	constructor(private capacity: number) {
+		this.buf = new Array<T>(capacity)
+	}
+
+	push(item: T) {
+		this.buf[this.head] = item
+		this.head = (this.head + 1) % this.capacity
+		if (this.count < this.capacity) this.count++
+		this.version++
+	}
+
+	toArray(): T[] {
+		if (this.snapshotVersion === this.version) {
+			return this.snapshot
 		}
+
+		if (this.count < this.capacity) {
+			this.snapshot = this.buf.slice(0, this.count)
+		} else {
+			this.snapshot = [
+				...this.buf.slice(this.head),
+				...this.buf.slice(0, this.head)
+			]
+		}
+
+		this.snapshotVersion = this.version
+		return this.snapshot
+	}
+
+	clear() {
+		this.head = 0
+		this.count = 0
+		this.version++
+		this.snapshotVersion = -1
+		this.snapshot = []
 	}
 }
 
+const flushBucketToRing = (
+	state: MinMaxBucketState,
+	ring: RingBuffer<ChannelPoint>
+) => {
+	if (state.count === 0) return
+
+	if (state.minSeq === state.maxSeq) {
+		ring.push([state.minSeq, state.min])
+	} else if (state.minSeq < state.maxSeq) {
+		ring.push([state.minSeq, state.min])
+		ring.push([state.maxSeq, state.max])
+	} else {
+		ring.push([state.maxSeq, state.max])
+		ring.push([state.minSeq, state.min])
+	}
+
+	state.count = 0
+}
+
+const flushAllBuckets = (
+	buckets: Map<string, MinMaxBucketState>,
+	buffers: Map<string, RingBuffer<ChannelPoint>>,
+	channels: string[]
+) => {
+	for (const channel of channels) {
+		const bucket = buckets.get(channel)
+		const ring = buffers.get(channel)
+		if (!bucket || !ring) continue
+		flushBucketToRing(bucket, ring)
+	}
+}
+
+const channelSeriesEqual = (a: ChannelSeries, b: ChannelSeries) => {
+	const aKeys = Object.keys(a)
+	const bKeys = Object.keys(b)
+	if (aKeys.length !== bKeys.length) return false
+	for (const key of aKeys) {
+		if (a[key] !== b[key]) return false
+	}
+	return true
+}
+
 const Page = () => {
-	// Track all segments for summary export
-	const allSegmentsRef = useRef<any[][]>([]);
-	// Accumulates all frames for the current segment for summary export
-	const fullSessionFramesRef = useRef<any[]>([]);
 	const storeBufferThresholdRef = useRef(10000);
 	// Track last chunk flush time and threshold for dynamic adjustment
 
@@ -83,12 +169,11 @@ const Page = () => {
 	const isDark = useDarkTheme();
 
 	const deviceRef = useRef<Device | null>(null);
-	const bufferManagerRef = useRef<BufferManager | null>(null);
+	// BufferManager is now in main process
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
-	const uiWindowSecondsRef = useRef(5);
-	const processingWindowSecondsRef = useRef(5);
+	const finalizingAfterErrorRef = useRef(false)
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
 
@@ -96,120 +181,112 @@ const Page = () => {
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
 	const acquisitionStartedRef = useRef(false);
 
-	const graphBufferRef = useRef<Array<[number, Frame]>>([]);
-	const [graphBuffer, setGraphBuffer] = useState<Array<[number, Frame]>>([]);
+	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
+	const channelBucketsRef = useRef<Map<string, MinMaxBucketState>>(new Map());
+	const [channelData, setChannelData] = useState<ChannelSeries>({});
 	const channelsRef = useRef<string[]>([]);
 	const [channels, setChannels] = useState<string[]>([]);
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
+	const uiWindowFramesRef = useRef(0);
+	const xAxisOffsetFramesRef = useRef(0);
 
-	const saveCurrentSegment = useCallback(() => {
-		const segment = segmentRef.current;
-		const device = deviceRef.current;
-		const channels = device?.getChannels?.() ?? channelsRef.current;
-		const allFrames = fullSessionFramesRef.current;
-
-		SessionManager.saveSegmentFrames(segment, allFrames);
-
-		if (channels.length > 0) {
-			SessionManager.saveChannels(channels);
-		}
-
-		const sampleRate = device?.getSamplingRate?.() || 1000;
-		SessionManager.saveSampleRate(sampleRate);
-		SessionManager.saveSegmentCount(segment);
-		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
-	}, []);
-
-	// Throttle React state updates to requestAnimationFrame (top-level, not inside callback)
-	const animationFrameRef = useRef<number | null>(null);
-	// Only run RAF UI loop when acquiring or paused
-	useEffect(() => {
-		let running = false;
-		function updateUI() {
-			if (!running) return;
-			setGraphBuffer([...graphBufferRef.current]);
-			// Compute xDomain based on frameSequenceRef and graphBufferLimit
-			const sampleRate = deviceRef.current?.getSamplingRate?.() || 1000;
-			const graphBufferLimit = Math.ceil(sampleRate * (uiWindowSecondsRef.current || 5));
-			setXDomain([
-				Math.max(0, frameSequenceRef.current - graphBufferLimit),
-				frameSequenceRef.current
-			]);
-			animationFrameRef.current = requestAnimationFrame(updateUI);
-		}
-		if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
-			running = true;
-			animationFrameRef.current = requestAnimationFrame(updateUI);
-		}
-		return () => {
-			running = false;
-			if (animationFrameRef.current !== null) {
-				cancelAnimationFrame(animationFrameRef.current);
+	// Use setInterval to update the graph UI even when window is not focused
+    useEffect(() => {
+        let intervalId: NodeJS.Timeout | null = null;
+        function updateUI() {
+			// While acquiring, only finalized buckets should be emitted (ingest path).
+			// Flushing partial buckets every UI tick over-emits points and shrinks
+			// the effective visible time span due to ring buffer eviction.
+			if (status === STATUS.PAUSED) {
+				flushAllBuckets(
+					channelBucketsRef.current,
+					channelBuffersRef.current,
+					channelsRef.current
+				)
 			}
-		};
-	}, [status]);
 
+			const windowFrames = uiWindowFramesRef.current
+			const windowStart = Math.max(0, frameSequenceRef.current - windowFrames)
+			xAxisOffsetFramesRef.current = windowStart
+
+			const nextData: ChannelSeries = {};
+			for (const channel of channelsRef.current) {
+				const channelSeries =
+					channelBuffersRef.current.get(channel)?.toArray() ?? []
+				nextData[channel] = channelSeries.map(point => [
+					point[0] - windowStart,
+					point[1]
+				])
+			}
+
+			setChannelData(prev =>
+				channelSeriesEqual(prev, nextData) ? prev : nextData
+			)
+
+				const nextDomain: [number, number] = [
+				0,
+				windowFrames
+			]
+			setXDomain(prev =>
+				prev[0] === nextDomain[0] && prev[1] === nextDomain[1]
+					? prev
+					: nextDomain
+			)
+        }
+		if (status === STATUS.ACQUIRING || status === STATUS.PAUSED) {
+			intervalId = setInterval(updateUI, UI_TICK_MS);
+        }
+        return () => {
+            if (intervalId) clearInterval(intervalId);
+        };
+    }, [status]);
 
 	useEffect(() => {
 		if (!window.electronAPI?.onChunkWriteComplete) return;
-
-		// Expect info: { saveTime: number, chunkIndex: number, final: boolean }
-		const unsubscribe = window.electronAPI.onChunkWriteComplete((info: { saveTime: number, chunkIndex: number, final: boolean }) => {
-			if (info && Number.isFinite(info.saveTime)) {
-				bufferManagerRef.current?.updateChunkThreshold?.(info.saveTime);
-			}
+		const unsubscribe = window.electronAPI.onChunkWriteComplete((_info) => {
+			// Manifest update now handled in main process
 		});
-
 		return unsubscribe;
 	}, []);
+
 
 	useEffect(() => {
 		const finalizeStop = async () => {
 			if (status !== STATUS.STOPPED) return;
-
+			const stopTime = Date.now();
 			try {
-				// Do NOT await stopSession here
-				try {
-					bufferManagerRef.current?.flushChunk?.(true);
-				} catch (e) {
-					console.error("[finalizeStop] flushChunk error", e);
-				}
-
-				// save current segment if needed
-				if (fullSessionFramesRef.current.length > 0) {
-					allSegmentsRef.current.push([...fullSessionFramesRef.current]);
-					console.log("[finalizeStop] Added current segment to allSegmentsRef");
-				}
-
-				// persist all segments to localStorage
-				allSegmentsRef.current.forEach((segmentFrames, idx) => {
-					segmentRef.current = idx + 1;
-					fullSessionFramesRef.current = segmentFrames;
-					console.log(`[finalizeStop] Saving segment ${segmentRef.current}`);
-					saveCurrentSegment();
+				window.electronAPI?.flushChunk?.(true);
+				await new Promise<void>(resolve => {
+					let resolved = false;
+					const timeout = setTimeout(() => {
+						if (!resolved) {
+							resolved = true;
+							unsubscribe?.();
+							resolve();
+						}
+					}, 200);
+					const unsubscribe = window.electronAPI?.onChunkWriteComplete?.(info => {
+						if (info?.final && !resolved) {
+							resolved = true;
+							clearTimeout(timeout);
+							unsubscribe?.();
+							resolve();
+						}
+					});
 				});
-
-				// finalize Electron session without waiting for a final-chunk ack
-				try {
-					window.electronAPI?.finalizeSession?.();
-					console.log("[finalizeStop] Called electronAPI.finalizeSession");
-				} catch (e) {
-					console.error("[finalizeStop] Error in finalizeSession", e);
-				}
-
+				window.electronAPI?.logPerfEvent?.('acquisition_end', Date.now() - stopTime);
+				await window.electronAPI?.finalizeSession?.(Date.now());
 				setStatus(STATUS.STOPPED_AND_SAVED);
-
 				await router.push("/summary");
 			} catch (error) {
-				console.error("[finalizeStop] Outer error", error);
+				console.error("[finalizeStop]", error);
 				setStatus(STATUS.STOPPED_AND_SAVED);
 			}
 		};
-
 		finalizeStop();
-	}, [status, router, saveCurrentSegment]);
-
+	}, [status, router]);
+	
 	const cleanupPipeline = useCallback(() => {
 		subscriptionsRef.current.forEach(unsubscribe => {
 			try {
@@ -218,16 +295,15 @@ const Page = () => {
 		});
 		subscriptionsRef.current = [];
 
-		if (bufferManagerRef.current) {
-			bufferManagerRef.current.reset?.();
-		}
-		bufferManagerRef.current = null;
-
 		frameSequenceRef.current = 0;
-		graphBufferRef.current = [];
+		channelBuffersRef.current.forEach(buffer => buffer.clear())
+		channelBuffersRef.current.clear()
+		channelBucketsRef.current.clear()
 		channelsRef.current = [];
+		uiWindowFramesRef.current = 0
+		xAxisOffsetFramesRef.current = 0
 
-		setGraphBuffer([]);
+		setChannelData({});
 		setChannels([]);
 		setXDomain([0, 0]);
 		setAcquisitionStarted(false);
@@ -235,137 +311,103 @@ const Page = () => {
 	}, []);
 
 
-	const writeChunkToElectron = useCallback(
-		(chunk: any) => {
-			if (!chunk) return;
-			try {
-				if (window.electronAPI?.writeChunk) {
-					window.electronAPI.writeChunk(chunk);
-				} else if (window.electronAPI?.sendSample) {
-					// Support chunk objects with .frames property
-					const frames = Array.isArray(chunk?.frames) ? chunk.frames : (Array.isArray(chunk) ? chunk : []);
-					frames.forEach(frame => {
-						window.electronAPI?.sendSample?.({ type: "frame", value: frame });
-					});
-					window.electronAPI?.flushSamples?.();
-				}
-			} catch (error) {
-				console.error(error);
-				setStatus(STATUS.OUT_OF_STORAGE);
-			}
-		},
-		[]
-	);
 
+
+	// No BufferManager/StorageSubscriber in renderer; only UI pipeline
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
-			cleanupPipeline()
+			cleanupPipeline();
 
-			frameSequenceRef.current = 0
-			graphBufferRef.current = []
-			channelsRef.current = []
+			const uiWindowFrames = Math.ceil(sampleRate * UI_WINDOW_SECONDS)
+			const bucketSize = Math.max(
+				1,
+				Math.ceil(uiWindowFrames / Math.max(1, UI_BUCKETS))
+			)
+			uiWindowFramesRef.current = uiWindowFrames
 
-			setGraphBuffer([])
-			setChannels([])
-			setXDomain([0, 0])
-			setAcquisitionStarted(false)
-			acquisitionStartedRef.current = false;
-
-			bufferManagerRef.current = new BufferManager({
-				uiWindowSize: uiWindowSecondsRef.current * sampleRate,
-				processingWindowSize: processingWindowSecondsRef.current * sampleRate,
-				chunkSize: storeBufferThresholdRef.current
-			})
-
-			// Fast UI path: direct from FramePublisher
 			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
 				if (!frame) return;
 
-				graphBufferRef.current.push([frameSequenceRef.current, frame]);
-
-				const graphBufferLimit = Math.ceil(
-					(deviceRef.current?.getSamplingRate?.() || sampleRate) *
-					uiWindowSecondsRef.current
-				);
-
-				if (graphBufferRef.current.length > graphBufferLimit) {
-					graphBufferRef.current.shift();
-				}
-
-				frameSequenceRef.current += 1;
+				const seq = frameSequenceRef.current++
+				const channelValues = frame.channels as
+					| Record<string, number>
+					| undefined
+				if (!channelValues) return
 
 				if (channelsRef.current.length === 0 && frame.channels) {
 					channelsRef.current = Object.keys(frame.channels).sort();
+					channelsRef.current.forEach(channel => {
+						channelBuffersRef.current.set(
+							channel,
+							new RingBuffer<ChannelPoint>(UI_BUCKETS * 2)
+						)
+						channelBucketsRef.current.set(channel, {
+							count: 0,
+							min: 0,
+							max: 0,
+							minSeq: 0,
+							maxSeq: 0
+						})
+					})
 					setChannels([...channelsRef.current]);
 				}
 
-				// Only setAcquisitionStarted(true) once
+				for (const channel of channelsRef.current) {
+					const valueRaw = channelValues[channel]
+					if (valueRaw == null) continue
+					const value = Number(valueRaw)
+					if (!Number.isFinite(value)) continue
+
+					let bucket = channelBucketsRef.current.get(channel)
+					const ring = channelBuffersRef.current.get(channel)
+					if (!ring) continue
+					if (!bucket) continue
+
+					if (bucket.count === 0) {
+						bucket.min = value
+						bucket.max = value
+						bucket.minSeq = seq
+						bucket.maxSeq = seq
+					} else {
+						if (value < bucket.min) {
+							bucket.min = value
+							bucket.minSeq = seq
+						}
+						if (value > bucket.max) {
+							bucket.max = value
+							bucket.maxSeq = seq
+						}
+					}
+
+					bucket.count += 1
+					if (bucket.count >= bucketSize) {
+						flushBucketToRing(bucket, ring)
+					}
+				}
+
 				if (!acquisitionStartedRef.current) {
 					acquisitionStartedRef.current = true;
 					setAcquisitionStarted(true);
 				}
 			});
 
-			// Storage + processing path: through BufferManager
-			const unsubscribeBufferManagerPublisher = framePublisher.subscribeFrame(frame => {
-				bufferManagerRef.current?.ingest(frame)
-			})
-
-			const unsubscribeStorage = bufferManagerRef.current?.subscribeStorage(chunk => {
-				onChunkReady(chunk, chunk => {
-					console.log("[onChunkReady] writing chunk to electron: ", chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0);
-					if (chunk && Array.isArray(chunk.frames) && chunk.frames.length > 0) {
-						writeChunkToElectron(chunk)
-					}
-				})
-			})
-
-			const unsubscribeProcessing = bufferManagerRef.current?.subscribeProcessing(
-				window => {
-					onProcessingWindow(
-						window,
-						{
-							process: SignalProcessor.extractFeatures
-						},
-						_results => {
-							// optionally handle results
-						}
-					)
-				}
-			)
-
 			subscriptionsRef.current = [
-				unsubscribeUIPublisher,
-				unsubscribeBufferManagerPublisher,
-				unsubscribeStorage,
-				unsubscribeProcessing
-			].filter(Boolean) as Array<() => void>
+				unsubscribeUIPublisher
+			];
 		},
-		[cleanupPipeline, writeChunkToElectron]
-	)
+		[cleanupPipeline]
+	);
 
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
 		if (!device) return;
-
-		SessionManager.saveDeviceType(device instanceof Maker ? "maker" : "sense");
-
-		const adcCharacteristics = device.getAdcCharacteristics?.();
-		if (adcCharacteristics !== null && adcCharacteristics !== undefined) {
-			localStorage.setItem("aq_adcChars", adcCharacteristics.toJSON());
-		}
-
-		SessionManager.saveSegmentCount(segmentRef.current);
-
-		const samplingRate = device.getSamplingRate?.();
-		if (samplingRate) {
-			SessionManager.saveSampleRate(samplingRate);
-		}
-
-		const currentChannels = device.getChannels?.() ?? [];
-		if (currentChannels.length > 0) {
-			SessionManager.saveChannels(currentChannels);
-		}
+		window.electronAPI?.updateSessionMeta?.({
+			segment: segmentRef.current,
+			channels: device.getChannels?.() ?? [],
+			sampleRate: device.getSamplingRate?.() || 1000,
+			deviceType: device instanceof Maker ? "maker" : "sense",
+			timestamp: Date.now()
+		});
 	}, []);
 
 	const connect = useCallback(async () => {
@@ -373,9 +415,7 @@ const Page = () => {
 		setAcquisitionStarted(false)
 		cleanupPipeline(); // Reset all state and BufferManager before connect
 
-		const settings = JSON.parse(
-			localStorage.getItem("settings") || "{}"
-		) as Record<string, unknown>
+		 const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>;
 
 		try {
 			switch (settings.deviceType ?? "sense") {
@@ -416,7 +456,18 @@ const Page = () => {
 					throw new Error("Device type not supported.")
 			}
 
+			const connectStart = Date.now();
 			await deviceRef.current.connect()
+			
+			// Only save to history if valid configuration
+			const isValidConfig = 
+				(settings.deviceType === "sense" && Array.isArray(settings.channels) && settings.channels.length > 0) ||
+				(settings.deviceType === "maker")
+			if (isValidConfig) {
+				await saveLastSessionSettingsPersistent(settings as SessionSettings)
+			}
+			
+			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
 			setFirmwareVersion(
@@ -432,51 +483,91 @@ const Page = () => {
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
 			console.error(error)
+			deviceRef.current = null
 
 			if (error instanceof CancelledByUserException) {
 				setStatus(STATUS.DISCONNECTED)
 				return
 			}
-
-			deviceRef.current = null
 			setStatus(STATUS.CONNECTION_FAILED)
 		}
 	}, [cleanupPipeline])
 
 	const disconnect = useCallback(async () => {
 		try {
-			framePublisher.reset();
-			cleanupPipeline();
+			deviceRef.current!.onError = () => {
+				// ignore controlled disconnect errors
+			};
+
 			await deviceRef.current?.disconnect?.();
 		} catch {
 			// ignore disconnect errors
 		} finally {
+			framePublisher.reset();
+			cleanupPipeline();
 			deviceRef.current = null;
 			setStatus(STATUS.DISCONNECTED);
 		}
-	}, [cleanupPipeline])
+	}, [cleanupPipeline]);
+
+	const handleUnexpectedAcquisitionStop = useCallback(() => {
+		if (finalizingAfterErrorRef.current) return
+		finalizingAfterErrorRef.current = true
+		window.electronAPI?.logPerfEvent?.('connection_lost')
+
+		const finalizeAfterError = async () => {
+			try {
+				await deviceRef.current?.stopAcquisition?.()
+			} catch {
+				// ignore controlled stop errors after connection loss
+			}
+
+			try {
+				await deviceRef.current?.disconnect?.()
+			} catch {
+				// ignore disconnect errors after connection loss
+			}
+
+			deviceRef.current = null
+			window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, Date.now())
+			setStatus(STATUS.STOPPED)
+		}
+
+		void finalizeAfterError()
+	}, [])
 
 	const start = useCallback(async () => {
-		console.log("[start] Starting acquisition\n");
-		const device = deviceRef.current
-		if (!device) return
+		console.log("\n[start] Starting acquisition\n");
+		const device = deviceRef.current;
+		if (!device) return;
+		finalizingAfterErrorRef.current = false
 
+		const startAcqTime = Date.now();
 		try {
-			// Clear session/segment buffers only at the start of a new acquisition
-			fullSessionFramesRef.current = [];
-			allSegmentsRef.current = [];
-
-			// cleanupPipeline is already called inside initializePipeline
 			const sampleRate = device.getSamplingRate?.() || 1000;
 			initializePipeline(sampleRate);
 
-			bufferManagerRef.current?.startSession({
-				startedAt: Date.now(),
+			const startTime = new Date().toISOString();
+			const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
+
+			const adcChars = device.getAdcCharacteristics?.() || {};
+
+			const now = Date.now();
+			await window.electronAPI?.createSession?.({
+				sessionId: `${now}`,
+				startedAt: now,
+				deviceType: device instanceof Maker ? "maker" : "sense",
 				sampleRate,
-				segment: segmentRef.current
+				channels: device.getChannels?.() ?? [],
+				sessionFolder,
+				adcChars
+			});
+			await window.electronAPI?.registerSegment?.({
+				index: segmentRef.current,
+				startedAt: now,
+				endedAt: null
 			});
 
-			window.electronAPI?.startAcquisition?.(new Date().toISOString());
 			// Only set buffer size if valid
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
 				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
@@ -486,105 +577,101 @@ const Page = () => {
 
 			device.onFrames = data => {
 				if (data == null) return;
-				// Always pass every frame to BufferManager via framePublisher
+				// Always pass every frame to main process BufferManager via sendFrame
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
-					framePublisher.publishFrames(validFrames);
-					// Accumulate all frames for summary export
-					fullSessionFramesRef.current.push(...validFrames);
+					validFrames.forEach(frame => {
+						window.electronAPI?.sendFrame?.(frame);
+						// Publish to framePublisher for UI graph
+						framePublisher.publishFrame(frame);
+					});
 				} else {
+					window.electronAPI?.sendFrame?.(data);
 					framePublisher.publishFrame(data);
-					fullSessionFramesRef.current.push(data);
 				}
-			}            
+			};
 
 			device.onError = error => {
 				console.error(error);
-				setStatus(STATUS.CONNECTION_LOST);
+				// No BufferManager in renderer; main process handles chunking
+				if (window.electronAPI?.acquisitionError && sessionFolder) {
+					window.electronAPI.acquisitionError(sessionFolder);
+				}
+				console.log("\n[device.onError] Device error, disconnecting and updating status\n");
+				handleUnexpectedAcquisitionStop()
 			};
 
 			await device.startAcquisition?.();
+			window.electronAPI?.logPerfEvent?.('acquisition_start', Date.now() - startAcqTime);
 			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
 			console.error(error);
+			console.log("\n[start] Connection failed, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [initializePipeline, persistSessionMetadata])
+	}, [initializePipeline, persistSessionMetadata, handleUnexpectedAcquisitionStop])
 
 	const pause = useCallback(async () => {
-		console.log("[pause] Pausing acquisition\n");
-		if (!deviceRef.current) return
+		console.log("\n[pause] Pausing acquisition\n");
+		const pauseTime = Date.now();
+		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
 			// ignore during controlled pause
-		}
+		};
 
 		try {
-			await deviceRef.current.stopAcquisition?.()
-			bufferManagerRef.current?.flushChunk?.(false)
+			await deviceRef.current.stopAcquisition?.();
+			window.electronAPI?.flushChunk?.(false);
 
-			saveCurrentSegment()
-
-			if (fullSessionFramesRef.current.length > 0) {
-				allSegmentsRef.current.push([...fullSessionFramesRef.current])
-			}
-
-			fullSessionFramesRef.current = []
-			setStatus(STATUS.PAUSED)
+			const endedAt = Date.now();
+			window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
+			window.electronAPI?.logPerfEvent?.('acquisition_pause', Date.now() - pauseTime);
+			setStatus(STATUS.PAUSED);
 		} catch (error) {
-			console.error(error)
-			setStatus(STATUS.CONNECTION_LOST)
+			console.error(error);
+			console.log("\n[pause] Error during pause, updating status\n");
+			handleUnexpectedAcquisitionStop()
 		}
-	}, [saveCurrentSegment])
+	}, [handleUnexpectedAcquisitionStop]);
 
 	const resume = useCallback(async () => {
-		console.log("[resume] Resuming acquisition\n");
-		// Reset full session buffer for new segment (already saved at pause)
-		fullSessionFramesRef.current = [];
+		console.log("\n[resume] Resuming acquisition\n");
+		const resumeTime = Date.now();
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = error => {
 			console.error(error);
-			deviceRef.current?.disconnect?.().finally(() => {
-				deviceRef.current = null;
-				setStatus(STATUS.CONNECTION_LOST);
-			});
+			console.log("\n[device.onError] Device error during resume, disconnecting and updating status\n");
+			handleUnexpectedAcquisitionStop()
 		};
 
 		try {
-			segmentRef.current += 1
+			segmentRef.current += 1;
+			const sampleRate = deviceRef.current.getSamplingRate?.() || 1000
+			initializePipeline(sampleRate)
 
-			frameSequenceRef.current = 0
-			graphBufferRef.current = []
-			channelsRef.current = []
+			await window.electronAPI?.startAcquisition?.(new Date().toISOString());
 
-			setGraphBuffer([])
-			setChannels([])
-			setXDomain([0, 0])
-			setAcquisitionStarted(false)
-			acquisitionStartedRef.current = false;
+			const now = Date.now();
+			await window.electronAPI?.registerSegment?.({
+				index: segmentRef.current,
+				startedAt: now,
+				endedAt: null
+			});
 
-			bufferManagerRef.current?.reset()
-			bufferManagerRef.current?.startSession({
-				startedAt: Date.now(),
-				sampleRate: deviceRef.current.getSamplingRate?.() || 1000,
-				segment: segmentRef.current
-			})
-
-			window.electronAPI?.startAcquisition?.(new Date().toISOString())
-			SessionManager.saveSegmentCount(segmentRef.current)
-
-			await deviceRef.current.startAcquisition?.()
-			setStatus(STATUS.ACQUIRING)
+			await deviceRef.current.startAcquisition?.();
+			window.electronAPI?.logPerfEvent?.('acquisition_resume', Date.now() - resumeTime);
+			setStatus(STATUS.ACQUIRING);
 		} catch (error) {
-			console.error(error)
-			setStatus(STATUS.CONNECTION_LOST)
+			console.error(error);
+			console.log("\n[resume] Error during resume, updating status\n");
+			handleUnexpectedAcquisitionStop()
 		}
-	}, []);
-
+	}, [initializePipeline, handleUnexpectedAcquisitionStop]);
 
 	const stop = useCallback(async () => {
-		console.log("[stop] Stopping acquisition\n");
+		console.log("\n[stop] Stopping acquisition\n");
 		if (!deviceRef.current) return;
 
 		deviceRef.current.onError = () => {
@@ -592,31 +679,39 @@ const Page = () => {
 		};
 
 		setStatus(STATUS.STOPPING);
-
+    
 		try {
-			await deviceRef.current?.stopAcquisition();
-			await deviceRef.current?.disconnect();
-			deviceRef.current = null;
+			await deviceRef.current.stopAcquisition?.();
+			await deviceRef.current.disconnect?.();
 		} catch {
-			// ignore
+			// ignore controlled stop errors
+		} finally {
+			deviceRef.current = null;
 		}
 
+		const endedAt = Date.now();
+		window.electronAPI?.updateSegmentEndedAt?.(segmentRef.current, endedAt);
+
+		finalizingAfterErrorRef.current = false
 		setStatus(STATUS.STOPPED);
 	}, []);
 
-
 	useEffect(() => {
 		return () => {
-			cleanupPipeline()
-			deviceRef.current?.disconnect?.().catch(() => {
-				// ignore cleanup errors
-			})
-		}
+			cleanupPipeline();
+			deviceRef.current?.disconnect?.().catch(() => {});
+			// Reset main-process session state when navigating away.
+			// If finalizeSession was already called (normal stop flow), this is a no-op.
+			// If the user left without stopping, this ensures the next acquisition
+			// gets a fresh session folder instead of continuing the abandoned one.
+			window.electronAPI?.resetSession?.();
+		};
 	}, [cleanupPipeline])
 
 	const xTickFormatter = useCallback((value: number) => {
 		const samplingRate = deviceRef.current?.getSamplingRate?.() || 1
-		const time = samplingRate !== 0 ? value / samplingRate : value
+		const absoluteValue = value + xAxisOffsetFramesRef.current
+		const time = samplingRate !== 0 ? absoluteValue / samplingRate : absoluteValue
 
 		if (time < 0) return "0:00"
 
@@ -625,6 +720,38 @@ const Page = () => {
 
 		return seconds < 10 ? `${minutes}:0${seconds}` : `${minutes}:${seconds}`
 	}, [])
+
+	const [showCloseModal, setShowCloseModal] = useState(false);
+
+	// Ref so event handlers always see the latest status without stale closures
+	const statusRef = useRef(status);
+	useEffect(() => { statusRef.current = status; }, [status]);
+
+	// Electron X button: warn if acquiring, else allow close
+	useEffect(() => {
+		if (!window.electronAPI?.onShowCloseWarning) return;
+		const removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
+			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
+				setShowCloseModal(true);
+			} else {
+				window.electronAPI?.confirmClose?.(true);
+			}
+		});
+		return removeCloseListener;
+	}, []); // set up once — statusRef always has the latest value
+
+	// In-app navigation (home button): block if acquiring or paused
+	useEffect(() => {
+		const handleRouteChange = (url: string) => {
+			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
+				setShowCloseModal(true);
+				router.events.emit('routeChangeError', 'aborted', url);
+				throw 'Navigation blocked during acquisition.';
+			}
+		};
+		router.events.on('routeChangeStart', handleRouteChange);
+		return () => { router.events.off('routeChangeStart', handleRouteChange); };
+	}, [router.events]);
 
 	return (
 		<SenseLayout
@@ -636,8 +763,7 @@ const Page = () => {
 			{status === STATUS.CONNECTED && firmwareVersion !== null && (
 				<span>Firmware Version: {firmwareVersion}</span>
 			)}
-			<div className="flex flex-row gap-4">
-				{(status === STATUS.DISCONNECTED ||
+			<div className="flex flex-row gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
 					(status === STATUS.CONNECTION_LOST &&
@@ -697,24 +823,21 @@ const Page = () => {
 			{status === STATUS.OUT_OF_STORAGE && (
 				<span>Ran out of local storage!</span>
 			)}
-			{status === STATUS.ACQUIRING && (
+			{status === STATUS.ACQUIRING && channels.length > 0 && (
 				<Formik
+					enableReinitialize
 					initialValues={{
 						channelName: channels.reduce(
 							(acc, channel) => {
-							acc[channel] = channel
-							return acc
-							},
-							{} as Record<string, string>
-						)
+							acc[channel] = channel || "";
+							return acc;
+						},
+						{} as Record<string, string>
+					)
 					}}
 					onSubmit={async values => {
-						const { channelName } = values
-
-						localStorage.setItem(
-							"aq_channelNames",
-							JSON.stringify(channelName)
-						)
+						const { channelName } = values;
+						window.electronAPI?.setChannelNames?.(channelName);
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">
@@ -733,12 +856,7 @@ const Page = () => {
 									<div className="bg-background-accent flex w-full flex-col rounded-md">
 										<div className="w-full p-4">
 											<CanvasChart
-												data={graphBuffer.map(
-													x => [
-														x[0],
-														x[1].channels[channel]
-													]
-												)}
+												data={channelData[channel] ?? []}
 												xMin={xDomain[0]}
 												xMax={xDomain[1]}
 												className="h-64 w-full"
@@ -764,6 +882,30 @@ const Page = () => {
 						})}
 					</Form>
 				</Formik>
+			)}
+			{showCloseModal && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+					<div
+						className="rounded-lg shadow-lg p-8 max-w-md w-full text-white"
+						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
+					>
+						<h2 className="text-xl font-bold mb-4 text-red-600">Ongoing Acquisition</h2>
+						<p className="mb-4">
+							An acquisition is currently running. If you want to close the tab, please stop the acquisition first.
+						</p>
+						<div className="flex justify-end gap-4">
+							<TextButton
+								size={"base"}
+								onClick={() => {
+									setShowCloseModal(false);
+									window.electronAPI?.confirmClose?.(false);
+								}}
+							>
+								Ok
+							</TextButton>
+						</div>
+					</div>
+				</div>
 			)}
 		</SenseLayout>
 	)

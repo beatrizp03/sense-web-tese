@@ -31,6 +31,17 @@ export class NodeSerialTransport implements Transport {
 	// treat both transports interchangeably.
 	constructor(private baudRate: number, private bufferSize: number) {}
 
+	private async sleep(milliseconds: number): Promise<void> {
+		await new Promise(resolve => setTimeout(resolve, milliseconds))
+	}
+
+	private isRetryableOpenError(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error)
+		return /busy|1167|disconnected or unavailable|port is not open|networkerror/i.test(
+			message
+		)
+	}
+
 	isOpen(): boolean {
 		return this.electronPortPath !== null
 	}
@@ -55,48 +66,67 @@ export class NodeSerialTransport implements Transport {
        // Add a longer delay before opening the port to allow OS/device to fully release it
 	   //console.log("[NodeSerialTransport - 10000] Port selected, waiting for OS to release...");
 	   //await new Promise(resolve => setTimeout(resolve, 10000));
-       try {
-	       await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate });
-		   console.log('[OPEN - nodeserial] Port opened', this.electronPortPath);
-       } catch (e) {
-	       if (e.message && e.message.includes("busy")) {
-		       console.error("[NodeSerialTransport] Port is busy. Try unplugging/replugging the device or restarting the app.");
-		       throw new ConnectionFailedException(this);
-	       }
-	       if (e.message && e.message.includes("invalid byte")) {
-		       console.error("[NodeSerialTransport] Invalid byte error. Device may need a hardware reset or power cycle.");
-		       throw new ConnectionFailedException(this);
-	       }
-	       // Map port open failures
-	       if (e.message && e.message.includes("NetworkError")) {
-		       throw new ConnectionFailedException(this);
-	       }
-	       throw e;
-       }
+	   const openRetryDelays = [500, 1000, 2000, 4000, 8000]
+	   let lastError: unknown = null
+
+	   for (let attempt = 0; attempt < openRetryDelays.length; attempt++) {
+		   try {
+			   await api.openSerialPort(this.electronPortPath, { baudRate: this.baudRate })
+			   console.log('[OPEN - nodeserial] Port opened', this.electronPortPath)
+			   return
+		   } catch (error) {
+			   lastError = error
+			   if (!this.isRetryableOpenError(error)) {
+				   if (error instanceof Error && error.message.toLowerCase().includes('invalid byte')) {
+					   console.error("[NodeSerialTransport] Invalid byte error. Device may need a hardware reset or power cycle.")
+					   throw new ConnectionFailedException(this)
+				   }
+				   throw error
+			   }
+
+			   if (attempt < openRetryDelays.length - 1) {
+				   await this.sleep(openRetryDelays[attempt])
+				   continue
+			   }
+
+			   break
+		   }
+	   }
+
+	   const message = lastError instanceof Error ? lastError.message : String(lastError)
+	   if (message.toLowerCase().includes('busy')) {
+		   console.error("[NodeSerialTransport] Port is busy. Try unplugging/replugging the device or restarting the app.")
+	   } else if (message.includes("1167") || message.toLowerCase().includes("disconnected or unavailable")) {
+		   console.error("[NodeSerialTransport] Port unavailable (Windows 1167). Device may have disconnected or the COM handle is stale.")
+	   } else if (message.toLowerCase().includes("networkerror")) {
+		   console.error("[NodeSerialTransport] NetworkError while opening the port.")
+	   }
+
+	   throw new ConnectionFailedException(this)
 	}
 
-	       async close(): Promise<void> {
-		       if (this.electronPortPath) {
-			// Reset locks and buffer for reuse
-			this.readLock = new Mutex();
-			this.writeLock = new Mutex();
-			       await (window as any).electronAPI.closeSerialPort(
-				       this.electronPortPath
-			       )
-			       console.log('[CLOSE - nodeserial] Closing port', this.electronPortPath);
-			       this.electronPortPath = null;
-			       // Add a delay after closing the port to allow OS/device to fully release it
-				   //console.log("[NodeSerialTransport - 9000] Port closed, waiting for OS to release...");
-				   //await new Promise(resolve => setTimeout(resolve, 9000));
-		       }
-		       // Cancel all pending read and write operations
-		       const error = new TransportClosedException(this);
-		       this.readLock.cancel(error);
-		       this.writeLock.cancel(error);
+	async close(): Promise<void> {
+		if (this.electronPortPath) {
+	// Reset locks and buffer for reuse
+	this.readLock = new Mutex();
+	this.writeLock = new Mutex();
+			await (window as any).electronAPI.closeSerialPort(
+				this.electronPortPath
+			)
+			console.log('[CLOSE - nodeserial] Closing port', this.electronPortPath);
+			this.electronPortPath = null;
+			// Add a delay after closing the port to allow OS/device to fully release it
+			//console.log("[NodeSerialTransport - 9000] Port closed, waiting for OS to release...");
+			//await new Promise(resolve => setTimeout(resolve, 9000));
+		}
+		// Cancel all pending read and write operations
+		const error = new TransportClosedException(this);
+		this.readLock.cancel(error);
+		this.writeLock.cancel(error);
 
-		       // Clear local read buffer to avoid stale data on reconnect
-			this.readBuffer = new Uint8Array(0);
-	       }
+		// Clear local read buffer to avoid stale data on reconnect
+	this.readBuffer = new Uint8Array(0);
+	}
 
 	async write(data: Uint8Array): Promise<void> {
 		if (!this.isOpen()) {

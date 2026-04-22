@@ -24,7 +24,7 @@ class ChunkedDataWriter {
     return stream;
   }
 
-  writeChunk(chunk) {
+  writeChunk(chunk, onFinish) {
     // Accept both array and {frames, ...} object
     let frames = chunk;
     if (chunk && typeof chunk === 'object' && Array.isArray(chunk.frames)) {
@@ -42,14 +42,24 @@ class ChunkedDataWriter {
       this.currentStream.write(JSON.stringify(sample, null, 2));
       this.currentChunkHasData = true;
     }
+    this.lastFilename = this.currentStream.path;
     console.log(`[MAIN] Wrote chunk with ${frames.length} frames to ${this.currentStream.path}`);
-    this.finalizeChunk();
+    this.finalizeChunk(onFinish);
   }
 
-  finalizeChunk() {
+  getLastFilename() {
+    return this.lastFilename;
+  }
+  
+  finalizeChunk(onFinish) {
     if (this.currentStream) {
       this.currentStream.write('\n]');
       this.currentStream.end();
+      if (typeof onFinish === 'function') {
+        this.currentStream.once('finish', () => {
+          onFinish(this.lastFilename);
+        });
+      }
     }
     this.chunkIndex++;
     console.log(`[MAIN] Finalized chunk ${this.chunkIndex - 1}`);
@@ -68,16 +78,24 @@ class ChunkedDataWriter {
   }
 
   deleteEmptyChunks() {
-    const files = fs.readdirSync(this.outputDir);
-    files.forEach(file => {
-      if (file.startsWith(this.baseFilename + '_chunk') && file.endsWith('.json')) {
-        const filePath = path.join(this.outputDir, file);
-        const stats = fs.statSync(filePath);
-        if (stats.size <= 3) {
-          fs.unlinkSync(filePath);
+    try {
+      const files = fs.readdirSync(this.outputDir);
+      files.forEach(file => {
+        if (file.startsWith(this.baseFilename + '_chunk') && file.endsWith('.json')) {
+          const filePath = path.join(this.outputDir, file);
+          const stats = fs.statSync(filePath);
+          if (stats.size <= 3) {
+            fs.unlinkSync(filePath);
+          }
         }
+      });
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        console.warn(`[ChunkedDataWriter] No folder in directory: ${this.outputDir} (might have been deleted)`);
+      } else {
+        console.error('[ChunkedDataWriter] Error in deleteEmptyChunks:', err);
       }
-    });
+    }
   }
 }
 

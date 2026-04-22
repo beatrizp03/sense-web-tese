@@ -123,7 +123,14 @@ export class ScientISSTFrameReader implements FrameReader {
 			// frame
 
 			let skippedBytes = 0 // The number of bytes skipped in this iteration
+			const resyncStart = Date.now();
+			const MAX_RESYNC_MS = 3000; // 3 seconds
+			
 			while (!this.isValidFrame(frameBytes)) {
+				if (Date.now() - resyncStart > MAX_RESYNC_MS) {
+					console.error(`Resync timeout: skipped ${skippedBytes} bytes in ${Date.now() - resyncStart} ms`);
+					throw new TooManyFramesLostException(this);
+				}
 				console.log("Invalid byte")
 				// Fetch one more byte
 				buffer = new Uint8Array([
@@ -146,6 +153,7 @@ export class ScientISSTFrameReader implements FrameReader {
 					(this.firmwareVersion.major < 2 &&
 						skippedBytes >= this.bytesPerFrame * 14)
 				) {
+					console.error(`Too many frames lost: skipped ${skippedBytes} bytes while trying to read ${frames} frames.`)
 					throw new TooManyFramesLostException(this)
 				}
 			}

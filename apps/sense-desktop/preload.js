@@ -6,6 +6,35 @@ const openPorts = new Map();
 // Only expose secure bridge APIs, no buffering or business logic
 const serialBuffers = {};
 const serialDataHandlers = new Map();
+const serialCloseHandlers = new Map();
+const serialErrorHandlers = new Map();
+
+function cleanupPortState(path, port) {
+  const target = port || openPorts.get(path);
+  if (target) {
+    const onData = serialDataHandlers.get(path);
+    if (onData) {
+      target.off("data", onData);
+      serialDataHandlers.delete(path);
+    }
+    const onClose = serialCloseHandlers.get(path);
+    if (onClose) {
+      target.off("close", onClose);
+      serialCloseHandlers.delete(path);
+    }
+    const onError = serialErrorHandlers.get(path);
+    if (onError) {
+      target.off("error", onError);
+      serialErrorHandlers.delete(path);
+    }
+  } else {
+    serialDataHandlers.delete(path);
+    serialCloseHandlers.delete(path);
+    serialErrorHandlers.delete(path);
+  }
+  openPorts.delete(path);
+  serialBuffers[path] = Buffer.alloc(0);
+}
 
 // run a PowerShell command to enumerate Bluetooth devices and
 // return a map from instance ID to friendly name. this allows us to
@@ -49,7 +78,7 @@ async function listPorts() {
   clearRingBuffer(); // Always clear buffer before listing ports
   
   let ports = await SerialPort.list();
-  console.log('serial ports', ports);
+  //console.log('serial ports', ports);
 
   // normalize each entry to a usable string path; some drivers put the
   // COM path in `comName` or just `name`. drop anything where we can't
@@ -171,16 +200,27 @@ async function openSerialPort(path, options = {}) {
   const onData = (chunk) => {
     serialBuffers[path] = Buffer.concat([serialBuffers[path], chunk]);
   };
+  const onClose = () => cleanupPortState(path, port);
+  const onError = () => cleanupPortState(path, port);
   serialDataHandlers.set(path, onData);
+  serialCloseHandlers.set(path, onClose);
+  serialErrorHandlers.set(path, onError);
   port.on("data", onData);
-
-  port.removeAllListeners("error");
-  port.removeAllListeners("close");
+  port.on("close", onClose);
+  port.on("error", onError);
 
   return new Promise((resolve, reject) => {
     port.open((err) => {
-      if (err) reject(err);
-      else resolve();
+      if (err) {
+        cleanupPortState(path, port);
+        if (/1167/.test(err.message || "")) {
+          reject(new Error(`Opening ${path} failed: device is disconnected or unavailable (Windows 1167)`));
+          return;
+        }
+        reject(err);
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -210,36 +250,46 @@ async function readSerialPort(path, bytes, timeout) {
 
 async function closeSerialPort(path) {
   const port = openPorts.get(path);
-  if (!port) {
-    serialBuffers[path] = Buffer.alloc(0);
-    serialDataHandlers.delete(path);
-    return;
+  try {
+    if (port && port.isOpen) {
+      await new Promise((resolve, reject) => {
+        port.close(err => {
+          if (!err) {
+            resolve();
+            return;
+          }
+          if (/port is not open/i.test(err.message || "")) {
+            resolve();
+            return;
+          }
+          reject(err);
+        });
+      });
+    }
+  } finally {
+    cleanupPortState(path, port);
   }
-  // Remove listeners
-  const onData = serialDataHandlers.get(path);
-  if (onData) {
-    port.off("data", onData);
-    serialDataHandlers.delete(path);
-  }
-  port.removeAllListeners("error");
-  port.removeAllListeners("close");
-  await new Promise((resolve, reject) => {
-    port.close(err => err ? reject(err) : resolve());
-  });
-  openPorts.delete(path);
-  serialBuffers[path] = Buffer.alloc(0);
 }
 
-contextBridge.exposeInMainWorld('electronAPI', {
-  // Transport-safe bridge methods
+contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge methods
+  // Read a chunk file by absolute path (returns parsed JSON)
+  readChunkFile: async (filePath) => {
+    return await ipcRenderer.invoke('read-chunk-file', filePath);
+  },
   listSerialPorts: listPorts,
   requestPort: choosePort,
   writeSerialPort: async (path, data) => {
     const port = ensurePort(path);
     return new Promise((resolve, reject) => {
       port.write(Buffer.from(data), err => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          if (/port is not open/i.test(err.message || "")) {
+            cleanupPortState(path, port);
+          }
+          reject(err);
+          return;
+        }
+        resolve();
       });
     });
   },
@@ -250,19 +300,54 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => port.off('data', handler);
   },
   // Acquisition/session control
-  startAcquisition: (startTime) => ipcRenderer.send('start-acquisition', startTime),
+  startAcquisition: async (startTime) => {
+    return await ipcRenderer.invoke('start-acquisition', startTime);
+  },
   stopAcquisition: () => ipcRenderer.send('stop-acquisition'),
-  writeChunk: (chunk) => ipcRenderer.send('write-chunk', chunk),
-  finalizeSession: () => ipcRenderer.send('finalize-session'),
-  flushSamples: (finalize) => ipcRenderer.send('flush-samples', finalize),
+  // Remove legacy writeChunk and flushSamples APIs
+  finalizeSession: (endedAt) => ipcRenderer.invoke('finalizeSession', endedAt),
+  // Session/manifest management
+  createSession: (meta) => ipcRenderer.invoke('createSession', meta),
+  registerSegment: (segmentInfo) => ipcRenderer.invoke('registerSegment', segmentInfo),
+  updateSessionMeta: (patch) => ipcRenderer.invoke('updateSessionMeta', patch),
+  updateSegmentEndedAt: (index, endedAt) => ipcRenderer.invoke('updateSegmentEndedAt', index, endedAt),
+  setChannelNames: (names) => ipcRenderer.invoke('setChannelNames', names),
+  // New: flush BufferManager chunk in main process
+  flushChunk: (final = false) => ipcRenderer.send('flush-chunk', { final }),
   setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
+  // Send a frame to main process BufferManager
+  sendFrame: (frame) => ipcRenderer.send('send-frame', frame),
   // Listen for chunk write completion (info object)
   onChunkWriteComplete: (cb) => {
     ipcRenderer.on('chunk-write-complete', (_event, info) => cb(info));
     return () => ipcRenderer.removeAllListeners('chunk-write-complete');
   },
+  updateSessionManifest: (manifest) => ipcRenderer.send('update-session-manifest', manifest),
+  loadAllChunks: async () => {
+    return await ipcRenderer.invoke('load-all-chunks');
+  },
+  loadPreviewFrames: async (sampleNum, frameCount) => {
+    return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
+  },
   openSerialPort,
   readSerialPort,
   closeSerialPort,
-  clearRingBuffer
+  clearRingBuffer,
+  readSessionManifest: async (sessionPath) => {
+    return await ipcRenderer.invoke('read-session-manifest', sessionPath);
+  },
+  acquisitionError: async (sessionPath) => {
+    return await ipcRenderer.invoke('acquisition-error', sessionPath);
+  },
+  onShowCloseWarning: (callback) => {
+    ipcRenderer.on('show-close-warning', callback);
+    return () => ipcRenderer.removeAllListeners('show-close-warning');
+  },
+  confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose),
+  resetSession: () => ipcRenderer.send('reset-session'),
+  logPerfEvent: (name, durationMs) => ipcRenderer.send('log-perf-event', { name, durationMs }),
+  stopPerfLoggerIfPending: (status) => ipcRenderer.invoke('stop-perf-logger-if-pending', status),
+  loadSessionSettingsHistory: () => ipcRenderer.invoke('load-session-settings-history'),
+  saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot),
+  clearSessionSettingsHistory: () => ipcRenderer.invoke('clear-session-settings-history')
 });

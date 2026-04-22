@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { useRouter } from "next/router"
 
@@ -45,115 +45,181 @@ const addSvgToPDF = async (
 }
 
 const Page = () => {
-	const router = useRouter()
+	const router = useRouter();
+	const [manifest, setManifest] = useState<any>({});
+	const [loading, setLoading] = useState(true);
+	const [loadAttempts, setLoadAttempts] = useState(0);
+	const [csvDownloading, setCsvDownloading] = useState(false)
+	const csvExportedRef = useRef(false)
+	const pdfExportedRef = useRef(false)
+	const MAX_ATTEMPTS = 8;
+
 	useEffect(() => {
-		if (!("aq_seg1" in localStorage)) {
-			router.push("/").finally(() => {
-				// Ignore
+		const stopIfPending = () => {
+			void window.electronAPI?.stopPerfLoggerIfPending?.({
+				csvExported: csvExportedRef.current,
+				pdfExported: pdfExportedRef.current
 			})
 		}
-	}, [router])
 
-	const convertToCSV = useCallback(() => {
-		const channels: string[] = JSON.parse(
-			localStorage.getItem("aq_channels")
-		)
-		const segments: number = JSON.parse(localStorage.getItem("aq_segments"))
-		const deviceType = localStorage.getItem("aq_deviceType")
-		const storedChannelNames: string[] = JSON.parse(
-			localStorage.getItem("aq_channelNames") ?? "{}"
-		)
-
-		if (deviceType !== "sense" && deviceType !== "maker") {
-			throw new Error("Device type not supported yet.")
+		const handleRouteChangeStart = (url: string) => {
+			if (url !== router.asPath) {
+				stopIfPending()
+			}
 		}
 
-		const zip = new JSZip()
-		let firstTimestamp = 0
+		router.events.on("routeChangeStart", handleRouteChangeStart)
+		return () => {
+			router.events.off("routeChangeStart", handleRouteChangeStart)
+		}
+	}, [router.asPath, router.events])
 
-		for (let i = 1; i <= segments; i++) {
-			const fileContent = []
-			const frames =
-				deviceType === "sense"
-					? ScientISSTFrame.deserializeAll(
-							localStorage.getItem(`aq_seg${i}`),
-							new Set(channels)
-					  )
-					: MakerFrame.deserializeAll(
-							localStorage.getItem(`aq_seg${i}`),
-							new Set(channels)
-					  )
+	// Sequential retry: wait for session.json to be written before giving up
+	useEffect(() => {
+		let mounted = true;
+		async function tryLoad() {
+			if (typeof window === 'undefined' || !window.electronAPI?.loadAllChunks) {
+				if (mounted) setLoading(false);
+				return;
+			}
+			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+				if (!mounted) return;
+				setLoadAttempts(attempt);
+				try {
+					const { meta } = await window.electronAPI.loadAllChunks();
+					if (!mounted) return;
+					if (meta) {
+						setManifest(meta);
+						setLoading(false);
+						return;
+					}
+				} catch (e) {
+					// session.json may not be written yet, retry
+				}
+				await new Promise(res => setTimeout(res, 1000));
+			}
+			if (mounted) setLoading(false);
+		}
+		tryLoad();
+		return () => { mounted = false; };
+	}, []);
 
-			if (frames.length === 0) {
-				continue
+	const noData = !loading && !manifest?.chunks?.length;
+
+	// Warnings derived from manifest alone — no frame data needed
+	const mappingWarnings = useMemo(() => {
+		if (!Array.isArray(manifest?.segments) || !Array.isArray(manifest?.chunks)) return [];
+		const warnings: string[] = [];
+		const chunksBySegment: Record<number, number> = {};
+		manifest.chunks.forEach((c: any) => {
+			chunksBySegment[c.segment] = (chunksBySegment[c.segment] || 0) + 1;
+		});
+		manifest.segments.forEach((seg: any, i: number) => {
+			if (!chunksBySegment[seg.index]) {
+				warnings.push(`Segment ${i + 1}: manifest segment present but no chunk data found.`);
+			}
+		});
+		return warnings;
+	}, [manifest]);
+
+	const convertToCSV = useCallback(async () => {
+		if (csvDownloading) return
+		setCsvDownloading(true)
+		const csvExportStart = Date.now();
+		try {
+			// Use manifest/chunk files as source of truth, but stream chunk files one by one
+			let channels = manifest.channels || [];
+			let deviceType = manifest.deviceType;
+			let storedChannelNames = manifest.channelNames || {};
+			let sampleRate = manifest.sampleRate;
+			let segmentsMeta = manifest.segments || [];
+
+			if (!channels.length || !deviceType || !sampleRate) {
+				alert("Missing or incomplete manifest/session metadata.");
+				return;
+			}
+			if (!manifest.chunks || manifest.chunks.length === 0) {
+				alert("No chunk files found in manifest. Export aborted.");
+				return;
+			}
+			if (deviceType !== "sense" && deviceType !== "maker") {
+				alert("Device type not supported yet.");
+				return;
 			}
 
-			const resolutionBits = []
-			for (let j = 0; j < channels.length; j++) {
-				resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]])
+			const zip = new JSZip();
+			let firstTimestamp = 0;
+			// Group chunk files by segment
+			const segmentFiles: Record<string, string[]> = {};
+			for (const chunkRec of manifest.chunks) {
+				if (!segmentFiles[chunkRec.segment]) segmentFiles[chunkRec.segment] = [];
+				segmentFiles[chunkRec.segment].push(chunkRec.file);
 			}
-
-			const timestamp = new Date(
-				JSON.parse(localStorage.getItem(`aq_seg${i}time`) ?? "0")
-			)
-
-			// This is used to name the zip file
-			if (firstTimestamp === 0) {
-				firstTimestamp = timestamp.getTime()
-			}
-
-			const metadata = {
-				Device:
-					deviceType === "sense"
-						? "ScientISST Sense"
-						: "ScientISST Maker",
-				Channels: channels,
-				"Sampling rate (Hz)": JSON.parse(
-					localStorage.getItem("aq_sampleRate")
-				),
-				"ISO 8601": timestamp.toISOString(),
-				Timestamp: timestamp.getTime(),
-				"Resolution (bits)":
-					deviceType === "sense" ? resolutionBits : undefined
-			}
-
-			fileContent.push("#" + JSON.stringify(metadata, null, null))
-
-			// append header
-			fileContent.push(
-				"#NSeq," +
+			// For each segment, process chunk files sequentially
+			for (const [segmentIdx, files] of Object.entries(segmentFiles)) {
+				const segment = segmentsMeta.find(s => s.index == segmentIdx);
+				const fileContent = [];
+				const resolutionBits = [];
+				for (let j = 0; j < channels.length; j++) {
+					resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[channels[j]]);
+				}
+				const timestamp = new Date(segment?.startedAt || 0);
+				if (firstTimestamp === 0) {
+					firstTimestamp = timestamp.getTime();
+				}
+				const metadata = {
+					Device:
+						deviceType === "sense"
+							? "ScientISST Sense"
+							: "ScientISST Maker",
+					Channels: channels,
+					"Sampling rate (Hz)": sampleRate,
+					"ISO 8601": timestamp.toISOString(),
+					Timestamp: timestamp.getTime(),
+					"Resolution (bits)": deviceType === "sense" ? resolutionBits : undefined
+				};
+				fileContent.push("#" + JSON.stringify(metadata, null, null));
+				fileContent.push(
+					"#NSeq," +
 					channels
 						.map(channel => storedChannelNames[channel] ?? channel)
 						.join(",")
-			)
-
-			// append data
-			for (let j = 0; j < frames.length; j++) {
-				const frameContent = []
-				frameContent.push(frames[j].sequence)
-
-				for (let k = 0; k < channels.length; k++) {
-					frameContent.push(frames[j].channels[channels[k]])
+				);
+				// For each chunk file in this segment, load and stream frames
+				for (const chunkFile of files) {
+					try {
+						// Use Electron API to read chunk file from disk
+						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
+						const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
+						for (let j = 0; j < frames.length; j++) {
+							const frameContent = [];
+							frameContent.push(frames[j].sequence);
+							for (let k = 0; k < channels.length; k++) {
+								frameContent.push(frames[j].channels[channels[k]]);
+							}
+							fileContent.push(frameContent.join(","));
+						}
+					} catch (e) {
+						console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
+					}
 				}
-
-				fileContent.push(frameContent.join(","))
+				zip.file(`segment_${segmentIdx}.csv`, fileContent.join("\n"));
 			}
-
-			zip.file(`segment_${i}.csv`, fileContent.join("\n"))
+			if (firstTimestamp === 0) {
+				firstTimestamp = new Date().getTime();
+			}
+			const timestampISO = new Date(firstTimestamp).toISOString();
+			const content = await zip.generateAsync({ type: "blob" })
+			FileSaver.saveAs(content, `${timestampISO}.zip`);
+			csvExportedRef.current = true
+			window.electronAPI?.logPerfEvent?.('csv_export', Date.now() - csvExportStart);
+		} finally {
+			setCsvDownloading(false)
 		}
-
-		if (firstTimestamp === 0) {
-			firstTimestamp = new Date().getTime()
-		}
-
-		const timestampISO = new Date(firstTimestamp).toISOString()
-
-		zip.generateAsync({ type: "blob" }).then(content => {
-			FileSaver.saveAs(content, `${timestampISO}.zip`)
-		})
-	}, [])
+	}, [manifest, csvDownloading]);
 
 	const convertToPDF = useCallback(async () => {
+		const pdfExportStart = Date.now();
 		const pdf = new JsPDF({
 			orientation: "landscape",
 			unit: "mm",
@@ -209,40 +275,32 @@ const Page = () => {
 		pdf.addFileToVFS("Lexend-Light.ttf", lexendLightFontBase64)
 		pdf.addFont("Lexend-Light.ttf", "Lexend", "light")
 
-		// Extract acquisition data from local storage
-		const channels: string[] = JSON.parse(
-			localStorage.getItem("aq_channels")
-		)
-		const segmentCount: number = JSON.parse(
-			localStorage.getItem("aq_segments")
-		)
-		const deviceType = localStorage.getItem("aq_deviceType")
-		const storedChannelNames: string[] = JSON.parse(
-			localStorage.getItem("aq_channelNames") ?? "{}"
-		)
+		// Use manifest as source of truth
+		const channels = manifest.channels || [];
+		const segmentsMeta = manifest.segments || [];
+		const segmentCount = segmentsMeta.length;
+		const deviceType = manifest.deviceType;
+		const storedChannelNames = manifest.channelNames || {};
+		const samplingRate = manifest.sampleRate;
+		const timestamp = new Date((segmentsMeta[segmentCount - 1]?.startedAt) || 0);
+		const lastSampleNum = segmentsMeta[segmentCount - 1]?.index ?? segmentCount;
 
-		if (deviceType !== "sense" && deviceType !== "maker") {
-			throw new Error("Device type not supported yet.")
+		if (!channels.length || !deviceType || !samplingRate) {
+			alert("Missing or incomplete manifest/session metadata.");
+			return;
 		}
-		const selectedSegment = segmentCount
-		const frames =
-			deviceType === "sense"
-				? ScientISSTFrame.deserializeAll(
-						localStorage.getItem(`aq_seg${selectedSegment}`) ?? "",
-						new Set(channels)
-				  )
-				: MakerFrame.deserializeAll(
-						localStorage.getItem(`aq_seg${selectedSegment}`) ?? "",
-						new Set(channels)
-				  )
 
-		const timestamp = new Date(
-			JSON.parse(localStorage.getItem(`aq_seg${selectedSegment}time`))
-		)
-		const samplingRate = JSON.parse(localStorage.getItem("aq_sampleRate"))
+		// Load only the last 10 seconds of frames needed for the chart preview
+		const svgWidth = samplingRate * 10;
+		const frames = await window.electronAPI?.loadPreviewFrames?.(lastSampleNum, svgWidth) ?? [];
 
-		if (frames.length === 0) {
-			throw new Error("No frames found")
+		if (!frames || frames.length === 0) {
+			alert("No frames found. Export aborted.");
+			return;
+		}
+		if (deviceType !== "sense" && deviceType !== "maker") {
+			alert("Device type not supported yet.");
+			return;
 		}
 
 		const pages = Math.ceil(channels.length / 3)
@@ -579,33 +637,63 @@ const Page = () => {
 
 		const timestampISO = new Date(timestamp).toISOString()
 		pdf.save(`${timestampISO}.pdf`)
-	}, [])
+		pdfExportedRef.current = true
+		window.electronAPI?.logPerfEvent?.('pdf_export', Date.now() - pdfExportStart);
+	}, [manifest])
 
-	return (
-		<SenseLayout
-			title="Summary"
-			returnHref="/live"
-			className="flex w-[480px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[640px]"
-		>
-			<span>End of acquisition!</span>
-			<div className="justify-cenPDF flex flex-row gap-4">
-				<TextButton
-					size="base"
-					className="flex-grow"
-					onClick={convertToCSV}
-				>
-					Download as CSV
-				</TextButton>
-				<TextButton
-					size="base"
-					className="flex-grow"
-					onClick={convertToPDF}
-				>
-					Download as PDF
-				</TextButton>
-			</div>
-		</SenseLayout>
-	)
+
+		return (
+			<SenseLayout
+				title="Summary"
+				returnHref="/live"
+				className="flex w-[480px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[640px]"
+			>
+				{loading ? (
+					<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
+				) : noData ? (
+					<div className="text-red-600 text-center text-base border border-red-300 rounded p-4 bg-red-50 max-w-full">
+						<b>No valid acquisition data found.</b>
+						<div className="mt-2 text-xs">No chunk files with data were found for this session. Please check your acquisition and try again.</div>
+					</div>
+				) : (
+					<>
+						<span>End of acquisition!</span>
+						{mappingWarnings.length > 0 && (
+							<div className="text-red-600 text-xs whitespace-pre-line border border-red-300 rounded p-2 bg-red-50 max-w-full">
+								<b>Session Data Warnings:</b>
+								<ul className="list-disc ml-4">
+									{mappingWarnings.map((w, i) => (
+										<li key={i}>{w}</li>
+									))}
+								</ul>
+							</div>
+						)}
+						<div className="justify-cenPDF flex flex-row gap-4">
+							<TextButton
+								size="base"
+								className="flex-grow"
+								disabled={csvDownloading}
+								onClick={convertToCSV}
+							>
+								Download as CSV
+							</TextButton>
+							<TextButton
+								size="base"
+								className="flex-grow"
+								onClick={convertToPDF}
+							>
+								Download as PDF
+							</TextButton>
+						</div>
+						<div className="text-xs text-gray-500">
+							{csvDownloading && (
+								<span>Downloading CSV ...</span>
+							)}
+						</div>
+					</>
+				)}
+			</SenseLayout>
+		);
 }
 
 export default Page

@@ -2,23 +2,33 @@ import { useEffect, useState } from "react"
 
 import Image from "next/image"
 
+import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import { faToolbox, faWaveSquare } from "@fortawesome/free-solid-svg-icons"
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
 import {
 	ButtonCheckboxGroupField,
 	ButtonRadioGroupField,
 	ImageRadioGroupField,
-	NumberField
+	NumberField,
+	TextButton
 } from "@scientisst/react-ui/components/inputs"
 import { FormikAutoSubmit } from "@scientisst/react-ui/components/utils"
 import { SCIENTISST_COMUNICATION_MODE } from "@scientisst/sense/future"
 import clsx from "clsx"
 import { Form, Formik } from "formik"
+import resolveConfig from "tailwindcss/resolveConfig"
 import * as Yup from "yup"
 
+import tailwindConfig from "../../tailwind.config"
 import CoreBottom from "../assets/boards/core-bottom.svg"
 import CoreTop from "../assets/boards/core-top.svg"
 import SenseLayout from "../components/layout/SenseLayout"
+import {
+	applySessionSettingsSnapshot,
+	clearLastSessionSettingsPersistent,
+	loadLastSessionSettingsPersistent,
+	SessionSettingsSnapshot
+} from "../utils/sessionSettingsHistory"
 
 const schema = Yup.object().shape({
 	deviceType: Yup.string().oneOf(["sense", "maker"]).required(),
@@ -32,7 +42,7 @@ const schema = Yup.object().shape({
 			"Bluetooth is not supported on your current browser.",
 			value =>
 				value !== SCIENTISST_COMUNICATION_MODE.WEBSERIAL ||
-				typeof navigator.serial !== "undefined"
+				typeof (navigator as any).serial !== "undefined"
 		)
 		.required(),
 	baudRate: Yup.number().when("deviceType", {
@@ -51,8 +61,22 @@ const schema = Yup.object().shape({
 	})
 })
 
+const fullConfig = resolveConfig(tailwindConfig)
+const primaryDarkColor =
+	(fullConfig.theme as any)?.colors?.["background-dark"] ?? "#1C1C1E"
+const backgroundAccentDarkColor =
+	(fullConfig.theme as any)?.colors?.["background-accent-dark"] ?? "#2C2C2E"
+const primaryLightColor =
+	(fullConfig.theme as any)?.colors?.["background-light"] ?? "#FFFFFF"
+const backgroundAccentLightColor =
+	(fullConfig.theme as any)?.colors?.["background-accent-light"] ?? "#F2F2F7"
+
 const Page = () => {
+	const isDark = useDarkTheme()
 	const [loaded, setLoaded] = useState(false)
+	const [showHistoryModal, setShowHistoryModal] = useState(false)
+	const [settingsHistory, setSettingsHistory] =
+		useState<SessionSettingsSnapshot[]>([])
 	const [defaultValues, setDefaultValues] = useState({
 		deviceType: "sense",
 		communication: SCIENTISST_COMUNICATION_MODE.WEBSERIAL,
@@ -62,26 +86,35 @@ const Page = () => {
 	})
 
 	useEffect(() => {
-		if (typeof window !== "undefined" && !loaded) {
-			setLoaded(true)
+		if (typeof window === "undefined" || loaded) return
 
-			setDefaultValues({
-				...defaultValues,
+		setLoaded(true)
+		void (async () => {
+			setSettingsHistory(await loadLastSessionSettingsPersistent())
+
+			setDefaultValues(current => ({
+				...current,
 				communication:
-					typeof navigator.serial !== "undefined"
+					typeof (navigator as any).serial !== "undefined"
 						? SCIENTISST_COMUNICATION_MODE.WEBSERIAL
 						: SCIENTISST_COMUNICATION_MODE.WEBSOCKET,
 				...(JSON.parse(localStorage.getItem("settings") ?? "{}") || {})
-			})
-		}
-	}, [defaultValues, loaded])
+			}))
+		})()
+	}, [loaded])
+
+	const formatSavedAt = (savedAt: number): string => {
+		const date = new Date(savedAt)
+		if (Number.isNaN(date.getTime())) return "Unknown date"
+		return date.toLocaleString()
+	}
 
 	return (
 		<SenseLayout
 			title="Sense Settings"
 			shortTitle="Settings"
 			returnHref="/"
-			className="container flex flex-col items-center justify-start p-8"
+			className="container flex flex-col items-center justify-start pb-"
 			style={{
 				minHeight: "calc(100vh - 18.5rem)"
 			}}
@@ -94,9 +127,27 @@ const Page = () => {
 						localStorage.setItem("settings", JSON.stringify(values))
 					}}
 				>
-					{({ values: { deviceType } }) => (
-						<Form className="flex w-full flex-col items-center">
+					{({ values: { deviceType }, setValues }) => (
+						<>
+						<Form
+							className="relative flex w-full flex-col items-center rounded-xl p-6"
+						>
 							<FormikAutoSubmit delay={100} />
+							<div className="absolute right-4 top-12 z-10 -translate-y-1/2">
+								<TextButton
+									size={"base"}
+									className="text-sm"
+									onClick={event => {
+										event.preventDefault()
+										void (async () => {
+											setSettingsHistory(await loadLastSessionSettingsPersistent())
+											setShowHistoryModal(true)
+										})()
+									}}
+								>
+									History
+								</TextButton>
+							</div>
 							<ImageRadioGroupField
 								label="Device Type"
 								id="deviceType"
@@ -369,7 +420,83 @@ const Page = () => {
 									/>
 								</>
 							)}
-						</Form>
+							</Form>
+							{showHistoryModal && (
+								<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+									<div
+										className="w-full max-w-xl rounded-lg p-6 shadow-lg"
+										style={{ backgroundColor: isDark ? `${primaryDarkColor}E6` : `${primaryLightColor}E6` }}
+									>
+										<h2 className="mb-3 text-xl font-bold">Last sessions' history</h2>
+										<p className="mb-4 text-sm opacity-80">
+											Choose one of your recent session configurations.
+										</p>
+
+										{settingsHistory.length === 0 ? (
+											<p className="mb-4">No previous sessions found yet.</p>
+										) : (
+											<ul className="mb-4 max-h-80 space-y-2 overflow-y-auto rounded-md p-2">
+												{settingsHistory.map(snapshot => (
+													<li key={snapshot.id}>
+														<button
+															type="button"
+															className="w-full transform-gpu cursor-pointer rounded-md px-4 py-3 text-left transition-transform duration-150 ease-out hover:scale-[0.98] active:scale-[0.97]"
+															style={{ backgroundColor: isDark ? backgroundAccentDarkColor : backgroundAccentLightColor }}
+															onClick={() => {
+															const snapshotSettings = applySessionSettingsSnapshot(snapshot)
+															const nextValues = {
+																...defaultValues,
+																...snapshotSettings
+															}
+															
+															// Ensure required fields for Sense device
+															if ((snapshotSettings.deviceType ?? nextValues.deviceType) === "sense") {
+																if (!Array.isArray(nextValues.channels) || nextValues.channels.length === 0) {
+																	nextValues.channels = defaultValues.channels
+																}
+															}
+															
+																setDefaultValues(nextValues)
+																setValues(nextValues)
+																localStorage.setItem("settings", JSON.stringify(nextValues))
+																setShowHistoryModal(false)
+															}}
+														>
+															<div className="font-semibold">{snapshot.label}</div>
+															<div className="text-sm opacity-70">
+																{formatSavedAt(snapshot.savedAt)}
+															</div>
+														</button>
+													</li>
+												))}
+											</ul>
+										)}
+
+										<div className="flex justify-between">
+											<TextButton
+												size={"base"}
+												onClick={() => {
+													void (async () => {
+														await clearLastSessionSettingsPersistent()
+														setSettingsHistory([])
+													})()
+												}}
+											>
+												Reset History
+											</TextButton>
+											<TextButton
+												size={"base"}
+												onClick={() => {
+													setShowHistoryModal(false)
+												}}
+											>
+												Close
+											</TextButton>
+										</div>
+									</div>
+								</div>
+							)}
+						</>
 					)}
 				</Formik>
 			)}

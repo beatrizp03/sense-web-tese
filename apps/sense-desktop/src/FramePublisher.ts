@@ -12,11 +12,7 @@ class FramePublisher extends EventEmitter {
   publishFrame(frame: any): void {
     this.emit('frame', frame)
   }
-
-  publishFrames(frames: any[]): void {
-    frames.forEach(frame => this.publishFrame(frame))
-  }
-
+  
   subscribeFrame(cb: (frame: any) => void): () => void {
     this.on('frame', cb)
     return () => this.off('frame', cb)
