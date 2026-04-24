@@ -24,6 +24,7 @@ export class SessionManager {
       sampleRate: meta.sampleRate,
       channels: meta.channels,
       channelNames: meta.channelNames || {},
+      channelSignalKinds: meta.channelSignalKinds || {},
       adcChars: meta.adcChars || {},
       segments: [],
       chunks: [],

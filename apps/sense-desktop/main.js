@@ -2,6 +2,7 @@ const { app, BrowserWindow } = require("electron");
 const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
+const { spawn } = require('child_process');
 
 // Use external modules
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
@@ -12,6 +13,7 @@ const { SessionManager } = require('./src/SessionManager.js');
 const PerformanceLogger = require('./src/PerformanceLogger.js');
 const SESSION_SETTINGS_HISTORY_FILE = 'session-settings-history.json';
 const MAX_SESSION_SETTINGS_HISTORY = 5;
+const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.py');
 
 function getSessionSettingsHistoryPath() {
   return path.join(app.getPath('userData'), SESSION_SETTINGS_HISTORY_FILE);
@@ -29,13 +31,19 @@ function getSettingsFingerprint(settings) {
   const channels = Array.isArray(settings.channels)
     ? [...settings.channels].map(String).sort()
     : [];
+  const channelSignalKinds = settings.channelSignalKinds && typeof settings.channelSignalKinds === 'object'
+    ? Object.entries(settings.channelSignalKinds)
+      .filter(([key, value]) => channels.includes(String(key)) && typeof value === 'string' && value.length > 0)
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    : [];
 
   return JSON.stringify({
     deviceType: settings.deviceType ?? null,
     communication: settings.communication ?? null,
     baudRate: settings.baudRate ?? null,
     samplingRate: settings.samplingRate ?? null,
-    channels
+    channels,
+    channelSignalKinds
   });
 }
 
@@ -60,6 +68,112 @@ function saveSessionSettingsHistoryToDisk(history) {
   } catch (error) {
     console.error('[main] Failed to save session settings history:', error);
     return [];
+  }
+}
+
+function resolvePythonExecutable(preferredExecutable) {
+  return preferredExecutable || process.env.PYTHON_EXECUTABLE || process.env.PYTHON || 'python';
+}
+
+function getAnalysisOutputDir(sessionFolderPath) {
+  return path.join(sessionFolderPath, 'analysis');
+}
+
+function persistAnalysisResult(sessionFolderPath, result) {
+  const outputDir = getAnalysisOutputDir(sessionFolderPath);
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const resultPath = path.join(outputDir, 'analysis-result.json');
+  fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
+
+  const manifestPath = path.join(sessionFolderPath, 'session.json');
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.analysis = {
+        lastRunAt: result.completedAt || new Date().toISOString(),
+        resultPath: path.relative(sessionFolderPath, resultPath),
+        worker: 'python-analysis-worker'
+      };
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    } catch (error) {
+      console.error('[main] Failed to update manifest with analysis result:', error);
+    }
+  }
+
+  return resultPath;
+}
+
+function runPythonAnalysisJob(sessionFolderPath, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (!sessionFolderPath) {
+      reject(new Error('runPythonAnalysisJob called without a session folder'));
+      return;
+    }
+
+    const pythonExecutable = resolvePythonExecutable(options.pythonExecutable);
+    const outputDir = options.outputDir || getAnalysisOutputDir(sessionFolderPath);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const args = [
+      PYTHON_ANALYSIS_WORKER,
+      '--session-folder', sessionFolderPath,
+      '--output-folder', outputDir
+    ];
+
+    const child = spawn(pythonExecutable, args, {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1'
+      }
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Python analysis failed with exit code ${code}: ${stderr || stdout || 'no output'}`));
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout.trim() || '{}');
+        const resultPath = persistAnalysisResult(sessionFolderPath, parsed);
+        resolve({
+          ...parsed,
+          outputDir,
+          resultPath
+        });
+      } catch (error) {
+        reject(new Error(`Failed to parse Python analysis output: ${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`));
+      }
+    });
+  });
+}
+
+function readPersistedAnalysisResult(sessionFolderPath) {
+  if (!sessionFolderPath) return null;
+  const resultPath = path.join(sessionFolderPath, 'analysis', 'analysis-result.json');
+  if (!fs.existsSync(resultPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
+  } catch (error) {
+    console.error('[main] Failed to read analysis result:', error);
+    return null;
   }
 }
 
@@ -493,6 +607,25 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
     console.error('[read-session-manifest] Failed to read manifest:', e);
     throw e;
   }
+});
+
+ipcMain.handle('run-posthoc-analysis', async (_event, payload = {}) => {
+  const sessionFolderPath = payload.sessionFolder || sessionFolder || lastSessionFolder;
+  if (!sessionFolderPath) {
+    throw new Error('No session folder is available for analysis');
+  }
+
+  if (sampleWriter && sessionFolderPath === sessionFolder) {
+    throw new Error('Post-hoc analysis is only available after the session is finalized');
+  }
+
+  return runPythonAnalysisJob(sessionFolderPath, payload);
+});
+
+ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath) => {
+  const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
+  if (!folder) return null;
+  return readPersistedAnalysisResult(folder);
 });
 
 // Example: Flush remaining samples on app exit

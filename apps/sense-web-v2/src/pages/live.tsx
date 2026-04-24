@@ -401,11 +401,26 @@ const Page = () => {
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
 		if (!device) return;
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
+		const configuredSignalKinds =
+			typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
+				? (settings.channelSignalKinds as Record<string, string>)
+				: {}
+		const deviceChannels = (device.getChannels?.() ?? []).map(String)
+		const channelSignalKinds = Object.fromEntries(
+			Object.entries(configuredSignalKinds).filter(
+				([channel, signalKind]) =>
+					deviceChannels.includes(channel) &&
+					typeof signalKind === "string" &&
+					signalKind.length > 0
+			)
+		)
 		window.electronAPI?.updateSessionMeta?.({
 			segment: segmentRef.current,
-			channels: device.getChannels?.() ?? [],
+			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
 			deviceType: device instanceof Maker ? "maker" : "sense",
+			channelSignalKinds,
 			timestamp: Date.now()
 		});
 	}, []);
@@ -541,6 +556,7 @@ const Page = () => {
 		const device = deviceRef.current;
 		if (!device) return;
 		finalizingAfterErrorRef.current = false
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 
 		const startAcqTime = Date.now();
 		try {
@@ -553,12 +569,26 @@ const Page = () => {
 			const adcChars = device.getAdcCharacteristics?.() || {};
 
 			const now = Date.now();
+			const configuredSignalKinds =
+				typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
+					? (settings.channelSignalKinds as Record<string, string>)
+					: {}
+			const sessionChannels = (device.getChannels?.() ?? []).map(String)
+			const channelSignalKinds = Object.fromEntries(
+				Object.entries(configuredSignalKinds).filter(
+					([channel, signalKind]) =>
+						sessionChannels.includes(channel) &&
+						typeof signalKind === "string" &&
+						signalKind.length > 0
+				)
+			)
 			await window.electronAPI?.createSession?.({
 				sessionId: `${now}`,
 				startedAt: now,
 				deviceType: device instanceof Maker ? "maker" : "sense",
 				sampleRate,
-				channels: device.getChannels?.() ?? [],
+				channels: sessionChannels,
+				channelSignalKinds,
 				sessionFolder,
 				adcChars
 			});

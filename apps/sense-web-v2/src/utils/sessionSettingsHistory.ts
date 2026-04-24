@@ -4,6 +4,7 @@ export type SessionSettings = {
 	baudRate?: number
 	samplingRate?: number
 	channels?: string[]
+	channelSignalKinds?: Record<string, string>
 	[key: string]: unknown
 }
 
@@ -46,12 +47,26 @@ function getSettingsLabel(settings: SessionSettings): string {
 		return `Maker - ${settings.baudRate ?? 9600} baud`
 	}
 
-	const channelsLabel = Array.isArray(settings.channels) && settings.channels.length > 0
-		? settings.channels.map(String).join(", ")
-		: "No channels"
+	const channels = Array.isArray(settings.channels)
+		? settings.channels.map(String)
+		: []
+	const channelsLabel = channels.length > 0 ? channels.join(", ") : "No channels"
+	const signalKinds =
+		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
+			? settings.channelSignalKinds
+			:  {}
+	const signalTypesLabel =
+		channels.length > 0
+			? channels
+					.map(channel => {
+						const kind = signalKinds[channel]
+						return `${channel}:${typeof kind === "string" && kind.length > 0 ? kind.toUpperCase() : "--"}`
+					})
+					.join(", ")
+			: "No channels"
 	const rate = settings.samplingRate ?? 1000
 	const mode = settings.communication === 0 ? "WiFi" : "Bluetooth"
-	return `Sense - ${channelsLabel} - ${rate} Hz - ${mode}`
+	return `Sense | ${signalTypesLabel} | ${rate} Hz | ${mode}`
 }
 
 function normalizeSnapshotLabels(snapshots: SessionSettingsSnapshot[]): SessionSettingsSnapshot[] {
@@ -65,13 +80,25 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 	const channels = Array.isArray(settings.channels)
 		? [...settings.channels].map(String).sort()
 		: []
+	const channelSignalKinds =
+		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
+			? Object.entries(settings.channelSignalKinds)
+					.filter(
+						([channel, kind]) =>
+							channels.includes(String(channel)) &&
+							typeof kind === "string" &&
+							kind.length > 0
+					)
+					.sort(([a], [b]) => String(a).localeCompare(String(b)))
+			: []
 
 	return JSON.stringify({
 		deviceType: settings.deviceType ?? null,
 		communication: settings.communication ?? null,
 		baudRate: settings.baudRate ?? null,
 		samplingRate: settings.samplingRate ?? null,
-		channels
+		channels,
+		channelSignalKinds
 	})
 }
 

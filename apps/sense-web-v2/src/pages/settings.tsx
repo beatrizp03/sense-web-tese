@@ -30,6 +30,30 @@ import {
 	SessionSettingsSnapshot
 } from "../utils/sessionSettingsHistory"
 
+const SIGNAL_TYPE_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "ECG", value: "ecg" },
+	{ label: "EDA", value: "eda" },
+	{ label: "PPG", value: "ppg" },
+	{ label: "EMG", value: "emg" },
+	{ label: "RSP", value: "rsp" },
+	{ label: "EOG", value: "eog" },
+	{ label: "EEG", value: "eeg" },
+	{ label: "PCG", value: "pcg" },
+	{ label: "ACC", value: "acc" }
+]
+
+const CHANNEL_OPTIONS = [
+	{ name: "AI1", value: "AI1" },
+	{ name: "AI2", value: "AI2" },
+	{ name: "AI3", value: "AI3" },
+	{ name: "AI4", value: "AI4" },
+	{ name: "AI5", value: "AI5" },
+	{ name: "AI6", value: "AI6" },
+	{ name: "AX1", value: "AX1" },
+	{ name: "AX2", value: "AX2" }
+]
+
 const schema = Yup.object().shape({
 	deviceType: Yup.string().oneOf(["sense", "maker"]).required(),
 	communication: Yup.number()
@@ -82,7 +106,8 @@ const Page = () => {
 		communication: SCIENTISST_COMUNICATION_MODE.WEBSERIAL,
 		baudRate: 9600,
 		samplingRate: 1000,
-		channels: ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"]
+		channels: ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"],
+		channelSignalKinds: {} as Record<string, string>
 	})
 
 	useEffect(() => {
@@ -124,10 +149,34 @@ const Page = () => {
 					initialValues={defaultValues}
 					validationSchema={schema}
 					onSubmit={values => {
-						localStorage.setItem("settings", JSON.stringify(values))
+						const selectedChannels = Array.isArray(values.channels)
+							? values.channels.map(String)
+							: []
+						const rawSignalKinds =
+							typeof values.channelSignalKinds === "object" &&
+							values.channelSignalKinds !== null
+								? (values.channelSignalKinds as Record<string, string>)
+								: {}
+
+						const channelSignalKinds = Object.fromEntries(
+							Object.entries(rawSignalKinds).filter(
+								([channel, kind]) =>
+									selectedChannels.includes(channel) &&
+									typeof kind === "string" &&
+									kind.length > 0
+							)
+						)
+
+						localStorage.setItem(
+							"settings",
+							JSON.stringify({
+								...values,
+								channelSignalKinds
+							})
+						)
 					}}
 				>
-					{({ values: { deviceType }, setValues }) => (
+					{({ values, setValues }) => (
 						<>
 						<Form
 							className="relative flex w-full flex-col items-center rounded-xl p-6"
@@ -177,7 +226,7 @@ const Page = () => {
 									}
 								]}
 							/>
-							{deviceType === "sense" && (
+							{values.deviceType === "sense" && (
 								<>
 									<ButtonRadioGroupField
 										label="Communication"
@@ -210,204 +259,177 @@ const Page = () => {
 										id="channels"
 										name="channels"
 										center
-										options={[
-											{
-												name: "AI1",
-												value: "AI1"
-											},
-											{
-												name: "AI2",
-												value: "AI2"
-											},
-											{
-												name: "AI3",
-												value: "AI3"
-											},
-											{
-												name: "AI4",
-												value: "AI4"
-											},
-											{
-												name: "AI5",
-												value: "AI5"
-											},
-											{
-												name: "AI6",
-												value: "AI6"
-											},
-											{
-												name: "AX1",
-												value: "AX1"
-											},
-											{
-												name: "AX2",
-												value: "AX2"
-											}
-										]}
+										options={CHANNEL_OPTIONS}
 										image={hovered => (
-											<div className="hidden gap-8 sm:flex">
-												<div className="relative flex flex-col items-center">
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI1"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "0.25rem",
-															left: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI2"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "calc(4.75rem - 3px)",
-															left: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI3"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "calc(4.75rem - 3px)",
-															right: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AX1"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "0.25rem",
-															right: "0"
-														}}
-													/>
-													<Image
-														src={CoreTop}
-														alt=""
-														className="m-2"
-														style={{
-															maxWidth: "16rem",
-															height: "auto"
-														}}
-													/>
-													<span className="font-secondary text-2xl">
-														Top
-													</span>
-												</div>
-												<div className="relative flex flex-col items-center">
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI4"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "0.25rem",
-															right: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI5"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "calc(4.75rem - 3px)",
-															left: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AI6"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "calc(4.75rem - 3px)",
-															right: "0"
-														}}
-													/>
-													<div
-														className={clsx(
-															"border-primary absolute rounded-lg border-[3px]",
-															{
-																hidden:
-																	hovered !==
-																	"AX2"
-															}
-														)}
-														style={{
-															width: "4.5rem",
-															height: "4.5rem",
-															top: "0.25rem",
-															left: "0"
-														}}
-													/>
-													<Image
-														src={CoreBottom}
-														alt=""
-														className="m-2"
-														style={{
-															maxWidth: "16rem",
-															height: "auto"
-														}}
-													/>
-													<span className="font-secondary text-2xl">
-														Bottom
-													</span>
+											<div className="flex w-full flex-col items-center gap-3">
+												{Array.isArray(values.channels) && values.channels.length > 0 && (
+													<>
+														<span className="font-secondary text-lg">Signal Types</span>
+														<div className="mt-2 flex max-w-[11rem] flex-wrap justify-center gap-4 sm:max-w-none">
+														{CHANNEL_OPTIONS.map(channelOption => {
+															const channel = String(channelOption.value)
+															const isSelected = values.channels.includes(channel)
+															const channelSignalKinds =
+																typeof values.channelSignalKinds === "object" &&
+																values.channelSignalKinds !== null
+																	? (values.channelSignalKinds as Record<string, string>)
+																	: {}
+															const signalTypeValue = channelSignalKinds[channel] ?? ""
+
+															return (
+																<div
+																	key={`signal-type-${channel}`}
+																	className="relative flex h-12 items-center justify-center"
+																>
+																	<span
+																		className={clsx(
+																			"invisible flex h-12 min-w-[3rem] items-center justify-center rounded-full",
+																			{
+																				"border-[3px]": !isSelected
+																			}
+																		)}
+																		style={{
+																			padding: !isSelected ? "0 calc(1rem - 3px)" : "0 1rem"
+																		}}
+																	>
+																		{channel}
+																	</span>
+																	{isSelected ? (
+																		<select
+																			value={signalTypeValue}
+																			onChange={event => {
+																				const nextValue = event.target.value
+																				const currentMap =
+																					typeof values.channelSignalKinds === "object" &&
+																					values.channelSignalKinds !== null
+																						? {
+																							...(values.channelSignalKinds as Record<string, string>)
+																					  }
+																						: {}
+
+																				if (!nextValue) {
+																					delete currentMap[channel]
+																				} else {
+																					currentMap[channel] = nextValue
+																				}
+
+																				setValues({
+																					...values,
+																					channelSignalKinds: currentMap
+																				})
+																			}}
+																			className="border-primary bg-background-accent text-over-background absolute inset-0 h-12 w-full appearance-none rounded-full border-[2px] px-3 text-center text-sm"
+																		>
+																			{SIGNAL_TYPE_OPTIONS.map(option => (
+																				<option
+																					key={`${channel}-${option.value || "unspecified"}`}
+																					value={option.value}
+																				>
+																					{option.label}
+																				</option>
+																			))}
+																		</select>
+																	) : null}
+																</div>
+															)
+														})}
+														</div>
+													</>
+												)}
+												<div className="hidden gap-8 sm:flex">
+													<div className="relative flex flex-col items-center">
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI1"
+															})}
+															style={{ width: "4.5rem", height: "4.5rem", top: "0.25rem", left: "0" }}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI2"
+															})}
+															style={{
+																width: "4.5rem",
+																height: "4.5rem",
+																top: "calc(4.75rem - 3px)",
+																left: "0"
+															}}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI3"
+															})}
+															style={{
+																width: "4.5rem",
+																height: "4.5rem",
+																top: "calc(4.75rem - 3px)",
+																right: "0"
+															}}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AX1"
+															})}
+															style={{ width: "4.5rem", height: "4.5rem", top: "0.25rem", right: "0" }}
+														/>
+														<Image
+															src={CoreTop}
+															alt=""
+															className="m-2"
+															style={{ maxWidth: "16rem", height: "auto" }}
+														/>
+														<span className="font-secondary text-2xl">Top</span>
+													</div>
+													<div className="relative flex flex-col items-center">
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AX2"
+															})}
+															style={{ width: "4.5rem", height: "4.5rem", top: "0.25rem", left: "0" }}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI4"
+															})}
+															style={{
+																width: "4.5rem",
+																height: "4.5rem",
+																top: "calc(4.75rem - 3px)",
+																left: "0"
+															}}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI5"
+															})}
+															style={{
+																width: "4.5rem",
+																height: "4.5rem",
+																top: "calc(4.75rem - 3px)",
+																right: "0"
+															}}
+														/>
+														<div
+															className={clsx("border-primary absolute rounded-lg border-[3px]", {
+																hidden: hovered !== "AI6"
+															})}
+															style={{ width: "4.5rem", height: "4.5rem", top: "0.25rem", right: "0" }}
+														/>
+														<Image
+															src={CoreBottom}
+															alt=""
+															className="m-2"
+															style={{ maxWidth: "16rem", height: "auto" }}
+														/>
+														<span className="font-secondary text-2xl">Bottom</span>
+													</div>
 												</div>
 											</div>
 										)}
 									/>
 								</>
 							)}
-							{deviceType === "maker" && (
+							{values.deviceType === "maker" && (
 								<>
 									<NumberField
 										label="Baud Rate"

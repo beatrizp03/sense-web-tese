@@ -36,6 +36,8 @@ declare global {
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
+      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string> }) => Promise<any>;
+      readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
       confirmClose?: (shouldClose: boolean) => void;
