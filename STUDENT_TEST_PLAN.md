@@ -14,6 +14,13 @@ The goal is to evaluate:
 
 ---
 
+# Installation
+
+The installation steps are documented in the GitHub README on the `electron-version` branch.
+For the Electron desktop app, please use the `sense-desktop` section to see how to install and run the app.
+
+---
+
 # Important - Device Power State
 
 **Unless a test explicitly says otherwise (only Test 8), please keep the ScientISST on battery only during acquisition. Do not plug in the charger.**
@@ -27,6 +34,7 @@ Charging during acquisition can introduce electrical and RF interference that de
 # Before Starting
 
 **NOTE:** make sure you have a stopwatch to make sure you cam compare the lag on the graph UI VS real time.
+
 1. Open the app
 2. Make sure the device is unplugged from any charger (unless running Test 8)
 3. Connect the device
@@ -79,6 +87,8 @@ Copy that block and paste it into the Google Form. If you see `❌` instead of `
 ---
 
 # Required Test Cases
+
+**IMPORTANT:** during tests, do **NOT** log off, sleep, or suspend the computer. If the computer is logged off or suspended, the app will finish/end the acquisition.
 
 ## Test 1 - Standard Stability Test (30 min)
 
