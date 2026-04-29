@@ -47,6 +47,16 @@ function getSettingsFingerprint(settings) {
   });
 }
 
+function normalizeSignalKindsPayload(signalKinds) {
+  if (!signalKinds || typeof signalKinds !== 'object') return {};
+
+  return Object.fromEntries(
+    Object.entries(signalKinds)
+      .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+      .map(([channel, value]) => [String(channel), value.trim().toLowerCase()])
+  );
+}
+
 function loadSessionSettingsHistoryFromDisk() {
   try {
     const historyPath = getSessionSettingsHistoryPath();
@@ -71,8 +81,40 @@ function saveSessionSettingsHistoryToDisk(history) {
   }
 }
 
-function resolvePythonExecutable(preferredExecutable) {
-  return preferredExecutable || process.env.PYTHON_EXECUTABLE || process.env.PYTHON || 'python';
+// Resolves how to invoke the post-hoc analysis worker. Two shapes are possible:
+//   - 'frozen': a PyInstaller-built standalone binary (no .py script arg).
+//   - 'python': a Python interpreter that runs analysis_worker.py.
+// In a packaged build we refuse to fall back to a system `python` on PATH,
+// because end users overwhelmingly will not have one and we'd rather error
+// loudly than spawn a confusing ENOENT/command-not-found at analysis time.
+function resolveAnalysisWorkerCommand(preferredExecutable) {
+  const explicitExecutable = preferredExecutable || process.env.PYTHON_EXECUTABLE || process.env.PYTHON;
+  if (explicitExecutable) {
+    return { command: explicitExecutable, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
+  }
+
+  if (app.isPackaged) {
+    const frozenBinaryName = process.platform === 'win32' ? 'analysis_worker.exe' : 'analysis_worker';
+    const frozenBinaryPath = path.join(process.resourcesPath, 'python', frozenBinaryName);
+    if (fs.existsSync(frozenBinaryPath)) {
+      return { command: frozenBinaryPath, scriptArgs: [] };
+    }
+
+    const bundledPythonName = process.platform === 'win32' ? 'python.exe' : 'python';
+    const bundledPythonPath = path.join(process.resourcesPath, 'python', 'runtime', bundledPythonName);
+    if (fs.existsSync(bundledPythonPath)) {
+      return { command: bundledPythonPath, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
+    }
+
+    throw new Error(
+      'Post-hoc analysis worker is unavailable: no bundled Python runtime was found in this build. ' +
+      `Expected either ${frozenBinaryPath} (PyInstaller-frozen worker) or ${bundledPythonPath} (embedded CPython). ` +
+      'A packaged build must ship one of these — refusing to fall back to a system "python" on PATH.'
+    );
+  }
+
+  // Dev / unpackaged runs: developers are expected to have Python available.
+  return { command: 'python', scriptArgs: [PYTHON_ANALYSIS_WORKER] };
 }
 
 function getAnalysisOutputDir(sessionFolderPath) {
@@ -93,7 +135,8 @@ function persistAnalysisResult(sessionFolderPath, result) {
       manifest.analysis = {
         lastRunAt: result.completedAt || new Date().toISOString(),
         resultPath: path.relative(sessionFolderPath, resultPath),
-        worker: 'python-analysis-worker'
+        worker: 'python-analysis-worker',
+        signalKinds: result?.analysisConfig?.channelSignalKinds || {}
       };
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     } catch (error) {
@@ -104,6 +147,14 @@ function persistAnalysisResult(sessionFolderPath, result) {
   return resultPath;
 }
 
+let activeAnalysisJob = null;
+
+function cancelActiveAnalysisJob(reason) {
+  if (!activeAnalysisJob) return false;
+  activeAnalysisJob.cancel(reason);
+  return true;
+}
+
 function runPythonAnalysisJob(sessionFolderPath, options = {}) {
   return new Promise((resolve, reject) => {
     if (!sessionFolderPath) {
@@ -111,47 +162,104 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       return;
     }
 
-    const pythonExecutable = resolvePythonExecutable(options.pythonExecutable);
+    // A second analysis supersedes the first — kill the previous worker so it
+    // doesn't keep burning CPU and writing stale output on top of the new run.
+    cancelActiveAnalysisJob('Superseded by a new analysis request');
+
+    let workerCommand;
+    try {
+      workerCommand = resolveAnalysisWorkerCommand(options.pythonExecutable);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
     const outputDir = options.outputDir || getAnalysisOutputDir(sessionFolderPath);
     fs.mkdirSync(outputDir, { recursive: true });
 
+    const selectedSignalKinds = normalizeSignalKindsPayload(options.signalKinds);
+    const env = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1'
+    };
+
+    if (Object.keys(selectedSignalKinds).length > 0) {
+      env.SENSE_ANALYSIS_SIGNAL_KINDS_JSON = JSON.stringify(selectedSignalKinds);
+    }
+
     const args = [
-      PYTHON_ANALYSIS_WORKER,
+      ...workerCommand.scriptArgs,
       '--session-folder', sessionFolderPath,
       '--output-folder', outputDir
     ];
 
-    const child = spawn(pythonExecutable, args, {
+    const child = spawn(workerCommand.command, args, {
       windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONUNBUFFERED: '1'
-      }
+      env
     });
+
+    const job = {
+      child,
+      sessionFolder: sessionFolderPath,
+      cancelled: false,
+      cancelReason: null,
+      cancel(reason) {
+        if (this.cancelled) return;
+        this.cancelled = true;
+        this.cancelReason = reason || 'Cancelled';
+        try {
+          child.kill();
+        } catch (err) {
+          console.error('[main] Failed to kill analysis worker:', err);
+        }
+      }
+    };
+    activeAnalysisJob = job;
 
     let stdout = '';
     let stderr = '';
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      const trimmed = text.replace(/\r?\n$/, '');
+      if (trimmed) console.log('[analysis-worker]', trimmed);
     });
 
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      const trimmed = text.replace(/\r?\n$/, '');
+      if (trimmed) console.error('[analysis-worker]', trimmed);
     });
 
     child.on('error', (error) => {
+      if (activeAnalysisJob === job) activeAnalysisJob = null;
       reject(error);
     });
 
     child.on('close', (code) => {
+      if (activeAnalysisJob === job) activeAnalysisJob = null;
+
+      if (job.cancelled) {
+        const err = new Error(job.cancelReason);
+        err.cancelled = true;
+        reject(err);
+        return;
+      }
+
       if (code !== 0) {
         reject(new Error(`Python analysis failed with exit code ${code}: ${stderr || stdout || 'no output'}`));
         return;
       }
 
       try {
-        const parsed = JSON.parse(stdout.trim() || '{}');
+        const workerResultPath = path.join(outputDir, 'analysis-result.json');
+        if (!fs.existsSync(workerResultPath)) {
+          throw new Error(`Worker did not write analysis result file: ${workerResultPath}`);
+        }
+
+        const parsed = JSON.parse(fs.readFileSync(workerResultPath, 'utf-8'));
         const resultPath = persistAnalysisResult(sessionFolderPath, parsed);
         resolve({
           ...parsed,
@@ -159,7 +267,7 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
           resultPath
         });
       } catch (error) {
-        reject(new Error(`Failed to parse Python analysis output: ${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`));
+        reject(new Error(`Failed to read Python analysis result file: ${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`));
       }
     });
   });
@@ -257,6 +365,19 @@ app.whenReady().then(() => {
       cancelId: -1
     });
     return response;
+  });
+
+  ipcMain.handle("select-analysis-session-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Select a session folder to analyze",
+      properties: ["openDirectory", "dontAddToRecent"]
+    });
+
+    if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+      return null;
+    }
+
+    return result.filePaths[0];
   });
 
   // IPC handler to log a named event (with optional duration) from the renderer
@@ -628,9 +749,23 @@ ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath)
   return readPersistedAnalysisResult(folder);
 });
 
+ipcMain.handle('cancel-posthoc-analysis', (_event, payload = {}) => {
+  if (!activeAnalysisJob) return { cancelled: false };
+
+  const targetFolder = payload && typeof payload.sessionFolder === 'string' ? payload.sessionFolder : null;
+  if (targetFolder && activeAnalysisJob.sessionFolder !== targetFolder) {
+    return { cancelled: false };
+  }
+
+  const reason = (payload && typeof payload.reason === 'string' && payload.reason) || 'Cancelled by renderer';
+  cancelActiveAnalysisJob(reason);
+  return { cancelled: true };
+});
+
 // Example: Flush remaining samples on app exit
 app.on('before-quit', () => {
   try {
+    cancelActiveAnalysisJob('Application is quitting');
     if (sampleWriter) {
       sampleWriter.finalizeSession();
       if (perfLogger) {

@@ -336,8 +336,14 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   readSessionManifest: async (sessionPath) => {
     return await ipcRenderer.invoke('read-session-manifest', sessionPath);
   },
+  selectAnalysisSessionFolder: async () => {
+    return await ipcRenderer.invoke('select-analysis-session-folder');
+  },
   runPostHocAnalysis: async (payload = {}) => {
     return await ipcRenderer.invoke('run-posthoc-analysis', payload);
+  },
+  cancelPostHocAnalysis: async (payload = {}) => {
+    return await ipcRenderer.invoke('cancel-posthoc-analysis', payload);
   },
   readPostHocAnalysisResult: async (sessionFolderPath) => {
     return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath);

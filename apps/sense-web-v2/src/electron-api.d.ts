@@ -31,12 +31,14 @@ declare global {
       readChunkFile?: (filePath: string) => Promise<any>;
       loadAllChunks?: () => Promise<{ meta: any }>;
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
+      selectAnalysisSessionFolder?: () => Promise<string | null>;
       openSerialPort?: (path: string, options?: any) => Promise<void>;
       readSerialPort?: (path: string, bytes: number, timeout: number) => Promise<Uint8Array>;
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
       runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string> }) => Promise<any>;
+      cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
