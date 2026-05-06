@@ -345,6 +345,10 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   cancelPostHocAnalysis: async (payload = {}) => {
     return await ipcRenderer.invoke('cancel-posthoc-analysis', payload);
   },
+  onAnalysisProgress: (callback) => {
+    ipcRenderer.on('analysis-progress', (_event, data) => callback(data));
+    return () => ipcRenderer.removeAllListeners('analysis-progress');
+  },
   readPostHocAnalysisResult: async (sessionFolderPath) => {
     return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath);
   },

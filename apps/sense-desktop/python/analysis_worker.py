@@ -8,6 +8,16 @@ Input:
 Output:
   Writes analysis-result.json, analysis-summary.csv, analysis-biosppy-features.csv,
   and per-channel series CSVs under output-folder.
+
+Windowing Strategy:
+  - Full-length analysis: Most signals (ECG, EDA, PPG, EMG, RSP, EOG, EEG, ACC)
+    are analyzed in their entirety for maximum statistical defensibility.
+  - PCG windowing: PCG signals are segmented into non-overlapping time windows
+    (default 60s) due to O(n²) correlation cost in BioSPPy's get_avg_heart_rate()
+    implementation. This is a computational limitation of the underlying library,
+    not a methodological choice. Per-window results are aggregated into a
+    segment-level summary. If BioSPPy adopts FFT-based correlation in the future,
+    this workaround can be removed without rethinking the analysis approach.
 """
 
 from __future__ import annotations
@@ -24,7 +34,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 try:
     import numpy as np
@@ -58,6 +68,9 @@ RESERVED_FRAME_KEYS = {
 
 CHUNK_FILENAME_RE = re.compile(r"^sample(?P<sample>\d+)_chunk(?P<chunk>\d+)\.json$", re.IGNORECASE)
 SUPPORTED_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}
+
+# PCG window size: 60s due to O(n²) correlation bottleneck in BioSPPy.get_avg_heart_rate()
+PCG_WINDOW_SECONDS = 60
 
 
 def parse_args() -> argparse.Namespace:
@@ -269,6 +282,68 @@ def channel_series(frames: Sequence[Dict[str, Any]], channel_key: str) -> Tuple[
     return indices, values
 
 
+def slice_signal_into_windows(
+    values: Sequence[float],
+    indices: Sequence[int],
+    sample_rate: float,
+    window_seconds: int,
+) -> List[Tuple[List[int], List[float]]]:
+    """Slice a channel signal into non-overlapping time windows.
+
+    Returns list of (indices, values) tuples, one per window.
+    Last window may be shorter if signal length doesn't divide evenly.
+    """
+    window_samples = int(window_seconds * sample_rate)
+    windows: List[Tuple[List[int], List[float]]] = []
+
+    for start_idx in range(0, len(values), window_samples):
+        end_idx = min(start_idx + window_samples, len(values))
+        window_indices = list(indices[start_idx:end_idx])
+        window_values = list(values[start_idx:end_idx])
+        if len(window_values) > 0:
+            windows.append((window_indices, window_values))
+
+    return windows
+
+
+def aggregate_window_stats(window_stats: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-window statistics into segment-level summary."""
+    if not window_stats:
+        return {"count": 0, "mean": None, "std": None, "min": None, "max": None}
+
+    all_counts = [s.get("count", 0) for s in window_stats if s.get("count")]
+    all_means = [s.get("mean") for s in window_stats if s.get("mean") is not None]
+    all_stds = [s.get("std") for s in window_stats if s.get("std") is not None]
+    all_mins = [s.get("min") for s in window_stats if s.get("min") is not None]
+    all_maxs = [s.get("max") for s in window_stats if s.get("max") is not None]
+
+    total_count = sum(all_counts)
+
+    # Per-window means are independent samples; aggregate by weighted average
+    if all_means and total_count > 0:
+        segment_mean = sum(s.get("mean", 0) * s.get("count", 1) for s in window_stats) / total_count
+    else:
+        segment_mean = None
+
+    # Std and min/max across windows
+    if len(all_stds) > 1:
+        segment_std = pstdev(all_stds)
+    elif all_stds:
+        segment_std = all_stds[0]
+    else:
+        segment_std = None
+    segment_min = min(all_mins) if all_mins else None
+    segment_max = max(all_maxs) if all_maxs else None
+
+    return {
+        "count": total_count,
+        "mean": segment_mean,
+        "std": segment_std,
+        "min": segment_min,
+        "max": segment_max,
+    }
+
+
 def group_entries_by_segment(entries: Sequence[Dict[str, Any]]) -> Dict[int, List[Path]]:
     grouped: Dict[int, List[Path]] = defaultdict(list)
     for entry in entries:
@@ -279,6 +354,29 @@ def group_entries_by_segment(entries: Sequence[Dict[str, Any]]) -> Dict[int, Lis
             segment_index = 1
         grouped[segment_index].append(Path(entry["file"]))
     return dict(sorted(grouped.items(), key=lambda item: item[0]))
+
+
+def count_progress_units(
+    grouped_entries: Dict[int, List[Path]],
+    manifest: Dict[str, Any],
+) -> Tuple[int, int]:
+    biosppy_total = 0
+    neurokit2_total = 0
+
+    for segment_files in grouped_entries.values():
+        frames: List[Dict[str, Any]] = []
+        for chunk_file in segment_files:
+            frames.extend(load_chunk_frames(chunk_file))
+
+        channels = sorted({key for frame in frames for key in frame_channels(frame).keys()})
+        for channel_key in channels:
+            normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
+                biosppy_total += 1
+            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                neurokit2_total += 1
+
+    return biosppy_total, neurokit2_total
 
 
 def basic_stats(values: Sequence[float]) -> Dict[str, Any]:
@@ -309,11 +407,17 @@ def export_series_csv(
     indices: Sequence[int],
     values: Sequence[float],
     sample_rate: float,
+    window_index: Optional[int] = None,
 ) -> str:
     safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in channel_name).strip("_") or "channel"
     series_dir = output_folder / "channels"
     series_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = series_dir / f"{safe_name}.csv"
+
+    # Include window index in filename if provided
+    if window_index is not None:
+        csv_path = series_dir / f"{safe_name}_window{window_index}.csv"
+    else:
+        csv_path = series_dir / f"{safe_name}.csv"
 
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -375,6 +479,96 @@ def sanitize_for_json(value: Any) -> Any:
 # Anything over this threshold is replaced with a placeholder string. Event
 # arrays like R-peaks (~8.6k for a 2h ECG at 72bpm) stay below the limit.
 ARRAY_PRESERVE_LIMIT = 10000
+
+PROGRESS_STAGE_WEIGHTS = {
+    "data_prep": 5.0,
+    "biosppy": 60.0,
+    "neurokit2": 30.0,
+    "csv": 5.0,
+}
+
+BIOSPPY_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"}
+NEUROKIT2_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog"}
+
+
+class AnalysisProgressTracker:
+    def __init__(self, biosppy_total: int, neurokit2_total: int) -> None:
+        self.biosppy_total = max(0, int(biosppy_total))
+        self.neurokit2_total = max(0, int(neurokit2_total))
+        self.biosppy_done = 0.0
+        self.neurokit2_done = 0.0
+        self.data_prepared = False
+        self.csv_written = False
+        self.last_percentage = -1
+        self.last_emitted_label = ""
+        self.biosppy_started = False
+        self.neurokit2_started = False
+
+        self.total_weight = PROGRESS_STAGE_WEIGHTS["data_prep"] + PROGRESS_STAGE_WEIGHTS["csv"]
+        if self.biosppy_total > 0:
+            self.total_weight += PROGRESS_STAGE_WEIGHTS["biosppy"]
+        if self.neurokit2_total > 0:
+            self.total_weight += PROGRESS_STAGE_WEIGHTS["neurokit2"]
+
+    def _current_percentage(self) -> int:
+        completed_weight = 0.0
+        if self.data_prepared:
+            completed_weight += PROGRESS_STAGE_WEIGHTS["data_prep"]
+        if self.biosppy_total > 0:
+            completed_weight += PROGRESS_STAGE_WEIGHTS["biosppy"] * min(1.0, self.biosppy_done / self.biosppy_total)
+        if self.neurokit2_total > 0:
+            completed_weight += PROGRESS_STAGE_WEIGHTS["neurokit2"] * min(1.0, self.neurokit2_done / self.neurokit2_total)
+        if self.csv_written:
+            completed_weight += PROGRESS_STAGE_WEIGHTS["csv"]
+
+        if self.total_weight <= 0:
+            return 100
+
+        percentage = int((completed_weight / self.total_weight) * 100)
+        return min(100, max(0, percentage))
+
+    def emit(self, label: str, force: bool = False) -> None:
+        """Emit progress update. Prints if label changed, percentage increased, or force=True."""
+        percentage = self._current_percentage()
+        label_changed = label != self.last_emitted_label
+        percentage_changed = percentage > self.last_percentage
+        
+        if force or label_changed or percentage_changed:
+            print(f"[progress] {percentage}% {label}", flush=True)
+            self.last_percentage = percentage
+            self.last_emitted_label = label
+
+    def mark_data_prepared(self) -> None:
+        self.data_prepared = True
+        self.emit("Data preparation complete")
+
+    def start_biosppy_analysis(self) -> None:
+        """Emit initialization message for BioSPPy analysis phase."""
+        if not self.biosppy_started and self.biosppy_total > 0:
+            self.biosppy_started = True
+            self.emit("Initializing BioSPPy analysis", force=True)
+
+    def start_neurokit2_analysis(self) -> None:
+        """Emit initialization message for NeuroKit2 analysis phase."""
+        if not self.neurokit2_started and self.neurokit2_total > 0:
+            self.neurokit2_started = True
+            self.emit("Initializing NeuroKit2 analysis", force=True)
+
+    def advance_biosppy(self, amount: float, label: str) -> None:
+        if self.biosppy_total <= 0 or amount <= 0:
+            return
+        self.biosppy_done = min(float(self.biosppy_total), self.biosppy_done + amount)
+        self.emit(label)
+
+    def advance_neurokit2(self, amount: float, label: str) -> None:
+        if self.neurokit2_total <= 0 or amount <= 0:
+            return
+        self.neurokit2_done = min(float(self.neurokit2_total), self.neurokit2_done + amount)
+        self.emit(label)
+
+    def mark_csv_written(self) -> None:
+        self.csv_written = True
+        self.emit("CSV summaries written")
 
 
 def prune_bulky_arrays(value: Any, limit: int = ARRAY_PRESERVE_LIMIT) -> Any:
@@ -624,6 +818,9 @@ def analyze_channel(
     indices: Sequence[int],
     output_folder: Path,
     eda_method: Optional[str],
+    window_index: Optional[int] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+    counts_as_full_channel: bool = True,
 ) -> Dict[str, Any]:
     normalized_kind = (kind or "").lower()
     if normalized_kind == "acc":
@@ -634,12 +831,28 @@ def analyze_channel(
         "label": label,
         "signalKind": normalized_kind or "generic",
         "summary": basic_stats(values),
-        "seriesPath": export_series_csv(output_folder, label or channel_key, indices, values, sample_rate),
+        "seriesPath": export_series_csv(output_folder, label or channel_key, indices, values, sample_rate, window_index),
     }
+
+    if window_index is not None:
+        record["windowIndex"] = window_index
 
     if not values:
         record["warnings"] = ["No numeric samples found for channel"]
+        if progress is not None:
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
+                progress.advance_biosppy(1, f"BioSPPy: {normalized_kind.upper()} ({label})")
+            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                progress.advance_neurokit2(1, f"NeuroKit2: {normalized_kind.upper()} ({label})")
         return record
+
+    # Emit sub-progress stages during channel analysis for visual feedback
+    # Each channel is divided into 4 work units: filtering (0.25), peaks (0.5), neurokit2 (0.2), complete (0.05)
+    has_biosppy = progress is not None and counts_as_full_channel and normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind != "pcg"
+    has_neurokit2 = progress is not None and counts_as_full_channel and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS
+    
+    if has_biosppy:
+        progress.advance_biosppy(0.25, f"BioSPPy {normalized_kind.upper()} ({label}): filtering & segmentation")
 
     if normalized_kind == "ecg":
         record["analysis"] = analyze_ecg(values, sample_rate)
@@ -665,9 +878,21 @@ def analyze_channel(
             "No specific library mapping was found for this channel; exported raw series and basic statistics only."
         )
 
+    if has_biosppy:
+        progress.advance_biosppy(0.5, f"BioSPPy {normalized_kind.upper()} ({label}): detecting peaks & features")
+
     analysis_record = record.get("analysis")
     if isinstance(analysis_record, dict):
         extract_neurokit2_features(analysis_record)
+
+    if has_neurokit2:
+        progress.advance_neurokit2(0.2, f"NeuroKit2 {normalized_kind.upper()} ({label}): processing & HRV")
+
+    if progress is not None and counts_as_full_channel:
+        if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind != "pcg":
+            progress.advance_biosppy(0.25, f"BioSPPy: {normalized_kind.upper()} ({label})")
+        if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+            progress.advance_neurokit2(0.8, f"NeuroKit2: {normalized_kind.upper()} ({label})")
 
     return record
 
@@ -679,6 +904,7 @@ def process_segment(
     chunk_files: Sequence[Path],
     output_folder: Path,
     eda_method: Optional[str],
+    progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     frames: List[Dict[str, Any]] = []
     for chunk_file in chunk_files:
@@ -700,9 +926,94 @@ def process_segment(
     for channel_key in channels:
         label = infer_label(channel_key, manifest)
         kind = infer_signal_kind(manifest, channel_key)
+        
+        # Emit phase initialization before processing signals of each type
+        if progress is not None:
+            normalized_kind = (kind or "").lower()
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
+                progress.start_biosppy_analysis()
+            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                progress.start_neurokit2_analysis()
+        
         indices, values = channel_series(frames, channel_key)
-        result_channels.append(
-            analyze_channel(
+
+        if not values:
+            # No valid data for channel
+            result_channels.append({
+                "channel": channel_key,
+                "label": label,
+                "signalKind": kind or "generic",
+                "summary": {"count": 0, "mean": None, "std": None, "min": None, "max": None},
+                "warnings": ["Channel contains no valid samples"],
+            })
+            if progress is not None:
+                normalized_kind = (kind or "").lower()
+                if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
+                    progress.advance_biosppy(1, f"BioSPPy: {normalized_kind.upper()} ({label})")
+                if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                    progress.advance_neurokit2(1, f"NeuroKit2: {normalized_kind.upper()} ({label})")
+            continue
+
+        # PCG segmentation: O(n²) correlation bottleneck in BioSPPy get_avg_heart_rate()
+        # This is a computational limitation of the underlying library, not a methodological choice.
+        # Window size: PCG_WINDOW_SECONDS (60s).
+        # If BioSPPy adopts FFT-based correlation, windowing can be removed.
+        if (kind or "").lower() == "pcg":
+            windows = slice_signal_into_windows(values, indices, sample_rate, PCG_WINDOW_SECONDS)
+
+            if not windows:
+                result_channels.append({
+                    "channel": channel_key,
+                    "label": label,
+                    "signalKind": kind or "generic",
+                    "summary": {"count": 0, "mean": None, "std": None, "min": None, "max": None},
+                    "warnings": ["Channel contains no valid samples"],
+                })
+                if progress is not None:
+                    progress.advance_biosppy(1, f"BioSPPy: PCG ({label})")
+                continue
+
+            # Analyze each window
+            windowed_results = []
+            all_stats = []
+            for window_idx, (window_indices, window_values) in enumerate(windows):
+                window_result = analyze_channel(
+                    channel_key=channel_key,
+                    label=label,
+                    kind=kind,
+                    values=window_values,
+                    sample_rate=sample_rate,
+                    indices=window_indices,
+                    output_folder=output_folder / f"segment-{segment_index}",
+                    eda_method=eda_method,
+                    window_index=window_idx,
+                    progress=progress,
+                    counts_as_full_channel=False,
+                )
+                windowed_results.append(window_result)
+                all_stats.append(window_result.get("summary", {}))
+
+                if progress is not None:
+                    progress.advance_biosppy(
+                        1.0 / len(windows),
+                        f"BioSPPy: PCG ({label}) window {window_idx + 1}/{len(windows)}",
+                    )
+
+            # Aggregate statistics across windows for top-level summary
+            aggregated_summary = aggregate_window_stats(all_stats)
+
+            # Build final channel record for PCG
+            channel_record = {
+                "channel": channel_key,
+                "label": label,
+                "signalKind": kind or "generic",
+                "summary": aggregated_summary,
+                "windows": windowed_results,
+                "seriesPath": windowed_results[0].get("seriesPath") if windowed_results else None,
+            }
+        else:
+            # Full-length analysis for non-PCG signals
+            channel_result = analyze_channel(
                 channel_key=channel_key,
                 label=label,
                 kind=kind,
@@ -711,8 +1022,26 @@ def process_segment(
                 indices=indices,
                 output_folder=output_folder / f"segment-{segment_index}",
                 eda_method=eda_method,
+                progress=progress,
             )
-        )
+            # Merge analysis fields into channel record
+            channel_record = {
+                "channel": channel_key,
+                "label": label,
+                "signalKind": kind or "generic",
+                "summary": channel_result.get("summary"),
+                "seriesPath": channel_result.get("seriesPath"),
+            }
+            if "analysis" in channel_result:
+                channel_record["analysis"] = channel_result["analysis"]
+            if "biosppyFeatures" in channel_result:
+                channel_record["biosppyFeatures"] = channel_result["biosppyFeatures"]
+            if "neurokit2Features" in channel_result:
+                channel_record["neurokit2Features"] = channel_result["neurokit2Features"]
+            if "warnings" in channel_result:
+                channel_record["warnings"] = channel_result["warnings"]
+
+        result_channels.append(channel_record)
 
     return {
         "segment": segment_index,
@@ -724,7 +1053,35 @@ def process_segment(
     }
 
 
-def build_result(session_folder: Path, output_folder: Path, eda_method: Optional[str]) -> Dict[str, Any]:
+def emit_progress(completed: int, total: int, signal_kind: str) -> None:
+    if total > 0:
+        percentage = int((completed / total) * 100)
+        print(f"[progress] {percentage}% Analyzing {signal_kind.upper()}", flush=True)
+
+
+def emit_phase_progress(signal_index: int, phase: str, total_signals: int) -> None:
+    """Emit finer-grained progress within signal analysis.
+
+    Phases: prepare, biosppy, neurokit2, hrv, writing
+    Each signal gets ~20% of the bar, phases subdivide that.
+    """
+    if total_signals > 0:
+        signal_base = (signal_index / total_signals) * 100
+        phase_offsets = {
+            "prepare": 0,
+            "biosppy": 4,
+            "neurokit2": 8,
+            "hrv": 12,
+            "writing": 16,
+        }
+        phase_offset = phase_offsets.get(phase, 0)
+        percentage = int(signal_base + phase_offset)
+        percentage = min(99, max(0, percentage))
+        print(f"[progress] {percentage}% {phase.capitalize()}", flush=True)
+
+
+def build_result(session_folder: Path, output_folder: Path, eda_method: Optional[str]) -> Tuple[Dict[str, Any], AnalysisProgressTracker]:
+    print("[progress] 0% Loading chunks and parsing data", flush=True)
     manifest = load_session_manifest(session_folder)
     sample_rate = resolve_sample_rate(manifest)
     chunk_entries = discover_chunk_entries(session_folder, manifest)
@@ -740,6 +1097,13 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
     total_frames = 0
     total_chunks = 0
 
+    # Pre-count actual analysis work so progress reflects the real channel mix.
+    biosppy_total, neurokit2_total = count_progress_units(grouped_entries, analysis_manifest)
+    progress = AnalysisProgressTracker(biosppy_total, neurokit2_total)
+    progress.mark_data_prepared()
+
+    signal_kind_counts: Dict[str, int] = {}
+
     for segment_index, segment_files in grouped_entries.items():
         segment_result = process_segment(
             segment_index,
@@ -748,7 +1112,15 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             segment_files,
             output_folder,
             eda_method,
+            progress=progress,
         )
+
+        # Track progress by signal kind
+        for channel in segment_result.get("channels", []):
+            if isinstance(channel, dict):
+                signal_kind = channel.get("signalKind", "generic")
+                signal_kind_counts[signal_kind] = signal_kind_counts.get(signal_kind, 0) + 1
+
         segment_results.append(segment_result)
         total_frames += int(segment_result.get("frameCount", 0) or 0)
         total_chunks += len(segment_files)
@@ -772,6 +1144,9 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
                 "biosppy": biosppy_strategy,
                 "neurokit2": ["ecg", "eda", "ppg", "emg", "rsp", "eog", "hrv"],
             },
+            "windowConfig": {
+                "pcg": PCG_WINDOW_SECONDS,
+            },
         },
         "analysisConfig": {
             "batchMode": "load-session-process-entire-dataset-store-features",
@@ -781,7 +1156,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
         },
         "segments": segment_results,
         "warnings": [],
-    }
+    }, progress
 
 
 def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
@@ -794,6 +1169,7 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                 "channel",
                 "label",
                 "signalKind",
+                "window_index",
                 "count",
                 "mean",
                 "std",
@@ -806,32 +1182,66 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
         for segment in result.get("segments", []):
             segment_index = segment.get("segment") if isinstance(segment, dict) else None
             for channel in segment.get("channels", []) if isinstance(segment, dict) else []:
-                summary = channel.get("summary", {}) if isinstance(channel, dict) else {}
-                analysis = channel.get("analysis", {}) if isinstance(channel, dict) else {}
-                writer.writerow(
-                    [
-                        segment_index,
-                        channel.get("channel"),
-                        channel.get("label"),
-                        channel.get("signalKind"),
-                        summary.get("count"),
-                        summary.get("mean"),
-                        summary.get("std"),
-                        summary.get("min"),
-                        summary.get("max"),
-                        ",".join(analysis.get("libraries", []))
-                        if isinstance(analysis.get("libraries"), list)
-                        else "",
-                        channel.get("seriesPath"),
-                    ]
-                )
+                if not isinstance(channel, dict):
+                    continue
+
+                # Check if channel has windowed results
+                windows = channel.get("windows", [])
+                if windows:
+                    # New schema with windows
+                    for window_record in windows:
+                        if not isinstance(window_record, dict):
+                            continue
+                        summary = window_record.get("summary", {})
+                        analysis = window_record.get("analysis", {})
+                        writer.writerow(
+                            [
+                                segment_index,
+                                channel.get("channel"),
+                                channel.get("label"),
+                                channel.get("signalKind"),
+                                window_record.get("windowIndex", ""),
+                                summary.get("count"),
+                                summary.get("mean"),
+                                summary.get("std"),
+                                summary.get("min"),
+                                summary.get("max"),
+                                ",".join(analysis.get("libraries", []))
+                                if isinstance(analysis.get("libraries"), list)
+                                else "",
+                                window_record.get("seriesPath"),
+                            ]
+                        )
+                else:
+                    # Fallback to old schema (channel-level analysis)
+                    summary = channel.get("summary", {})
+                    analysis = channel.get("analysis", {})
+                    writer.writerow(
+                        [
+                            segment_index,
+                            channel.get("channel"),
+                            channel.get("label"),
+                            channel.get("signalKind"),
+                            "",  # No window index in old schema
+                            summary.get("count"),
+                            summary.get("mean"),
+                            summary.get("std"),
+                            summary.get("min"),
+                            summary.get("max"),
+                            ",".join(analysis.get("libraries", []))
+                            if isinstance(analysis.get("libraries"), list)
+                            else "",
+                            channel.get("seriesPath"),
+                        ]
+                    )
+
 
 
 def write_biosppy_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
     csv_path = output_folder / "analysis-biosppy-features.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["segment", "channel", "label", "signalKind", "feature", "value"])
+        writer.writerow(["segment", "channel", "label", "signalKind", "window_index", "feature", "value"])
 
         for segment in result.get("segments", []):
             segment_index = segment.get("segment") if isinstance(segment, dict) else None
@@ -839,36 +1249,72 @@ def write_biosppy_features_csv(output_folder: Path, result: Dict[str, Any]) -> N
             for channel in channels:
                 if not isinstance(channel, dict):
                     continue
-                analysis = channel.get("analysis", {})
-                if not isinstance(analysis, dict):
-                    continue
-                features = analysis.get("biosppyFeatures", {})
-                if not isinstance(features, dict):
-                    continue
 
-                for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                    if isinstance(value, (int, float, str, bool)) or value is None:
-                        serialized = value
-                    else:
-                        serialized = json.dumps(value, ensure_ascii=False)
+                # Check if channel has windowed results
+                windows = channel.get("windows", [])
+                if windows:
+                    # New schema with windows
+                    for window_record in windows:
+                        if not isinstance(window_record, dict):
+                            continue
+                        analysis = window_record.get("analysis", {})
+                        if not isinstance(analysis, dict):
+                            continue
+                        features = analysis.get("biosppyFeatures", {})
+                        if not isinstance(features, dict):
+                            continue
 
-                    writer.writerow(
-                        [
-                            segment_index,
-                            channel.get("channel"),
-                            channel.get("label"),
-                            channel.get("signalKind"),
-                            feature_name,
-                            serialized,
-                        ]
-                    )
+                        for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                            if isinstance(value, (int, float, str, bool)) or value is None:
+                                serialized = value
+                            else:
+                                serialized = json.dumps(value, ensure_ascii=False)
+
+                            writer.writerow(
+                                [
+                                    segment_index,
+                                    channel.get("channel"),
+                                    channel.get("label"),
+                                    channel.get("signalKind"),
+                                    window_record.get("windowIndex", ""),
+                                    feature_name,
+                                    serialized,
+                                ]
+                            )
+                else:
+                    # Fallback to old schema (channel-level analysis)
+                    analysis = channel.get("analysis", {})
+                    if not isinstance(analysis, dict):
+                        continue
+                    features = analysis.get("biosppyFeatures", {})
+                    if not isinstance(features, dict):
+                        continue
+
+                    for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                        if isinstance(value, (int, float, str, bool)) or value is None:
+                            serialized = value
+                        else:
+                            serialized = json.dumps(value, ensure_ascii=False)
+
+                        writer.writerow(
+                            [
+                                segment_index,
+                                channel.get("channel"),
+                                channel.get("label"),
+                                channel.get("signalKind"),
+                                "",  # No window index in old schema
+                                feature_name,
+                                serialized,
+                            ]
+                        )
+
 
 
 def write_neurokit2_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
     csv_path = output_folder / "analysis-neurokit2-features.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["segment", "channel", "label", "signalKind", "feature", "value"])
+        writer.writerow(["segment", "channel", "label", "signalKind", "window_index", "feature", "value"])
 
         for segment in result.get("segments", []):
             segment_index = segment.get("segment") if isinstance(segment, dict) else None
@@ -876,29 +1322,64 @@ def write_neurokit2_features_csv(output_folder: Path, result: Dict[str, Any]) ->
             for channel in channels:
                 if not isinstance(channel, dict):
                     continue
-                analysis = channel.get("analysis", {})
-                if not isinstance(analysis, dict):
-                    continue
-                features = analysis.get("neurokit2Features", {})
-                if not isinstance(features, dict):
-                    continue
 
-                for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                    if isinstance(value, (int, float, str, bool)) or value is None:
-                        serialized = value
-                    else:
-                        serialized = json.dumps(value, ensure_ascii=False)
+                # Check if channel has windowed results
+                windows = channel.get("windows", [])
+                if windows:
+                    # New schema with windows
+                    for window_record in windows:
+                        if not isinstance(window_record, dict):
+                            continue
+                        analysis = window_record.get("analysis", {})
+                        if not isinstance(analysis, dict):
+                            continue
+                        features = analysis.get("neurokit2Features", {})
+                        if not isinstance(features, dict):
+                            continue
 
-                    writer.writerow(
-                        [
-                            segment_index,
-                            channel.get("channel"),
-                            channel.get("label"),
-                            channel.get("signalKind"),
-                            feature_name,
-                            serialized,
-                        ]
-                    )
+                        for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                            if isinstance(value, (int, float, str, bool)) or value is None:
+                                serialized = value
+                            else:
+                                serialized = json.dumps(value, ensure_ascii=False)
+
+                            writer.writerow(
+                                [
+                                    segment_index,
+                                    channel.get("channel"),
+                                    channel.get("label"),
+                                    channel.get("signalKind"),
+                                    window_record.get("windowIndex", ""),
+                                    feature_name,
+                                    serialized,
+                                ]
+                            )
+                else:
+                    # Fallback to old schema (channel-level analysis)
+                    analysis = channel.get("analysis", {})
+                    if not isinstance(analysis, dict):
+                        continue
+                    features = analysis.get("neurokit2Features", {})
+                    if not isinstance(features, dict):
+                        continue
+
+                    for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                        if isinstance(value, (int, float, str, bool)) or value is None:
+                            serialized = value
+                        else:
+                            serialized = json.dumps(value, ensure_ascii=False)
+
+                        writer.writerow(
+                            [
+                                segment_index,
+                                channel.get("channel"),
+                                channel.get("label"),
+                                channel.get("signalKind"),
+                                "",  # No window index in old schema
+                                feature_name,
+                                serialized,
+                            ]
+                        )
 
 
 def main() -> int:
@@ -910,7 +1391,7 @@ def main() -> int:
     try:
         session_name = session_folder.name
         analysis_started = time.perf_counter()
-        result = build_result(
+        result, progress = build_result(
             session_folder,
             output_folder,
             args.eda_method,
@@ -924,6 +1405,7 @@ def main() -> int:
             f"[analysis][{session_name}] analysis phase done in {analyze_seconds:.2f}s, writing outputs...",
             flush=True,
         )
+        progress.emit("Writing output files", force=True)
 
         # Drop sample-length arrays from biosppy/neurokit2 payloads (duplicates
         # of the per-channel CSV exports), then replace NaN/Inf with None so
@@ -936,16 +1418,28 @@ def main() -> int:
         write_neurokit2_features_csv(output_folder, result)
         with result_path.open("w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
+        progress.mark_csv_written()
         total_seconds = time.perf_counter() - analysis_started
-        result_size_mb = result_path.stat().st_size / (1024)
-        print(
-            f"[{session_name}] done in {total_seconds:.2f}s "
-            f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
-            f"— {chunk_count} chunks, {frame_count} frames"
-            f"{sample_rate_suffix} (eda_method={args.eda_method}, "
-            f"result.json={result_size_mb:.1f}KB)",
-            flush=True,
-        )
+        if result_path.stat().st_size / (1024*1024) > 0.1:
+            result_size_mb = result_path.stat().st_size / (1024*1024) 
+            print(
+                f"[{session_name}] done in {total_seconds:.2f}s "
+                f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
+                f"— {chunk_count} chunks, {frame_count} frames"
+                f"{sample_rate_suffix} (eda_method={args.eda_method}, "
+                f"result.json={result_size_mb:.1f}MB)",
+                flush=True,
+            )
+        else:
+            result_size_mb = result_path.stat().st_size / (1024) 
+            print(
+                f"[{session_name}] done in {total_seconds:.2f}s "
+                f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
+                f"— {chunk_count} chunks, {frame_count} frames"
+                f"{sample_rate_suffix} (eda_method={args.eda_method}, "
+                f"result.json={result_size_mb:.1f}KB)",
+                flush=True,
+            )
         return 0
     except Exception as exc:
         error = {

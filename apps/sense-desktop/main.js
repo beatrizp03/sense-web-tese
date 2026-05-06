@@ -162,9 +162,10 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       return;
     }
 
-    // A second analysis supersedes the first — kill the previous worker so it
-    // doesn't keep burning CPU and writing stale output on top of the new run.
-    cancelActiveAnalysisJob('Superseded by a new analysis request');
+    if (activeAnalysisJob) {
+      reject(new Error('An analysis is already running. Please wait for it to finish or cancel it before starting a new one.'));
+      return;
+    }
 
     let workerCommand;
     try {
@@ -201,8 +202,10 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
     const job = {
       child,
       sessionFolder: sessionFolderPath,
+      outputDir,
       cancelled: false,
       cancelReason: null,
+      startTime: Date.now(),
       cancel(reason) {
         if (this.cancelled) return;
         this.cancelled = true;
@@ -224,6 +227,20 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       stdout += text;
       const trimmed = text.replace(/\r?\n$/, '');
       if (trimmed) console.log('[analysis-worker]', trimmed);
+
+      // Parse and forward progress events to renderer
+      const progressMatch = trimmed.match(/\[progress\]\s+(\d+)%\s+(.+)/i);
+      if (progressMatch) {
+        const percentage = parseInt(progressMatch[1], 10);
+        const phaseOrSignal = progressMatch[2].trim();
+        if (BrowserWindow.getAllWindows().length > 0) {
+          BrowserWindow.getAllWindows()[0].webContents.send('analysis-progress', {
+            percentage,
+            signalKind: phaseOrSignal,
+            startTime: job.startTime
+          });
+        }
+      }
     });
 
     child.stderr.on('data', (chunk) => {
@@ -240,6 +257,16 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
 
     child.on('close', (code) => {
       if (activeAnalysisJob === job) activeAnalysisJob = null;
+
+      if (job.cancelled) {
+        try {
+          if (job.outputDir && fs.existsSync(job.outputDir)) {
+            fs.rmSync(job.outputDir, { recursive: true, force: true });
+          }
+        } catch (cleanupError) {
+          console.error('[main] Failed to clean up cancelled analysis output:', cleanupError);
+        }
+      }
 
       if (job.cancelled) {
         const err = new Error(job.cancelReason);
@@ -740,7 +767,15 @@ ipcMain.handle('run-posthoc-analysis', async (_event, payload = {}) => {
     throw new Error('Post-hoc analysis is only available after the session is finalized');
   }
 
-  return runPythonAnalysisJob(sessionFolderPath, payload);
+  try {
+    return await runPythonAnalysisJob(sessionFolderPath, payload);
+  } catch (error) {
+    if (error?.cancelled) {
+      console.log('[main] Analysis cancelled by user');
+      return { cancelled: true };
+    }
+    throw error;
+  }
 });
 
 ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath) => {

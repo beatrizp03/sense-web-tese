@@ -1,8 +1,9 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
+import { AnalysisProgressPanel } from "../components/analysis/AnalysisProgressPanel"
 
 type AnalysisTab = "import" | "results"
 
@@ -42,6 +43,10 @@ const Page = () => {
 	const [loading, setLoading] = useState(false)
 	const [status, setStatus] = useState("Import a finalized session folder to begin.")
 	const [error, setError] = useState("")
+	const [showProgressPanel, setShowProgressPanel] = useState(false)
+	const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null)
+	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
+	const analysisInProgressRef = useRef(false)
 
 	const channels = useMemo(() => {
 		return Array.isArray(manifest?.channels) ? manifest.channels.map(String) : []
@@ -98,14 +103,45 @@ const Page = () => {
 		await loadSessionBundle(folder)
 	}, [loadSessionBundle])
 
-	const runAnalysis = useCallback(async () => {
+	useEffect(() => {
+		if (!window.electronAPI?.onAnalysisProgress) return
+
+		const unsubscribe = window.electronAPI.onAnalysisProgress((data: any) => {
+			window.dispatchEvent(
+				new CustomEvent("analysis-progress", {
+					detail: data,
+				})
+			)
+		})
+
+		return () => {
+			if (typeof unsubscribe === "function") unsubscribe()
+		}
+	}, [])
+
+	const proceedWithAnalysis = useCallback(async () => {
 		if (!sessionFolder) {
 			setError("Import a session folder first.")
 			return
 		}
 
+		if (analysisInProgressRef.current) {
+			return
+		}
+
+		analysisInProgressRef.current = true
+
 		setError("")
 		setLoading(true)
+		setShowReAnalysisDialog(false)
+		setShowProgressPanel(false)
+		setAnalysisStartTime(null)
+
+		await new Promise(resolve => setTimeout(resolve, 0))
+
+		const now = Date.now()
+		setAnalysisStartTime(now)
+		setShowProgressPanel(true)
 		setStatus("Running batch analysis over the imported session...")
 		try {
 			const result = await window.electronAPI?.runPostHocAnalysis?.({
@@ -116,13 +152,43 @@ const Page = () => {
 			setAnalysisResult(refreshed || result || null)
 			setStatus("Analysis completed and stored in the session folder.")
 			setActiveTab("results")
+			window.dispatchEvent(
+				new CustomEvent("analysis-complete", {
+					detail: { resultPath: result?.resultPath }
+				})
+			)
 		} catch (runError) {
-			setStatus("Analysis failed.")
-			setError(runError instanceof Error ? runError.message : String(runError))
+			const isCancelled = (runError instanceof Error && runError.message.includes("Cancelled")) ||
+				((runError as any)?.cancelled === true)
+
+			if (isCancelled) {
+				setStatus("Analysis cancelled.")
+				setError("")
+			} else {
+				setStatus("Analysis failed.")
+				setError(runError instanceof Error ? runError.message : String(runError))
+			}
+
+			window.dispatchEvent(
+				new CustomEvent("analysis-error", {
+					detail: {
+						message: isCancelled ? "Analysis cancelled." : (runError instanceof Error ? runError.message : String(runError))
+					}
+				})
+			)
 		} finally {
 			setLoading(false)
+			analysisInProgressRef.current = false
 		}
 	}, [appliedSignalKinds, sessionFolder])
+
+	const runAnalysis = useCallback(() => {
+		if (analysisResult) {
+			setShowReAnalysisDialog(true)
+		} else {
+			proceedWithAnalysis()
+		}
+	}, [analysisResult, proceedWithAnalysis])
 
 	const currentAnalysis = analysisResult ?? manifest?.analysis ?? null
 	const segmentCount = Array.isArray(manifest?.segments) ? manifest.segments.length : 0
@@ -272,6 +338,44 @@ const Page = () => {
 					)}
 				</section>
 			</div>
+
+			<AnalysisProgressPanel
+				key={analysisStartTime}
+				isVisible={showProgressPanel}
+				onCancel={() => {
+					setShowProgressPanel(false)
+					window.electronAPI?.cancelPostHocAnalysis?.()
+				}}
+				resultPath={analysisResult?.resultPath}
+			/>
+
+			{showReAnalysisDialog && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+					<div className="w-full max-w-md rounded-lg border border-background-accent bg-background-accent p-6 shadow-lg">
+						<div className="flex items-center gap-3 mb-4">
+							<span className="text-2xl">⚠️</span>
+							<h2 className="text-xl font-semibold text-over-background-highest">Re-analyse?</h2>
+						</div>
+						<p className="text-sm text-over-background-medium mb-6">
+							The analysis just ended. Do you want to re-analyse with the current channel mappings?
+						</p>
+						<div className="flex gap-3">
+							<button
+								onClick={() => setShowReAnalysisDialog(false)}
+								className="flex-1 rounded-lg bg-background-accent-dark dark:bg-background-accent-light px-4 py-2 text-sm font-medium text-over-background-highest-dark dark:text-over-background-highest-light hover:opacity-80"
+							>
+								Cancel
+							</button>
+							<button
+								onClick={proceedWithAnalysis}
+								className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
+							>
+								Re-analyse
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
 		</SenseLayout>
 	)
 }
