@@ -77,12 +77,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run post-hoc signal analysis for a SENSE session")
     parser.add_argument("--session-folder", required=True, help="Path to a session folder")
     parser.add_argument("--output-folder", required=True, help="Path to the analysis output folder")
+    # NeuroKit2's eda_process supports "neurokit" or "biosppy" as cleaning
+    # methods. cvxEDA is a phasic-decomposition method (used by eda_phasic),
+    # not a cleaning method, and passing it to eda_process raises ValueError.
+    # We default to "neurokit"; cvxEDA support is reserved as a future
+    # extension via a separate eda_phasic stage.
     parser.add_argument(
         "--eda-method",
-        default=os.environ.get("SENSE_ANALYSIS_EDA_METHOD", "").strip() or "cvxEDA",
+        default=os.environ.get("SENSE_ANALYSIS_EDA_METHOD", "").strip() or "neurokit",
         help=(
-            "NeuroKit2 EDA decomposition method passed to nk.eda_process "
-            "(default: cvxEDA). Override for benchmarking, e.g. 'smoothmedian'."
+            "NeuroKit2 EDA cleaning method passed to nk.eda_process "
+            "(one of 'neurokit' or 'biosppy'; default: neurokit)."
         ),
     )
     return parser.parse_args()
@@ -404,26 +409,63 @@ def basic_stats(values: Sequence[float]) -> Dict[str, Any]:
 def export_series_csv(
     output_folder: Path,
     channel_name: str,
-    indices: Sequence[int],
-    values: Sequence[float],
+    indices_list: List[tuple],
     sample_rate: float,
-    window_index: Optional[int] = None,
 ) -> str:
-    safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in channel_name).strip("_") or "channel"
+    """Export multiple signal segments (e.g., PCG windows) to a single CSV.
+
+    Args:
+        output_folder: Output directory for the CSV.
+        channel_name: Human-readable channel name (e.g., 'PCG', 'ECG').
+        indices_list: List of (indices, values, window_index) tuples.
+                      For non-windowed channels, pass [(indices, values, 0)].
+        sample_rate: Sampling rate in Hz.
+
+    Returns:
+        Path to the written CSV file.
+    """
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in channel_name
+    ).strip("_") or "channel"
     series_dir = output_folder / "channels"
     series_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = series_dir / f"{safe_name}.csv"
 
-    # Include window index in filename if provided
-    if window_index is not None:
-        csv_path = series_dir / f"{safe_name}_window{window_index}.csv"
-    else:
-        csv_path = series_dir / f"{safe_name}.csv"
+    # If NumPy is available, write segment-by-segment to cap memory usage
+    header = "index,time_seconds,value,window_index\n"
+    if not indices_list:
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            handle.write(header)
+        return str(csv_path)
 
+    if np is not None:
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            handle.write(header)
+            for indices, values, window_index in indices_list:
+                idx_arr = np.asarray(indices, dtype=np.int64)
+                val_arr = np.asarray(values, dtype=np.float64)
+                win_arr = np.full(idx_arr.shape, window_index, dtype=np.int32)
+                time_arr = (idx_arr / sample_rate) if sample_rate else idx_arr.astype(np.float64)
+                stacked = np.column_stack([idx_arr, time_arr, val_arr, win_arr])
+                np.savetxt(
+                    handle,
+                    stacked,
+                    delimiter=",",
+                    fmt=["%d", "%.9g", "%.9g", "%d"],
+                )
+        return str(csv_path)
+
+    # Fallback: no NumPy available, write with csv.writer (least efficient).
+    # Note: in typical deployments NumPy is imported at module load and used
+    # elsewhere in this worker, so this path is effectively unreachable unless
+    # someone manually disables or removes NumPy. Keep it as defensive code
+    # for minimal environments.
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["index", "time_seconds", "value"])
-        for index, value in zip(indices, values):
-            writer.writerow([index, index / sample_rate if sample_rate else index, value])
+        writer.writerow(["index", "time_seconds", "value", "window_index"])
+        for indices, values, window_index in indices_list:
+            for index, value in zip(indices, values):
+                writer.writerow([index, index / sample_rate if sample_rate else index, value, window_index])
 
     return str(csv_path)
 
@@ -616,15 +658,29 @@ def extract_neurokit2_features(record: Dict[str, Any]) -> None:
 
     features: Dict[str, Any] = {}
 
+    def _is_finite_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and not (
+            isinstance(value, float) and (math.isnan(value) or math.isinf(value))
+        )
+
     info = nk_block.get("info")
     if isinstance(info, dict):
         for key, value in info.items():
             if isinstance(value, bool):
                 continue
-            if isinstance(value, (int, float)) and not (
-                isinstance(value, float) and (math.isnan(value) or math.isinf(value))
-            ):
+            if _is_finite_number(value):
                 features[str(key)] = value
+            elif isinstance(value, (list, tuple)):
+                # Most NeuroKit2 features arrive as event arrays (SCR onsets,
+                # EOG blinks, R-peaks, ...). Summarize the numeric ones the same
+                # way the BioSPPy extractor does so they survive into the CSV.
+                numeric_values = [item for item in value if _is_finite_number(item)]
+                if numeric_values:
+                    stats = basic_stats(numeric_values)
+                    for stat_name, stat_value in stats.items():
+                        features[f"{key}_{stat_name}"] = stat_value
+                # Non-numeric arrays (string labels, nested structures) are
+                # skipped, as before.
 
     hrv = nk_block.get("hrv")
     hrv_rows: List[Dict[str, Any]] = []
@@ -637,9 +693,16 @@ def extract_neurokit2_features(record: Dict[str, Any]) -> None:
         for key, value in row.items():
             if isinstance(value, bool):
                 continue
-            if isinstance(value, (int, float)) and not (
-                isinstance(value, float) and (math.isnan(value) or math.isinf(value))
-            ):
+            if _is_finite_number(value):
+                features[str(key)] = value
+
+    # Domain-specific features computed by an analyze_* function (e.g. EOG blink
+    # rate, inter-blink intervals) are stashed here so they reach the CSV. They
+    # take precedence over the mechanically-extracted summaries above.
+    derived = nk_block.get("derivedFeatures")
+    if isinstance(derived, dict):
+        for key, value in derived.items():
+            if _is_finite_number(value):
                 features[str(key)] = value
 
     if features:
@@ -681,17 +744,17 @@ def analyze_eda(values: Sequence[float], sample_rate: float, eda_method: Optiona
     if nk is not None:
         try:
             method_used = None
-            # If an override is provided, try to use it. If the installed
-            # neurokit2 does not accept the 'method' argument, fall back
-            # to the default call.
+            # If an override is provided, try to use it. Fall back to the
+            # default call if the installed neurokit2 doesn't accept the
+            # 'method' argument (TypeError) or rejects the value (ValueError,
+            # e.g. a phasic-decomposition method like cvxEDA passed here).
             try:
                 if eda_method:
                     signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate), method=eda_method)
                     method_used = eda_method
                 else:
                     signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate))
-            except TypeError:
-                # Older/newer versions of neurokit2 may not accept `method`.
+            except (TypeError, ValueError):
                 signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate))
                 method_used = None
 
@@ -769,6 +832,77 @@ def analyze_rsp(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
     return record
 
 
+def _extract_eog_features(signals: Any, info: Any, sample_rate: float) -> Dict[str, Any]:
+    """Derive domain-specific EOG features from NeuroKit2's eog_process output:
+    blink count, blink rate per minute, inter-blink-interval stats, and stats of
+    the per-sample blink-rate signal.
+
+    NeuroKit2 has shuffled EOG key/column names across versions (EOG_Blinks vs
+    EOG_Onsets in `info`; EOG_Rate vs EOG_Rate_Mean in `signals`), so lookups
+    probe a few candidates rather than assuming one name. Everything is wrapped
+    so a missing key/column/library degrades to "no feature" instead of raising.
+    """
+    features: Dict[str, Any] = {}
+    if np is None:
+        return features
+
+    def _put(name: str, value: Any) -> None:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return
+        if math.isnan(num) or math.isinf(num):
+            return
+        features[name] = num
+
+    # --- Blink onsets: try common key names across NeuroKit2 versions ---
+    blinks = None
+    if isinstance(info, dict):
+        for candidate in ("EOG_Blinks", "EOG_Onsets", "Blinks"):
+            value = info.get(candidate)
+            if value is None:
+                continue
+            arr = np.atleast_1d(np.asarray(value)).reshape(-1)
+            if arr.size > 0:
+                blinks = arr
+                break
+
+    n_samples = None
+    try:
+        n_samples = int(len(signals))
+    except TypeError:
+        n_samples = None
+
+    if blinks is not None and blinks.size > 0:
+        _put("EOG_Blinks_count", int(blinks.size))
+        if n_samples and sample_rate > 0:
+            duration_min = n_samples / (sample_rate * 60.0)
+            if duration_min > 0:
+                _put("EOG_Blink_Rate_per_min", blinks.size / duration_min)
+        if blinks.size >= 2 and sample_rate > 0:
+            intervals_s = np.diff(np.sort(blinks)) / sample_rate
+            intervals_s = intervals_s[np.isfinite(intervals_s)]
+            if intervals_s.size > 0:
+                _put("EOG_IBI_Mean_s", float(np.mean(intervals_s)))
+                _put("EOG_IBI_SD_s", float(np.std(intervals_s)))
+
+    # --- Per-sample blink-rate column: try common names ---
+    columns = list(getattr(signals, "columns", []))
+    for candidate in ("EOG_Rate", "EOG_Rate_Mean"):
+        if candidate not in columns:
+            continue
+        series = signals[candidate]
+        series = series.dropna() if hasattr(series, "dropna") else series
+        if getattr(series, "size", 0) > 0:
+            _put("EOG_Rate_Mean", float(series.mean()))
+            _put("EOG_Rate_SD", float(series.std()))
+            _put("EOG_Rate_Min", float(series.min()))
+            _put("EOG_Rate_Max", float(series.max()))
+        break
+
+    return features
+
+
 def analyze_eog(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eog", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
@@ -777,10 +911,14 @@ def analyze_eog(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
         try:
             signals, info = nk.eog_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
-            record["neurokit2"] = {
+            nk_block: Dict[str, Any] = {
                 "signalsColumns": list(getattr(signals, "columns", [])),
                 "info": serialize_numpy_like(info),
             }
+            derived = _extract_eog_features(signals, info, float(sample_rate))
+            if derived:
+                nk_block["derivedFeatures"] = derived
+            record["neurokit2"] = nk_block
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EOG processing failed: {exc}")
 
@@ -821,6 +959,7 @@ def analyze_channel(
     window_index: Optional[int] = None,
     progress: Optional[AnalysisProgressTracker] = None,
     counts_as_full_channel: bool = True,
+    export_series: bool = True,
 ) -> Dict[str, Any]:
     normalized_kind = (kind or "").lower()
     if normalized_kind == "acc":
@@ -831,8 +970,15 @@ def analyze_channel(
         "label": label,
         "signalKind": normalized_kind or "generic",
         "summary": basic_stats(values),
-        "seriesPath": export_series_csv(output_folder, label or channel_key, indices, values, sample_rate, window_index),
     }
+
+    # Defer CSV export: always stash raw series for the output phase to write.
+    # This keeps the "analysis" phase timing focused on signal processing
+    # and moves I/O to the output phase.
+    record["_indices"] = indices
+    record["_values"] = values
+    record["_window_index"] = window_index if window_index is not None else 0
+    record["_export_name"] = f"{channel_key}_{normalized_kind.upper()}" if normalized_kind else channel_key
 
     if window_index is not None:
         record["windowIndex"] = window_index
@@ -976,6 +1122,7 @@ def process_segment(
             # Analyze each window
             windowed_results = []
             all_stats = []
+            window_segments = []  # Collect (indices, values, window_index) tuples for batch export
             for window_idx, (window_indices, window_values) in enumerate(windows):
                 window_result = analyze_channel(
                     channel_key=channel_key,
@@ -989,9 +1136,11 @@ def process_segment(
                     window_index=window_idx,
                     progress=progress,
                     counts_as_full_channel=False,
+                    export_series=False,  # Don't export per-window; we'll batch export after
                 )
                 windowed_results.append(window_result)
                 all_stats.append(window_result.get("summary", {}))
+                window_segments.append((window_indices, window_values, window_idx))
 
                 if progress is not None:
                     progress.advance_biosppy(
@@ -1009,8 +1158,8 @@ def process_segment(
                 "signalKind": kind or "generic",
                 "summary": aggregated_summary,
                 "windows": windowed_results,
-                "seriesPath": windowed_results[0].get("seriesPath") if windowed_results else None,
             }
+            
         else:
             # Full-length analysis for non-PCG signals
             channel_result = analyze_channel(
@@ -1024,22 +1173,13 @@ def process_segment(
                 eda_method=eda_method,
                 progress=progress,
             )
-            # Merge analysis fields into channel record
-            channel_record = {
-                "channel": channel_key,
-                "label": label,
-                "signalKind": kind or "generic",
-                "summary": channel_result.get("summary"),
-                "seriesPath": channel_result.get("seriesPath"),
-            }
-            if "analysis" in channel_result:
-                channel_record["analysis"] = channel_result["analysis"]
-            if "biosppyFeatures" in channel_result:
-                channel_record["biosppyFeatures"] = channel_result["biosppyFeatures"]
-            if "neurokit2Features" in channel_result:
-                channel_record["neurokit2Features"] = channel_result["neurokit2Features"]
-            if "warnings" in channel_result:
-                channel_record["warnings"] = channel_result["warnings"]
+            # Preserve all fields returned by analyze_channel so deferred-export
+            # temp fields (e.g. `_indices`, `_values`, `_export_name`) survive
+            # into the output phase. Override identifying fields explicitly.
+            channel_record = dict(channel_result)
+            channel_record["channel"] = channel_key
+            channel_record["label"] = label
+            channel_record["signalKind"] = kind or "generic"
 
         result_channels.append(channel_record)
 
@@ -1160,7 +1300,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
 
 
 def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
-    csv_path = output_folder / "analysis-summary.csv"
+    csv_path = output_folder / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
@@ -1237,11 +1377,11 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
 
 
 
-def write_biosppy_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
-    csv_path = output_folder / "analysis-biosppy-features.csv"
+def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
+    csv_path = output_folder / "features.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["segment", "channel", "label", "signalKind", "window_index", "feature", "value"])
+        writer.writerow(["segment", "channel", "label", "signalKind", "window_index", "library", "feature", "value"])
 
         for segment in result.get("segments", []):
             segment_index = segment.get("segment") if isinstance(segment, dict) else None
@@ -1260,7 +1400,40 @@ def write_biosppy_features_csv(output_folder: Path, result: Dict[str, Any]) -> N
                         analysis = window_record.get("analysis", {})
                         if not isinstance(analysis, dict):
                             continue
-                        features = analysis.get("biosppyFeatures", {})
+
+                        # Iterate both biosppy and neurokit2 features
+                        for library, feature_key in [("biosppy", "biosppyFeatures"), ("neurokit2", "neurokit2Features")]:
+                            features = analysis.get(feature_key, {})
+                            if not isinstance(features, dict):
+                                continue
+
+                            for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                                if isinstance(value, (int, float, str, bool)) or value is None:
+                                    serialized = value
+                                else:
+                                    serialized = json.dumps(value, ensure_ascii=False)
+
+                                writer.writerow(
+                                    [
+                                        segment_index,
+                                        channel.get("channel"),
+                                        channel.get("label"),
+                                        channel.get("signalKind"),
+                                        window_record.get("windowIndex", 0),
+                                        library,
+                                        feature_name,
+                                        serialized,
+                                    ]
+                                )
+                else:
+                    # Fallback to old schema (channel-level analysis)
+                    analysis = channel.get("analysis", {})
+                    if not isinstance(analysis, dict):
+                        continue
+
+                    # Iterate both biosppy and neurokit2 features
+                    for library, feature_key in [("biosppy", "biosppyFeatures"), ("neurokit2", "neurokit2Features")]:
+                        features = analysis.get(feature_key, {})
                         if not isinstance(features, dict):
                             continue
 
@@ -1276,110 +1449,67 @@ def write_biosppy_features_csv(output_folder: Path, result: Dict[str, Any]) -> N
                                     channel.get("channel"),
                                     channel.get("label"),
                                     channel.get("signalKind"),
-                                    window_record.get("windowIndex", ""),
+                                    0,  # No window index in old schema; use 0 for consistency
+                                    library,
                                     feature_name,
                                     serialized,
                                 ]
                             )
-                else:
-                    # Fallback to old schema (channel-level analysis)
-                    analysis = channel.get("analysis", {})
-                    if not isinstance(analysis, dict):
+
+
+
+def write_channel_series_csvs(output_folder: Path, result: Dict[str, Any]) -> None:
+    """Write per-channel CSVs from stashed series data collected during analysis.
+
+    This consumes `_indices`, `_values`, `_window_index`, and `_export_name`
+    fields produced by `analyze_channel`, writes CSVs per-segment/channel, and
+    sets `seriesPath` on the channel/window records. Temporary fields are
+    removed after writing to avoid bloating the JSON result.
+    """
+    sample_rate = result.get("sampleRate") or 0
+    for segment in result.get("segments", []):
+        segment_index = segment.get("segment") if isinstance(segment, dict) else None
+        segment_folder = output_folder / f"segment-{segment_index}"
+        # Ensure segment folder exists; export_series_csv will create channels/ as needed.
+        segment_folder.mkdir(parents=True, exist_ok=True)
+
+        for channel in segment.get("channels", []) if isinstance(segment, dict) else []:
+            if not isinstance(channel, dict):
+                continue
+
+            windows = channel.get("windows", [])
+            if windows:
+                indices_list = []
+                export_name = None
+                for window_record in windows:
+                    if not isinstance(window_record, dict):
                         continue
-                    features = analysis.get("biosppyFeatures", {})
-                    if not isinstance(features, dict):
-                        continue
+                    if "_indices" in window_record and "_values" in window_record:
+                        indices_list.append((window_record["_indices"], window_record["_values"], window_record.get("_window_index", window_record.get("windowIndex", 0))))
+                        if export_name is None:
+                            export_name = window_record.get("_export_name")
 
-                    for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                        if isinstance(value, (int, float, str, bool)) or value is None:
-                            serialized = value
-                        else:
-                            serialized = json.dumps(value, ensure_ascii=False)
-
-                        writer.writerow(
-                            [
-                                segment_index,
-                                channel.get("channel"),
-                                channel.get("label"),
-                                channel.get("signalKind"),
-                                "",  # No window index in old schema
-                                feature_name,
-                                serialized,
-                            ]
-                        )
-
-
-
-def write_neurokit2_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
-    csv_path = output_folder / "analysis-neurokit2-features.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["segment", "channel", "label", "signalKind", "window_index", "feature", "value"])
-
-        for segment in result.get("segments", []):
-            segment_index = segment.get("segment") if isinstance(segment, dict) else None
-            channels = segment.get("channels", []) if isinstance(segment, dict) else []
-            for channel in channels:
-                if not isinstance(channel, dict):
-                    continue
-
-                # Check if channel has windowed results
-                windows = channel.get("windows", [])
-                if windows:
-                    # New schema with windows
+                if indices_list:
+                    series_path = export_series_csv(segment_folder, export_name or channel.get("channel"), indices_list, sample_rate)
                     for window_record in windows:
                         if not isinstance(window_record, dict):
                             continue
-                        analysis = window_record.get("analysis", {})
-                        if not isinstance(analysis, dict):
-                            continue
-                        features = analysis.get("neurokit2Features", {})
-                        if not isinstance(features, dict):
-                            continue
+                        window_record["seriesPath"] = series_path
+                        # Remove temp fields
+                        for tmp in ("_indices", "_values", "_window_index", "_export_name"):
+                            if tmp in window_record:
+                                del window_record[tmp]
 
-                        for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                            if isinstance(value, (int, float, str, bool)) or value is None:
-                                serialized = value
-                            else:
-                                serialized = json.dumps(value, ensure_ascii=False)
+            else:
+                # Channel-level series
+                if "_indices" in channel and "_values" in channel:
+                    export_name = channel.get("_export_name") or channel.get("channel")
+                    series_path = export_series_csv(segment_folder, export_name, [(channel["_indices"], channel["_values"], channel.get("_window_index", 0))], sample_rate)
+                    channel["seriesPath"] = series_path
+                    for tmp in ("_indices", "_values", "_window_index", "_export_name"):
+                        if tmp in channel:
+                            del channel[tmp]
 
-                            writer.writerow(
-                                [
-                                    segment_index,
-                                    channel.get("channel"),
-                                    channel.get("label"),
-                                    channel.get("signalKind"),
-                                    window_record.get("windowIndex", ""),
-                                    feature_name,
-                                    serialized,
-                                ]
-                            )
-                else:
-                    # Fallback to old schema (channel-level analysis)
-                    analysis = channel.get("analysis", {})
-                    if not isinstance(analysis, dict):
-                        continue
-                    features = analysis.get("neurokit2Features", {})
-                    if not isinstance(features, dict):
-                        continue
-
-                    for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                        if isinstance(value, (int, float, str, bool)) or value is None:
-                            serialized = value
-                        else:
-                            serialized = json.dumps(value, ensure_ascii=False)
-
-                        writer.writerow(
-                            [
-                                segment_index,
-                                channel.get("channel"),
-                                channel.get("label"),
-                                channel.get("signalKind"),
-                                "",  # No window index in old schema
-                                feature_name,
-                                serialized,
-                            ]
-                        )
 
 
 def main() -> int:
@@ -1407,15 +1537,46 @@ def main() -> int:
         )
         progress.emit("Writing output files", force=True)
 
+        # Write per-channel series CSVs that were deferred during analysis.
+        # This moves I/O out of the timed analysis phase into the output phase.
+        write_channel_series_csvs(output_folder, result)
+
+        # Write a small README describing the output layout and important notes.
+        try:
+            readme_path = output_folder / "README.md"
+            with readme_path.open("w", encoding="utf-8") as rhandle:
+                rhandle.write(
+                    """# Analysis output
+
+                        This folder contains CSV summaries and per-channel series for the session.
+
+                        - `summary.csv`: per-segment and per-window summary statistics.
+                        - `features.csv`: flattened feature table with a `library` column (biosppy/neurokit2).
+                        - `channels/`: per-channel time series CSVs named `CHANNEL_KIND.csv` (e.g. `AI1_ECG.csv`).
+
+                        Notes:
+                        - PCG signals are analyzed in fixed-size windows; all windows for a given
+                        segment/channel are exported into a single CSV file. Each row contains a
+                        `window_index` column so rows can be associated with their originating window.
+                        As a consequence, the `seriesPath` on each window record points to the same
+                        consolidated CSV for that channel.
+                        - The worker defers writing of large per-channel CSVs until the output phase so
+                        the reported "analysis" time measures signal processing only; CSV export is
+                        performed after analysis completes.
+                    """
+                )
+        except Exception:
+            # README is a convenience; failures here should not abort the job.
+            pass
+
         # Drop sample-length arrays from biosppy/neurokit2 payloads (duplicates
         # of the per-channel CSV exports), then replace NaN/Inf with None so
         # the Electron renderer's strict JSON.parse can read it.
         result = prune_bulky_arrays(result)
         result = sanitize_for_json(result)
-        result_path = output_folder / "analysis-result.json"
+        result_path = output_folder / "analysis.json"
         write_summary_csv(output_folder, result)
-        write_biosppy_features_csv(output_folder, result)
-        write_neurokit2_features_csv(output_folder, result)
+        write_features_csv(output_folder, result)
         with result_path.open("w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
         progress.mark_csv_written()

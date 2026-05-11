@@ -125,7 +125,7 @@ function persistAnalysisResult(sessionFolderPath, result) {
   const outputDir = getAnalysisOutputDir(sessionFolderPath);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const resultPath = path.join(outputDir, 'analysis-result.json');
+  const resultPath = path.join(outputDir, 'analysis.json');
   fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 
   const manifestPath = path.join(sessionFolderPath, 'session.json');
@@ -281,7 +281,7 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       }
 
       try {
-        const workerResultPath = path.join(outputDir, 'analysis-result.json');
+        const workerResultPath = path.join(outputDir, 'analysis.json');
         if (!fs.existsSync(workerResultPath)) {
           throw new Error(`Worker did not write analysis result file: ${workerResultPath}`);
         }
@@ -302,7 +302,7 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
 
 function readPersistedAnalysisResult(sessionFolderPath) {
   if (!sessionFolderPath) return null;
-  const resultPath = path.join(sessionFolderPath, 'analysis', 'analysis-result.json');
+  const resultPath = path.join(sessionFolderPath, 'analysis', 'analysis.json');
   if (!fs.existsSync(resultPath)) return null;
   try {
     return JSON.parse(fs.readFileSync(resultPath, 'utf-8'));

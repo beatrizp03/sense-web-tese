@@ -148,6 +148,19 @@ const Page = () => {
 				sessionFolder,
 				signalKinds: appliedSignalKinds
 			})
+			
+			// Check if the result indicates cancellation
+			if (result?.cancelled === true) {
+				setStatus("Analysis cancelled.")
+				setError("")
+				window.dispatchEvent(
+					new CustomEvent("analysis-error", {
+						detail: { message: "Analysis cancelled." }
+					})
+				)
+				return
+			}
+			
 			const refreshed = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder)
 			setAnalysisResult(refreshed || result || null)
 			setStatus("Analysis completed and stored in the session folder.")
