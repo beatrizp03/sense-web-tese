@@ -485,11 +485,7 @@ const Page = () => {
 			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
-			setFirmwareVersion(
-				deviceRef.current.getFirmwareVersion?.()
-					? deviceRef.current.getFirmwareVersion()?.version ?? null
-					: null
-			)
+			setFirmwareVersion(deviceRef.current.getFirmwareVersion()?.version ?? null)
 
 			// Only set buffer size if valid
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
@@ -566,7 +562,18 @@ const Page = () => {
 			const startTime = new Date().toISOString();
 			const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
 
-			const adcChars = device.getAdcCharacteristics?.() || {};
+			const adcCharacteristics = await device.getAdcCharacteristics?.();
+			const adcChars: Record<string, number> = adcCharacteristics
+				? {
+						adcNum: adcCharacteristics.adcNum,
+						adcAtten: adcCharacteristics.adcAtten,
+						adcBitWidth: adcCharacteristics.adcBitWidth,
+						coeffA: adcCharacteristics.coeffA,
+						coeffB: adcCharacteristics.coeffB,
+						vRef: adcCharacteristics.vRef
+				  }
+				: {};
+			const firmwareVersion = device.getFirmwareVersion?.()?.version ?? undefined;
 
 			const now = Date.now();
 			const configuredSignalKinds =
@@ -590,7 +597,8 @@ const Page = () => {
 				channels: sessionChannels,
 				channelSignalKinds,
 				sessionFolder,
-				adcChars
+				adcChars,
+				firmwareVersion
 			});
 			await window.electronAPI?.registerSegment?.({
 				index: segmentRef.current,

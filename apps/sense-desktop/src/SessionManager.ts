@@ -26,6 +26,7 @@ export class SessionManager {
       channelNames: meta.channelNames || {},
       channelSignalKinds: meta.channelSignalKinds || {},
       adcChars: meta.adcChars || {},
+      firmwareVersion: meta.firmwareVersion || "",
       segments: [],
       chunks: [],
       // CSV-style header for graph/data reconstruction

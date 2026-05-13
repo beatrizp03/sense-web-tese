@@ -36,6 +36,7 @@ class SessionManager {
             channels: meta.channels,
             channelNames: meta.channelNames || {},
             adcChars: meta.adcChars || {},
+            firmwareVersion: meta.firmwareVersion || "",
             segments: [],
             chunks: [],
             csvHeader: {

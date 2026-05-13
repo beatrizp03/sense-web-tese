@@ -39,19 +39,38 @@ from typing import Sequence
 import numpy as np
 import neurokit2 as nk
 
-# Resolution-bits-per-channel mirrors ScientISSTFrame.CHANNEL_SIZES so the
-# synthetic csvHeader matches what the desktop app writes for a real "sense"
-# recording.
 SCIENTISST_CHANNEL_SIZES = {
     "AI1": 12, "AI2": 12, "AI3": 12, "AI4": 12, "AI5": 12, "AI6": 12,
 }
 
+
+# The values come from the ScientISST sense.py ADC layer (scientisst/esp_adc/constants.py)
+LIN_COEFF_A_SCALE = 65536 
+DEFAULT_ADC_CHARS = {
+    "adcNum": 1,        # ADC_UNIT_1
+    "adcAtten": 3,      # ADC_ATTEN_DB_11
+    "adcBitWidth": 3,   # ADC_WIDTH_BIT_12
+    "coeffA": LIN_COEFF_A_SCALE,
+    "coeffB": 0,
+    "vRef": 1100,       # ESP32 eFuse default reference (mV)
+}
+
+
+ADC_PEAK_BY_KIND = {
+    "ecg": 1800,
+    "emg": 1800,
+    "ppg": 1800,
+    "rsp": 1700,
+    "eda": 1600,
+    "eog": 1500,
+    "pcg": 1500,
+    "acc": 1500,
+    "eeg": 60,   
+}
+DEFAULT_ADC_PEAK = 1500
+
 DEFAULT_SAMPLE_RATE = 1000
-DEFAULT_DURATION = 60  # seconds — bump via --duration for long-recording tests
-# Mirrors BufferManager's default storageChunkThreshold so synthetic sessions
-# split into many chunk files the same way real recordings do (10s of frames
-# per chunk at 1 kHz). A 2h session at 1 kHz with this default produces ~720
-# chunk files — exactly what production sees.
+DEFAULT_DURATION = 60  #sec
 DEFAULT_CHUNK_SIZE = 10000
 SUPPORTED_KINDS = ("ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc")
 
@@ -84,9 +103,7 @@ def simulate(kind: str, duration: int, sample_rate: int) -> np.ndarray:
             dtype=float,
         )
 
-    # NeuroKit2 has no dedicated eog/eeg/pcg/acc simulators, so we synthesize
-    # plausible signals manually. They are sufficient to exercise the analysis
-    # code paths even if the morphologies are not biophysically faithful.
+    # NeuroKit2 has no dedicated eog/eeg/pcg/acc simulators
     n = duration * sample_rate
     t = np.linspace(0.0, duration, n, endpoint=False)
 
@@ -116,6 +133,30 @@ def simulate(kind: str, duration: int, sample_rate: int) -> np.ndarray:
     raise ValueError(f"Unknown signal kind: {kind!r}")
 
 
+def quantize_to_adc(signal: np.ndarray, kind: str | None = None, bits: int = 12) -> np.ndarray:
+    """Quantize a simulator waveform into integer ADC codes [0, 2**bits - 1].
+
+    A real ScientISST acquisition stores raw integer ADC readings per channel
+    (see ScientISSTFrame in @scientisst/sense — 0..4095 on a 12-bit input), so a
+    physiological waveform in arbitrary units has to go through the ADC step to
+    be a faithful stand-in for live-acquired data, and so the analysis worker
+    handles synthetic and real sessions identically.
+    """
+    arr = np.asarray(signal, dtype=float)
+    if arr.size == 0:
+        return arr.astype(np.int64)
+    lo = float(np.min(arr))
+    hi = float(np.max(arr))
+    max_code = (1 << bits) - 1
+    if hi <= lo:
+        return np.zeros(arr.shape, dtype=np.int64)
+    midpoint = (max_code + 1) // 2
+    peak = ADC_PEAK_BY_KIND.get((kind or "").lower(), DEFAULT_ADC_PEAK)
+    norm = (arr - lo) / (hi - lo) * 2.0 - 1.0  # min-max -> [-1, 1]
+    codes = np.round(midpoint + norm * peak)
+    return np.clip(codes, 0, max_code).astype(np.int64)
+
+
 def write_chunk_slice(
     chunk_path: Path,
     signals: dict[str, np.ndarray],
@@ -124,15 +165,6 @@ def write_chunk_slice(
 ) -> None:
     """Write one chunk file containing frames [start, end) in the exact layout
     ChunkedDataWriter emits.
-
-    Layout: top-level "[\\n", then each frame as JSON.stringify(frame, null, 2)
-    (i.e. indent=2 inside, no leading indent on the outer braces) separated
-    by ",\\n", then "\\n]". This matches what the Electron main process
-    produces during a real recording.
-
-    Streaming this slice (rather than materializing the full frames list) keeps
-    memory bounded by chunk_size — the script can generate multi-hour sessions
-    without holding millions of dict objects in RAM at once.
     """
     with chunk_path.open("w", encoding="utf-8") as handle:
         handle.write("[\n")
@@ -140,7 +172,7 @@ def write_chunk_slice(
             if i > start:
                 handle.write(",\n")
             frame = {
-                "channels": {ch: float(values[i]) for ch, values in signals.items()},
+                "channels": {ch: int(values[i]) for ch, values in signals.items()},
                 "sequence": i,
                 "__seq": i,
             }
@@ -158,19 +190,23 @@ def build_manifest(
     ended_at_ms: int,
     chunks: list[dict],
 ) -> dict:
-    """Build a session.json that mirrors SessionManager.createSession + finalizeSession output."""
-    iso = datetime.fromtimestamp(started_at_ms / 1000, tz=timezone.utc).isoformat()
+    """Build a session.json byte-for-byte shaped like one the renderer writes for
+    a live acquisition.
+    """
+    iso = (
+        datetime.fromtimestamp(started_at_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.")
+        + f"{started_at_ms % 1000:03d}Z"
+    )
     resolution_bits = [SCIENTISST_CHANNEL_SIZES.get(ch, 12) for ch in channels]
     return {
         "sessionId": session_id,
         "startedAt": started_at_ms,
-        "endedAt": ended_at_ms,
         "deviceType": "sense",
         "sampleRate": sample_rate,
         "channels": channels,
         "channelNames": {ch: ch for ch in channels},
-        "channelSignalKinds": channel_signal_kinds,
-        "adcChars": {},
+        "adcChars": dict(DEFAULT_ADC_CHARS),
+        "firmwareVersion": "",
         "segments": [
             {"index": 1, "startedAt": started_at_ms, "endedAt": ended_at_ms},
         ],
@@ -183,6 +219,10 @@ def build_manifest(
             "Timestamp": started_at_ms,
             "Resolution (bits)": resolution_bits,
         },
+        "segment": 1,
+        "channelSignalKinds": channel_signal_kinds,
+        "timestamp": started_at_ms,
+        "endedAt": ended_at_ms,
     }
 
 
@@ -196,13 +236,15 @@ def write_session(
     signals: dict[str, np.ndarray],
     chunk_size: int,
 ) -> tuple[int, int]:
-    """Stream signals to disk as N chunk files plus a session.json manifest.
-
-    Returns (chunk_count, frame_count). Memory usage stays bounded by
-    chunk_size regardless of total signal length, so multi-hour sessions
-    don't blow up RAM.
+    """
+    Stream signals to disk as N chunk files plus a session.json manifest.
     """
     session_dir.mkdir(parents=True, exist_ok=True)
+
+    signals = {
+        channel: quantize_to_adc(values, channel_signal_kinds.get(channel))
+        for channel, values in signals.items()
+    }
 
     n = min(len(s) for s in signals.values())
     chunk_count = max(1, (n + chunk_size - 1) // chunk_size)
@@ -213,8 +255,9 @@ def write_session(
         end = min(start + chunk_size, n)
         is_final = chunk_idx == chunk_count - 1
         chunk_filename = f"sample1_chunk{chunk_idx}.json"
-        write_chunk_slice(session_dir / chunk_filename, signals, start, end)
-        chunks_meta.append({"file": chunk_filename, "segment": 1, "final": is_final})
+        chunk_path = session_dir / chunk_filename
+        write_chunk_slice(chunk_path, signals, start, end)
+        chunks_meta.append({"file": str(chunk_path.resolve()), "segment": 1, "final": is_final})
 
     started_ms = int(time.time() * 1000)
     ended_ms = started_ms + int(n * 1000 / sample_rate)
@@ -307,9 +350,6 @@ def make_multi_session(
     folder_name = name or f"synthetic-{layout_name}"
     session_dir = base_dir / folder_name
 
-    # Always include all 6 ScientISST analog channels in the manifest so the
-    # desktop app sees the full channel list. Channels not in the layout get
-    # flat-zero data and no signalKind mapping.
     all_channels = ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"]
     sim_per_channel = {ch: simulate(kind, duration, sample_rate) for ch, kind in layout.items()}
     n = min(len(s) for s in sim_per_channel.values())
