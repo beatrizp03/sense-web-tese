@@ -486,6 +486,8 @@ let lastSessionFolder = undefined;
 let sampleWriter = undefined;
 let perfLogger = null;
 let exportEventsCompleted = { csv: false, pdf: false };
+// remember last selected port friendly name when user picks a port in renderer
+let lastSelectedPortLabel = '';
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
   // Only create session folder if not already set (first acquisition)
@@ -562,6 +564,13 @@ ipcMain.on('send-frame', (_event, frame) => {
 
 // IPC handlers for session/manifest management
 ipcMain.handle('createSession', (_event, meta) => {
+  try {
+    if ((!meta || !meta.device || meta.device === '') && lastSelectedPortLabel) {
+      meta = Object.assign({}, meta, { device: lastSelectedPortLabel });
+    }
+  } catch (e) {
+    console.error('[createSession] inject error', e);
+  }
   SessionManager.createSession(meta);
 });
 
@@ -676,6 +685,23 @@ ipcMain.on('update-session-manifest', (_event, manifest) => {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   } catch (e) {
     console.error('[update-session-manifest] Failed to write manifest:', e);
+  }
+});
+
+ipcMain.on('port-selected', (_event, portEntry) => {
+  try {
+    if (!portEntry || !portEntry.path) return;
+    let friendly = portEntry.friendlyName || portEntry.name || portEntry.path;
+    if (typeof friendly === 'string') {
+      // strip occasional "Bluetooth: " prefix so stored device is just the name
+      friendly = friendly.replace(/^\s*Bluetooth:\s*/i, '').trim();
+    }
+    lastSelectedPortLabel = friendly || '';
+    if (SessionManager && SessionManager.manifest) {
+      SessionManager.manifest.device = friendly;
+    }
+  } catch (e) {
+    console.error('[port-selected] Handler error:', e);
   }
 });
 

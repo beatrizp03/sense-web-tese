@@ -364,18 +364,18 @@ const Page = () => {
 
 			{showReAnalysisDialog && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-					<div className="w-full max-w-md rounded-lg border border-background-accent bg-background-accent p-6 shadow-lg">
+					<div className="w-full max-w-md rounded-lg bg-background-accent-dark p-6 shadow-lg dark:bg-background-accent-light">
 						<div className="flex items-center gap-3 mb-4">
 							<span className="text-2xl">⚠️</span>
-							<h2 className="text-xl font-semibold text-over-background-highest">Re-analyse?</h2>
+							<h2 className="text-xl font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">Re-analyse?</h2>
 						</div>
-						<p className="text-sm text-over-background-medium mb-6">
+						<p className="text-sm text-over-background-medium-dark dark:text-over-background-medium-light mb-6">
 							The analysis just ended. Do you want to re-analyse with the current channel mappings?
 						</p>
 						<div className="flex gap-3">
 							<button
 								onClick={() => setShowReAnalysisDialog(false)}
-								className="flex-1 rounded-lg bg-background-accent-dark dark:bg-background-accent-light px-4 py-2 text-sm font-medium text-over-background-highest-dark dark:text-over-background-highest-light hover:opacity-80"
+								className="flex-1 rounded-lg border border-over-background-highest-dark dark:border-over-background-highest-light bg-background-accent-dark dark:bg-background-accent-light px-4 py-2 text-sm font-medium text-over-background-highest-dark dark:text-over-background-highest-light hover:opacity-80"
 							>
 								Cancel
 							</button>

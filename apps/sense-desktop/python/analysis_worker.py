@@ -1086,10 +1086,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
     return {
         "sessionId": manifest.get("sessionId"),
         "sessionFolder": str(session_folder),
-        "sampleRate": sample_rate,
-        "frameCount": total_frames,
         "chunkCount": total_chunks,
-        "chunkFiles": [str(entry["file"]) for entry in chunk_entries],
         "analyzedAt": now_iso(),
         "completedAt": now_iso(),
         "worker": {
@@ -1310,15 +1307,27 @@ def write_signal_csvs(
     else:
         sample_rate_field = int(sr_value) if sr_value.is_integer() else sr_value
 
-    csv_header = manifest.get("csvHeader")
-    if isinstance(csv_header, dict) and isinstance(csv_header.get("Device"), str) and csv_header["Device"].strip():
-        device_field = csv_header["Device"].strip()
-    elif manifest.get("deviceType") == "maker":
-        device_field = "ScientISST Maker"
-    elif manifest.get("deviceType") == "sense":
-        device_field = "ScientISST Sense"
+    # Prefer an explicit top-level `device` label (set by the app) for the
+    # Device metadata. Fall back to csvHeader.Device, then to deviceType
+    # labels.
+    device_field = None
+    if isinstance(manifest.get("device"), str) and manifest.get("device").strip():
+        device_field = manifest.get("device").strip()
     else:
-        device_field = "ScientISST"
+        csv_header = manifest.get("csvHeader")
+        if isinstance(csv_header, dict) and isinstance(csv_header.get("Device"), str) and csv_header["Device"].strip():
+            device_field = csv_header["Device"].strip()
+
+    if not device_field:
+        if manifest.get("deviceType") == "maker":
+            device_field = "Maker"
+        elif manifest.get("deviceType") == "sense":
+            device_field = "ScientISST Sense"
+        else:
+            device_field = "ScientISST"
+    else:
+        # The app already normalizes the friendly name; ensure it's a string and trim whitespace.
+        device_field = str(device_field).strip()
 
     api_version = manifest.get("apiVersion")
     api_version_field = api_version.strip() if isinstance(api_version, str) and api_version.strip() else SENSE_FILEWRITER_API_VERSION

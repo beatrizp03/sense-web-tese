@@ -168,6 +168,12 @@ async function choosePort() {
   if (response === -1) {
     throw new Error('Cancelled');
   }
+  // Notify main process of the selected port so it can persist the friendly name
+  try {
+    ipcRenderer.send('port-selected', ports[response]);
+  } catch (e) {
+    // ignore notification errors
+  }
   return ports[response].path;
 }
 

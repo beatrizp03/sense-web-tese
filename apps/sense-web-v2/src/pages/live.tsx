@@ -419,7 +419,7 @@ const Page = () => {
 			segment: segmentRef.current,
 			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
-			deviceType: device instanceof Maker ? "maker" : "sense",
+			deviceType: device instanceof Maker ? "Maker" : "ScientISST Sense",
 			channelSignalKinds,
 			timestamp: Date.now()
 		});
@@ -592,7 +592,6 @@ const Page = () => {
 			await window.electronAPI?.createSession?.({
 				sessionId: `${now}`,
 				startedAt: now,
-				deviceType: device instanceof Maker ? "maker" : "sense",
 				sampleRate,
 				channels: sessionChannels,
 				channelSignalKinds,
