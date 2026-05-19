@@ -228,9 +228,11 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       const trimmed = text.replace(/\r?\n$/, '');
       if (trimmed) console.log('[analysis-worker]', trimmed);
 
-      // Parse and forward progress events to renderer
-      const progressMatch = trimmed.match(/\[progress\]\s+(\d+)%\s+(.+)/i);
-      if (progressMatch) {
+      // Parse and forward every progress event to renderer.
+      for (const line of text.split(/\r?\n/)) {
+        const progressMatch = line.match(/\[progress\]\s+(\d+)%\s+(.+)/i);
+        if (!progressMatch) continue;
+
         const percentage = parseInt(progressMatch[1], 10);
         const phaseOrSignal = progressMatch[2].trim();
         if (BrowserWindow.getAllWindows().length > 0) {

@@ -496,17 +496,13 @@ class AnalysisProgressTracker:
         self.data_prepared = True
         self.emit("Data preparation complete")
 
-    def start_biosppy_analysis(self) -> None:
-        """Emit initialization message for BioSPPy analysis phase."""
+    def start_analysis(self) -> None:
+        """Emit initialization message for analysis phase."""
         if not self.biosppy_started and self.biosppy_total > 0:
             self.biosppy_started = True
-            self.emit("Initializing BioSPPy analysis", force=True)
-
-    def start_neurokit2_analysis(self) -> None:
-        """Emit initialization message for NeuroKit2 analysis phase."""
-        if not self.neurokit2_started and self.neurokit2_total > 0:
-            self.neurokit2_started = True
-            self.emit("Initializing NeuroKit2 analysis", force=True)
+            if not self.neurokit2_started and self.neurokit2_total > 0:
+                self.neurokit2_started = True
+                self.emit("Initializing analysis", force=True)
 
     def advance_biosppy(self, amount: float, label: str) -> None:
         if self.biosppy_total <= 0 or amount <= 0:
@@ -533,6 +529,12 @@ def prune_bulky_arrays(value: Any, limit: int = ARRAY_PRESERVE_LIMIT) -> Any:
     if isinstance(value, dict):
         return {key: prune_bulky_arrays(item, limit) for key, item in value.items()}
     return value
+
+
+def _progress_label(signal_name: str, channel_key: Optional[str], phase: str) -> str:
+    if channel_key:
+        return f"{signal_name} ({channel_key}): {phase}"
+    return f"{signal_name}: {phase}"
 
 
 def apply_biosppy_analysis(record: Dict[str, Any], kind: str, values: Sequence[float], sample_rate: float) -> None:
@@ -613,14 +615,27 @@ def extract_neurokit2_features(record: Dict[str, Any]) -> None:
         record["neurokit2Features"] = features
 
 
-def analyze_ecg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_ecg(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "ecg", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy ECG", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "ecg", values, sample_rate)
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy ECG", channel_key, "detecting peaks & features"))
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 ECG", channel_key, "processing & HRV"))
+
             signals, info = nk.ecg_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
             record["neurokit2"] = {
@@ -636,17 +651,36 @@ def analyze_ecg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 ECG processing failed: {exc}")
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy ECG", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 ECG", channel_key, "complete"))
+
     return record
 
 
-def analyze_eda(values: Sequence[float], sample_rate: float, eda_method: Optional[str]) -> Dict[str, Any]:
+def analyze_eda(
+    values: Sequence[float],
+    sample_rate: float,
+    eda_method: Optional[str],
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eda", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EDA", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "eda", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy EDA", channel_key, "detecting peaks & features"))
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EDA", channel_key, "processing & decomposition"))
+
             method_used = None
             try:
                 if eda_method:
@@ -669,17 +703,35 @@ def analyze_eda(values: Sequence[float], sample_rate: float, eda_method: Optiona
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EDA processing failed: {exc}")
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EDA", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 EDA", channel_key, "complete"))
+
     return record
 
 
-def analyze_ppg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_ppg(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "ppg", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy PPG", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "ppg", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy PPG", channel_key, "detecting peaks & features"))
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 PPG", channel_key, "processing & features"))
+
             signals, info = nk.ppg_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
             record["neurokit2"] = {
@@ -689,17 +741,35 @@ def analyze_ppg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 PPG processing failed: {exc}")
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy PPG", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 PPG", channel_key, "complete"))
+
     return record
 
 
-def analyze_emg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_emg(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "emg", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EMG", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "emg", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy EMG", channel_key, "detecting peaks & features"))
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EMG", channel_key, "processing & features"))
+
             signals, info = nk.emg_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
             record["neurokit2"] = {
@@ -709,17 +779,35 @@ def analyze_emg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EMG processing failed: {exc}")
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EMG", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 EMG", channel_key, "complete"))
+
     return record
 
 
-def analyze_rsp(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_rsp(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "rsp", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy RSP", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "rsp", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy RSP", channel_key, "detecting peaks & features"))
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 RSP", channel_key, "processing & features"))
+
             signals, info = nk.rsp_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
             record["neurokit2"] = {
@@ -728,6 +816,10 @@ def analyze_rsp(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
             }
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 RSP processing failed: {exc}")
+
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy RSP", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 RSP", channel_key, "complete"))
 
     return record
 
@@ -798,12 +890,20 @@ def _extract_eog_features(signals: Any, info: Any, sample_rate: float) -> Dict[s
     return features
 
 
-def analyze_eog(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_eog(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eog", "libraries": []}
     signal = np.asarray(values, dtype=float) if np is not None else list(values)
 
     if nk is not None:
         try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EOG", channel_key, "processing & features"))
+
             signals, info = nk.eog_process(signal, sampling_rate=float(sample_rate))
             record["libraries"].append("neurokit2")
             nk_block: Dict[str, Any] = {
@@ -817,24 +917,63 @@ def analyze_eog(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EOG processing failed: {exc}")
 
+    if progress is not None:
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 EOG", channel_key, "complete"))
+
     return record
 
 
-def analyze_eeg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_eeg(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eeg", "libraries": []}
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "eeg", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy EEG", channel_key, "detecting peaks & features"))
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "complete"))
     return record
 
 
-def analyze_pcg(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_pcg(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "pcg", "libraries": []}
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy PCG", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "pcg", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy PCG", channel_key, "detecting peaks & features"))
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy PCG", channel_key, "complete"))
     return record
 
 
-def analyze_acc(values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+def analyze_acc(
+    values: Sequence[float],
+    sample_rate: float,
+    channel_key: Optional[str] = None,
+    progress: Optional[AnalysisProgressTracker] = None,
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "acc", "libraries": []}
+    if progress is not None:
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "filtering & segmentation"))
+
     apply_biosppy_analysis(record, "acc", values, sample_rate)
+
+    if progress is not None:
+        progress.advance_biosppy(0.5, _progress_label("BioSPPy ACC", channel_key, "detecting peaks & features"))
+        progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "complete"))
     return record
 
 
@@ -877,53 +1016,33 @@ def analyze_channel(
                 progress.advance_neurokit2(1, f"NeuroKit2: {normalized_kind.upper()} ({label})")
         return record
 
-    # Emit sub-progress stages during channel analysis for visual feedback
-    # Each channel is divided into 4 work units: filtering (0.25), peaks (0.5), neurokit2 (0.2), complete (0.05)
-    has_biosppy = progress is not None and normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS
-    has_neurokit2 = progress is not None and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS
-    
-    if has_biosppy:
-        progress.advance_biosppy(0.25, f"BioSPPy {normalized_kind.upper()} ({label}): filtering & segmentation")
-
     if normalized_kind == "ecg":
-        record["analysis"] = analyze_ecg(values, sample_rate)
+        record["analysis"] = analyze_ecg(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "eda":
-        record["analysis"] = analyze_eda(values, sample_rate, eda_method)
+        record["analysis"] = analyze_eda(values, sample_rate, eda_method, channel_key=channel_key, progress=progress)
     elif normalized_kind == "ppg":
-        record["analysis"] = analyze_ppg(values, sample_rate)
+        record["analysis"] = analyze_ppg(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "emg":
-        record["analysis"] = analyze_emg(values, sample_rate)
+        record["analysis"] = analyze_emg(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "rsp":
-        record["analysis"] = analyze_rsp(values, sample_rate)
+        record["analysis"] = analyze_rsp(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "eog":
-        record["analysis"] = analyze_eog(values, sample_rate)
+        record["analysis"] = analyze_eog(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "eeg":
-        record["analysis"] = analyze_eeg(values, sample_rate)
+        record["analysis"] = analyze_eeg(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "pcg":
-        record["analysis"] = analyze_pcg(values, sample_rate)
+        record["analysis"] = analyze_pcg(values, sample_rate, channel_key=channel_key, progress=progress)
     elif normalized_kind == "acc":
-        record["analysis"] = analyze_acc(values, sample_rate)
+        record["analysis"] = analyze_acc(values, sample_rate, channel_key=channel_key, progress=progress)
     else:
         record["analysis"] = analyze_generic(values)
         record.setdefault("warnings", []).append(
             "No specific library mapping was found for this channel; exported raw series and basic statistics only."
         )
 
-    if has_biosppy:
-        progress.advance_biosppy(0.5, f"BioSPPy {normalized_kind.upper()} ({label}): detecting peaks & features")
-
     analysis_record = record.get("analysis")
     if isinstance(analysis_record, dict):
         extract_neurokit2_features(analysis_record)
-
-    if has_neurokit2:
-        progress.advance_neurokit2(0.2, f"NeuroKit2 {normalized_kind.upper()} ({label}): processing & HRV")
-
-    if progress is not None:
-        if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
-            progress.advance_biosppy(0.25, f"BioSPPy: {normalized_kind.upper()} ({label})")
-        if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
-            progress.advance_neurokit2(0.8, f"NeuroKit2: {normalized_kind.upper()} ({label})")
 
     return record
 
@@ -960,10 +1079,8 @@ def process_segment(
         
         if progress is not None:
             normalized_kind = (kind or "").lower()
-            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
-                progress.start_biosppy_analysis()
-            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
-                progress.start_neurokit2_analysis()
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                progress.start_analysis()
         
         indices, values = channel_series(frames, channel_key)
 
@@ -1195,6 +1312,89 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                                 serialized,
                             ]
                         )
+
+
+def append_features_readme_section(output_folder: Path) -> None:
+    """Append a human-readable 'Features extracted' section to README.md describing
+    the features present in `features.csv` grouped by library. Uses a small
+    mapping for well-known keys and conservative fallbacks for unknown names.
+    """
+    features_path = output_folder / "features.csv"
+    readme_path = output_folder / "README.md"
+    if not features_path.exists():
+        return
+
+    # Collect features per library
+    libs: Dict[str, set] = {}
+    try:
+        with features_path.open("r", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            header = next(reader, None)
+            for row in reader:
+                if len(row) < 6:
+                    continue
+                lib = row[4] or "unknown"
+                feat = row[5] or ""
+                libs.setdefault(lib, set()).add(feat)
+    except Exception:
+        return
+
+    # Known feature descriptions (concise)
+    known: Dict[str, str] = {
+        # NeuroKit2 HRV metrics (common)
+        "HRV_RMSSD": "Root Mean Square of Successive Differences of RR intervals (ms) - short-term HRV.",
+        "HRV_SDNN": "Standard deviation of NN intervals (ms) - HRV overall variability.",
+        "HRV_LF": "Low-frequency spectral power (Hz) component of HRV.",
+        "HRV_HF": "High-frequency spectral power (Hz) component of HRV.",
+        "HRV_LFHF": "Ratio of LF to HF power - balance of autonomic tone.",
+        "HRV_PAS": "Probability-based or pseudospectral HRV metric (library-specific); consult NeuroKit2 docs for exact definition.",
+
+        # BioSPPy / signal-level
+        "filtered_mean": "Mean of the filtered signal (post-processing).",
+        "filtered_std": "Standard deviation of the filtered signal.",
+        "filtered_max": "Maximum value in the filtered signal.",
+        "filtered_min": "Minimum value in the filtered signal.",
+        "filtered_count": "Number of samples in the filtered signal.",
+        "heart_rate_mean": "Average heart rate (beats per minute).",
+        "heart_rate_max": "Maximum heart rate observed (BPM).",
+        "heart_rate_min": "Minimum heart rate observed (BPM).",
+        "rpeaks_count": "Number of detected R-peaks in the ECG signal.",
+    }
+
+    def describe(feature: str, lib: str) -> str:
+        if feature in known:
+            return known[feature]
+        # Prefix-based fallbacks
+        if feature.startswith("HRV_"):
+            return f"{feature}: heart-rate-variability derived metric (NeuroKit2). See NeuroKit2.hrv docs."
+        if feature.startswith("ECG_") or feature.startswith("ECG"):
+            return f"{feature}: ECG-derived timing or peaks-related value (NeuroKit2)."
+        if feature.startswith("templates_") or feature.startswith("ts_"):
+            return f"{feature}: time-series summary statistic or template timing (library-specific)."
+        if feature.startswith("HRV_"):
+            return f"{feature}: HRV metric (NeuroKit2)."
+        if feature:
+            return f"{feature}: feature generated by {lib}; consult the library docs for details."
+        return "Unnamed feature"
+
+    lines: List[str] = []
+    lines.append("## Features extracted by analysis\n")
+    lines.append("This section lists the features written to `features.csv` during analysis, grouped by the library that produced them. Short descriptions are provided where available.\n")
+
+    for lib, feats in sorted(libs.items()):
+        lines.append(f"### {lib}\n")
+        for feat in sorted(feats):
+            desc = describe(feat, lib)
+            lines.append(f"- **{feat}**: {desc}\n")
+        lines.append("\n")
+
+    try:
+        # Append to README (create if missing)
+        with readme_path.open("a", encoding="utf-8") as rh:
+            rh.write("\n".join(lines))
+    except Exception:
+        # Non-fatal: don't break analysis if README append fails
+        pass
 
 def write_channel_series_csvs(output_folder: Path, result: Dict[str, Any]) -> None:
     """Write per-channel CSVs from stashed series data collected during analysis.
@@ -1490,25 +1690,25 @@ def main() -> int:
                 rhandle.write(
                     """# Analysis output
 
-                        This folder contains CSV summaries, per-channel series, and a raw-signal
-                        export for the session.
+This folder contains CSV summaries, per-channel series, and a raw-signal
+export for the session.
 
-                        - `summary.csv`: per-segment, per-channel summary statistics.
-                        - `features.csv`: flattened feature table with a `library` column (biosppy/neurokit2).
-                        - `segment-<N>/channels/`: per-channel time series CSVs named `CHANNEL_KIND.csv` (e.g. `AI1_ECG.csv`).
-                        - `segment-<N>/signal.csv`: the segment's acquired frames in the ScientISST
-                        `sense.py` FileWriter layout (`mv=False` mode) — a `#{...}` Python-dict
-                        metadata line, a tab-separated `#NSeq I1 I2 O1 O2 AI1_raw AI2_raw ...`
-                        column header, then one tab-separated row per frame — so it loads like a
-                        recording produced by the sense.py CLI
-                        (github.com/scientisst/scientisst-sense-api-python).
+- `summary.csv`: per-segment, per-channel summary statistics.
+- `features.csv`: flattened feature table with a `library` column (biosppy/neurokit2).
+- `segment-<N>/channels/`: per-channel time series CSVs named `CHANNEL_KIND.csv` (e.g. `AI1_ECG.csv`).
+- `segment-<N>/signal.csv`: the segment's acquired frames in the ScientISST
+`sense.py` FileWriter layout (`mv=False` mode) — a `#{...}` Python-dict
+metadata line, a tab-separated `#NSeq I1 I2 O1 O2 AI1_raw AI2_raw ...`
+column header, then one tab-separated row per frame — so it loads like a
+recording produced by the sense.py CLI
+(github.com/scientisst/scientisst-sense-api-python).
 
-                        Notes:
-                        - In `signal.csv` the digital ports I1/I2/O1/O2 are written as 0 (the desktop
-                        pipeline does not retain them); only raw ADC samples are emitted.
-                        - The worker defers writing of large per-channel and signal CSVs until the
-                        output phase so the reported "analysis" time measures signal processing only;
-                        CSV export is performed after analysis completes.
+Notes:
+- In `signal.csv` the digital ports I1/I2/O1/O2 are written as 0 (the desktop
+pipeline does not retain them); only raw ADC samples are emitted.
+- The worker defers writing of large per-channel and signal CSVs until the
+output phase so the reported "analysis" time measures signal processing only;
+CSV export is performed after analysis completes.
                     """
                 )
         except Exception:
@@ -1519,6 +1719,10 @@ def main() -> int:
         result_path = output_folder / "analysis.json"
         write_summary_csv(output_folder, result)
         write_features_csv(output_folder, result)
+        try:
+            append_features_readme_section(output_folder)
+        except Exception:
+            pass
         with result_path.open("w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
         progress.mark_csv_written()
