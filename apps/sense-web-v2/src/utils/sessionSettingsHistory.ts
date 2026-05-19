@@ -5,6 +5,7 @@ export type SessionSettings = {
 	samplingRate?: number
 	channels?: string[]
 	channelSignalKinds?: Record<string, string>
+	channelSignalAxes?: Record<string, string>
 	[key: string]: unknown
 }
 
@@ -55,11 +56,19 @@ function getSettingsLabel(settings: SessionSettings): string {
 		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
 			? settings.channelSignalKinds
 			:  {}
+	const signalAxes =
+		settings.channelSignalAxes && typeof settings.channelSignalAxes === "object"
+			? settings.channelSignalAxes
+			: {}
 	const signalTypesLabel =
 		channels.length > 0
 			? channels
 					.map(channel => {
 						const kind = signalKinds[channel]
+						const axis = signalAxes[channel]
+						if (kind === "acc" && typeof axis === "string" && axis.length > 0) {
+							return `${channel}:${kind.toUpperCase()}(${axis.toUpperCase()})`
+						}
 						return `${channel}:${typeof kind === "string" && kind.length > 0 ? kind.toUpperCase() : "--"}`
 					})
 					.join(", ")
@@ -91,6 +100,17 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 					)
 					.sort(([a], [b]) => String(a).localeCompare(String(b)))
 			: []
+	const channelSignalAxes =
+		settings.channelSignalAxes && typeof settings.channelSignalAxes === "object"
+			? Object.entries(settings.channelSignalAxes)
+					.filter(
+						([channel, axis]) =>
+							channels.includes(String(channel)) &&
+							typeof axis === "string" &&
+							axis.length > 0
+					)
+					.sort(([a], [b]) => String(a).localeCompare(String(b)))
+			: []
 
 	return JSON.stringify({
 		deviceType: settings.deviceType ?? null,
@@ -98,7 +118,8 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 		baudRate: settings.baudRate ?? null,
 		samplingRate: settings.samplingRate ?? null,
 		channels,
-		channelSignalKinds
+		channelSignalKinds,
+		channelSignalAxes
 	})
 }
 

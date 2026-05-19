@@ -26,6 +26,7 @@ import resolveConfig from "tailwindcss/resolveConfig"
 import tailwindConfig from "../../tailwind.config"
 import CanvasChart from "../components/charts/CanvasChart"
 import SenseLayout from "../components/layout/SenseLayout"
+import { useBusyGuard } from "../hooks/useBusyGuard"
 import {
 	SessionSettings,
 	saveLastSessionSettingsPersistent
@@ -176,6 +177,10 @@ const Page = () => {
 	const finalizingAfterErrorRef = useRef(false)
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
+
+	useBusyGuard(
+		status === STATUS.ACQUIRING || status === STATUS.PAUSED ? "Recording" : null
+	);
 
 	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null);
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
@@ -406,6 +411,10 @@ const Page = () => {
 			typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
 				? (settings.channelSignalKinds as Record<string, string>)
 				: {}
+		const configuredSignalAxes =
+			typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
+				? (settings.channelSignalAxes as Record<string, string>)
+				: {}
 		const deviceChannels = (device.getChannels?.() ?? []).map(String)
 		const channelSignalKinds = Object.fromEntries(
 			Object.entries(configuredSignalKinds).filter(
@@ -415,12 +424,22 @@ const Page = () => {
 					signalKind.length > 0
 			)
 		)
+		const channelSignalAxes = Object.fromEntries(
+			Object.entries(configuredSignalAxes).filter(
+				([channel, signalAxis]) =>
+					deviceChannels.includes(channel) &&
+					channelSignalKinds[channel] === "acc" &&
+					typeof signalAxis === "string" &&
+					["x", "y", "z"].includes(signalAxis)
+			)
+		)
 		window.electronAPI?.updateSessionMeta?.({
 			segment: segmentRef.current,
 			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
 			deviceType: device instanceof Maker ? "Maker" : "ScientISST Sense",
 			channelSignalKinds,
+			channelSignalAxes,
 			timestamp: Date.now()
 		});
 	}, []);

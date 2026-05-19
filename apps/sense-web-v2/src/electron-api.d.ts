@@ -37,7 +37,7 @@ declare global {
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
-      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string> }) => Promise<any>;
+      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string> }) => Promise<any>;
       cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
       readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
@@ -50,6 +50,7 @@ declare global {
       loadSessionSettingsHistory?: () => Promise<SessionSettingsSnapshot[]>;
       saveSessionSettingsSnapshot?: (snapshot: SessionSettingsSnapshot) => Promise<SessionSettingsSnapshot[]>;
       clearSessionSettingsHistory?: () => Promise<void>;
+      setBusy?: (reason: string | null) => void;
     };
   }
 }

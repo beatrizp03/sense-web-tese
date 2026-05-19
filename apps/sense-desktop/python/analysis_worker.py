@@ -67,6 +67,7 @@ RESERVED_FRAME_KEYS = {
 
 CHUNK_FILENAME_RE = re.compile(r"^sample(?P<sample>\d+)_chunk(?P<chunk>\d+)\.json$", re.IGNORECASE)
 SUPPORTED_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}
+ACC_AXIS_ORDER = {"x": 0, "y": 1, "z": 2}
 
 # --- ScientISST sense.py FileWriter compatibility ---------------------------
 SENSE_FILEWRITER_API_VERSION = "1.2.0"
@@ -162,6 +163,20 @@ def normalize_signal_kind_map(raw_map: Any) -> Dict[str, str]:
     return normalized
 
 
+def normalize_signal_axis_map(raw_map: Any) -> Dict[str, str]:
+    if not isinstance(raw_map, dict):
+        return {}
+
+    normalized: Dict[str, str] = {}
+    for channel, axis in raw_map.items():
+        if not isinstance(channel, str) or not isinstance(axis, str):
+            continue
+        candidate = axis.strip().lower()
+        if candidate in ACC_AXIS_ORDER:
+            normalized[channel] = candidate
+    return normalized
+
+
 def load_signal_kind_overrides() -> Dict[str, str]:
     raw = os.environ.get("SENSE_ANALYSIS_SIGNAL_KINDS_JSON", "").strip()
     if not raw:
@@ -175,11 +190,32 @@ def load_signal_kind_overrides() -> Dict[str, str]:
     return normalize_signal_kind_map(parsed)
 
 
+def load_signal_axis_overrides() -> Dict[str, str]:
+    raw = os.environ.get("SENSE_ANALYSIS_SIGNAL_AXES_JSON", "").strip()
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+
+    return normalize_signal_axis_map(parsed)
+
+
 def merge_signal_kind_maps(manifest: Dict[str, Any], overrides: Dict[str, str]) -> Dict[str, str]:
     merged = normalize_signal_kind_map(manifest.get("channelSignalKinds"))
     for channel, kind in overrides.items():
         if channel and kind in SUPPORTED_SIGNAL_KINDS:
             merged[channel] = kind
+    return merged
+
+
+def merge_signal_axis_maps(manifest: Dict[str, Any], overrides: Dict[str, str]) -> Dict[str, str]:
+    merged = normalize_signal_axis_map(manifest.get("channelSignalAxes"))
+    for channel, axis in overrides.items():
+        if channel and axis in ACC_AXIS_ORDER:
+            merged[channel] = axis
     return merged
 
 
@@ -269,6 +305,47 @@ def infer_signal_kind(manifest: Dict[str, Any], channel_key: str) -> Optional[st
     return None
 
 
+def infer_signal_axis(manifest: Dict[str, Any], channel_key: str) -> Optional[str]:
+    configured = manifest.get("channelSignalAxes")
+    if not isinstance(configured, dict):
+        return None
+
+    configured_axis = configured.get(channel_key)
+    if isinstance(configured_axis, str) and configured_axis.strip():
+        normalized_axis = configured_axis.strip().lower()
+        if normalized_axis in ACC_AXIS_ORDER:
+            return normalized_axis
+    return None
+
+
+def channel_matrix_series(
+    frames: Sequence[Dict[str, Any]],
+    channel_keys: Sequence[str],
+) -> Tuple[List[int], List[List[float]]]:
+    indices: List[int] = []
+    values: List[List[float]] = []
+
+    for index, frame in enumerate(frames):
+        channels = frame_channels(frame)
+        row: List[float] = []
+        valid = True
+
+        for channel_key in channel_keys:
+            value = safe_float(channels.get(channel_key))
+            if value is None:
+                valid = False
+                break
+            row.append(value)
+
+        if not valid:
+            continue
+
+        indices.append(index)
+        values.append(row)
+
+    return indices, values
+
+
 def channel_series(frames: Sequence[Dict[str, Any]], channel_key: str) -> Tuple[List[int], List[float]]:
     indices: List[int] = []
     values: List[float] = []
@@ -311,8 +388,15 @@ def count_progress_units(
             frames.extend(load_chunk_frames(chunk_file))
 
         channels = sorted({key for frame in frames for key in frame_channels(frame).keys()})
+        acc_group_counted = False
         for channel_key in channels:
             normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
+            normalized_axis = infer_signal_axis(manifest, channel_key) if normalized_kind == "acc" else None
+            if normalized_kind == "acc" and normalized_axis in ACC_AXIS_ORDER:
+                if not acc_group_counted:
+                    biosppy_total += 1
+                    acc_group_counted = True
+                continue
             if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
                 biosppy_total += 1
             if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
@@ -442,7 +526,7 @@ PROGRESS_STAGE_WEIGHTS = {
 }
 
 BIOSPPY_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"}
-NEUROKIT2_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog"}
+NEUROKIT2_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg"}
 
 
 class AnalysisProgressTracker:
@@ -930,14 +1014,30 @@ def analyze_eeg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eeg", "libraries": []}
+    signal = np.asarray(values, dtype=float) if np is not None else list(values)
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "filtering & segmentation"))
 
     apply_biosppy_analysis(record, "eeg", values, sample_rate)
 
+    if nk is not None:
+        try:
+            if progress is not None:
+                progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EEG", channel_key, "processing & features"))
+
+            signals, info = nk.eeg_process(signal, sampling_rate=float(sample_rate))
+            record["libraries"].append("neurokit2")
+            record["neurokit2"] = {
+                "signalsColumns": list(getattr(signals, "columns", [])),
+                "info": serialize_numpy_like(info),
+            }
+        except Exception as exc:
+            record.setdefault("warnings", []).append(f"NeuroKit2 EEG processing failed: {exc}")
+
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EEG", channel_key, "detecting peaks & features"))
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "complete"))
+        progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 EEG", channel_key, "complete"))
     return record
 
 
@@ -966,6 +1066,18 @@ def analyze_acc(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "acc", "libraries": []}
+
+    axis_count = 1
+    if values and isinstance(values[0], (list, tuple)):
+        axis_count = len(values[0])
+
+    if axis_count <= 1:
+        record["analysis"] = analyze_generic(values)
+        record.setdefault("warnings", []).append(
+            "BioSPPy ACC vector features require at least two axes; using scalar ACC fallback."
+        )
+        return record
+
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "filtering & segmentation"))
 
@@ -991,6 +1103,7 @@ def analyze_channel(
     output_folder: Path,
     eda_method: Optional[str],
     progress: Optional[AnalysisProgressTracker] = None,
+    analysis_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_kind = (kind or "").lower()
     if normalized_kind == "acc":
@@ -1014,6 +1127,11 @@ def analyze_channel(
                 progress.advance_biosppy(1, f"BioSPPy: {normalized_kind.upper()} ({label})")
             if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
                 progress.advance_neurokit2(1, f"NeuroKit2: {normalized_kind.upper()} ({label})")
+        return record
+
+    if analysis_override is not None:
+        record["analysis"] = analysis_override
+        analysis_record = record.get("analysis")
         return record
 
     if normalized_kind == "ecg":
@@ -1073,9 +1191,11 @@ def process_segment(
 
     channels = sorted({key for frame in frames for key in frame_channels(frame).keys()})
     result_channels: List[Dict[str, Any]] = []
+    acc_group_entries: List[Dict[str, Any]] = []
     for channel_key in channels:
         label = infer_label(channel_key, manifest)
         kind = infer_signal_kind(manifest, channel_key)
+        axis = infer_signal_axis(manifest, channel_key) if (kind or "").lower() == "acc" else None
         
         if progress is not None:
             normalized_kind = (kind or "").lower()
@@ -1083,6 +1203,30 @@ def process_segment(
                 progress.start_analysis()
         
         indices, values = channel_series(frames, channel_key)
+
+        if (kind or "").lower() == "acc" and axis in ACC_AXIS_ORDER:
+            if not values:
+                result_channels.append({
+                    "channel": channel_key,
+                    "label": label,
+                    "signalKind": kind or "generic",
+                    "summary": {"count": 0, "mean": None, "std": None, "min": None, "max": None},
+                    "warnings": ["Channel contains no valid samples"],
+                    "accAxis": axis,
+                })
+                if progress is not None:
+                    progress.advance_biosppy(1, f"BioSPPy: ACC ({label})")
+                continue
+
+            acc_group_entries.append({
+                "channel": channel_key,
+                "label": label,
+                "kind": kind,
+                "axis": axis,
+                "indices": indices,
+                "values": values,
+            })
+            continue
 
         if not values:
             result_channels.append({
@@ -1117,6 +1261,57 @@ def process_segment(
         channel_record["signalKind"] = kind or "generic"
 
         result_channels.append(channel_record)
+
+    if acc_group_entries:
+        # Validate: ACC can have at most 3 axes (X, Y, Z)
+        if len(acc_group_entries) > 3:
+            warnings = [f"ACC assigned to {len(acc_group_entries)} channels; only the first 3 (X, Y, Z) will be processed."]
+            acc_group_entries = acc_group_entries[:3]
+        else:
+            warnings = []
+        
+        ordered_acc_entries = sorted(
+            acc_group_entries,
+            key=lambda entry: (ACC_AXIS_ORDER.get(str(entry.get("axis")), 99), str(entry.get("channel")))
+        )
+        acc_group_channels = [str(entry["channel"]) for entry in ordered_acc_entries]
+        acc_group_label = ", ".join(str(entry["label"]) for entry in ordered_acc_entries if entry.get("label")) or "ACC"
+        group_indices, group_values = channel_matrix_series(frames, acc_group_channels)
+
+        if group_values:
+            acc_analysis = analyze_acc(group_values, sample_rate, channel_key=acc_group_label, progress=progress)
+        else:
+            acc_analysis = {
+                "signalKind": "acc",
+                "libraries": [],
+                "analysis": analyze_generic([]),
+                "warnings": ["ACC axes could not be aligned into a shared multi-axis signal; using scalar fallbacks."],
+            }
+        
+        if warnings:
+            acc_analysis.setdefault("warnings", []).extend(warnings)
+
+        for entry in ordered_acc_entries:
+            channel_result = analyze_channel(
+                channel_key=str(entry["channel"]),
+                label=str(entry["label"]),
+                kind=str(entry["kind"]),
+                values=entry["values"],
+                sample_rate=sample_rate,
+                indices=entry["indices"],
+                output_folder=output_folder / f"segment-{segment_index}",
+                eda_method=eda_method,
+                progress=None,
+                analysis_override=acc_analysis,
+            )
+            channel_record = dict(channel_result)
+            channel_record["channel"] = str(entry["channel"])
+            channel_record["label"] = str(entry["label"])
+            channel_record["signalKind"] = "acc"
+            channel_record["accAxis"] = str(entry["axis"])
+            channel_record["accGroupChannels"] = acc_group_channels
+            channel_record["accGroupIndices"] = group_indices
+            result_channels.append(channel_record)
 
     return {
         "segment": segment_index,
@@ -1164,8 +1359,10 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
         raise FileNotFoundError(f"No chunk files found in {session_folder}")
 
     selected_signal_kinds = load_signal_kind_overrides()
+    selected_signal_axes = load_signal_axis_overrides()
     analysis_manifest = dict(manifest)
     analysis_manifest["channelSignalKinds"] = merge_signal_kind_maps(manifest, selected_signal_kinds)
+    analysis_manifest["channelSignalAxes"] = merge_signal_axis_maps(manifest, selected_signal_axes)
 
     grouped_entries = group_entries_by_segment(chunk_entries)
     segment_results: List[Dict[str, Any]] = []
@@ -1212,13 +1409,15 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             "neurokit2Available": nk is not None,
             "libraryStrategy": {
                 "biosppy": biosppy_strategy,
-                "neurokit2": ["ecg", "eda", "ppg", "emg", "rsp", "eog", "hrv"],
+                "neurokit2": ["ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "hrv"],
             },
         },
         "analysisConfig": {
             "batchMode": "load-session-process-entire-dataset-store-features",
             "channelSignalKinds": analysis_manifest.get("channelSignalKinds", {}),
+            "channelSignalAxes": analysis_manifest.get("channelSignalAxes", {}),
             "signalKindOverrides": selected_signal_kinds,
+            "signalAxisOverrides": selected_signal_axes,
             "edaMethod": eda_method or "neurokit2-default",
         },
         "segments": segment_results,

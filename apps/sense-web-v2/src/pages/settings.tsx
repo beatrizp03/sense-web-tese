@@ -43,6 +43,13 @@ const SIGNAL_TYPE_OPTIONS = [
 	{ label: "ACC", value: "acc" }
 ]
 
+const ACC_AXIS_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "X axis", value: "x" },
+	{ label: "Y axis", value: "y" },
+	{ label: "Z axis", value: "z" }
+]
+
 const CHANNEL_OPTIONS = [
 	{ name: "AI1", value: "AI1" },
 	{ name: "AI2", value: "AI2" },
@@ -107,7 +114,8 @@ const Page = () => {
 		baudRate: 9600,
 		samplingRate: 1000,
 		channels: ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"],
-		channelSignalKinds: {} as Record<string, string>
+		channelSignalKinds: {} as Record<string, string>,
+		channelSignalAxes: {} as Record<string, string>
 	})
 
 	useEffect(() => {
@@ -157,6 +165,11 @@ const Page = () => {
 							values.channelSignalKinds !== null
 								? (values.channelSignalKinds as Record<string, string>)
 								: {}
+						const rawSignalAxes =
+							typeof values.channelSignalAxes === "object" &&
+							values.channelSignalAxes !== null
+								? (values.channelSignalAxes as Record<string, string>)
+								: {}
 
 						const channelSignalKinds = Object.fromEntries(
 							Object.entries(rawSignalKinds).filter(
@@ -167,11 +180,22 @@ const Page = () => {
 							)
 						)
 
+						const channelSignalAxes = Object.fromEntries(
+							Object.entries(rawSignalAxes).filter(
+								([channel, axis]) =>
+									selectedChannels.includes(channel) &&
+									channelSignalKinds[channel] === "acc" &&
+									typeof axis === "string" &&
+									["x", "y", "z"].includes(axis)
+							)
+						)
+
 						localStorage.setItem(
 							"settings",
 							JSON.stringify({
 								...values,
-								channelSignalKinds
+								channelSignalKinds,
+								channelSignalAxes
 							})
 						)
 					}}
@@ -275,11 +299,17 @@ const Page = () => {
 																	? (values.channelSignalKinds as Record<string, string>)
 																	: {}
 															const signalTypeValue = channelSignalKinds[channel] ?? ""
+																		const channelSignalAxes =
+																			typeof values.channelSignalAxes === "object" &&
+																			values.channelSignalAxes !== null
+																				? (values.channelSignalAxes as Record<string, string>)
+																				: {}
+																		const signalAxisValue = channelSignalAxes[channel] ?? ""
 
 															return (
 																<div
 																	key={`signal-type-${channel}`}
-																	className="relative flex h-12 items-center justify-center"
+																	className="relative flex h-24 items-center justify-center"
 																>
 																	<span
 																		className={clsx(
@@ -307,6 +337,15 @@ const Page = () => {
 																					  }
 																						: {}
 
+																				// Validation: ACC can only have 3 channels max
+																				if (nextValue === "acc" && signalTypeValue !== "acc") {
+																					const accChannelCount = Object.values(currentMap).filter(kind => kind === "acc").length
+																					if (accChannelCount >= 3) {
+																						alert("ACC can only be assigned to a maximum of 3 channels (X, Y, Z axes)")
+																						return
+																					}
+																				}
+
 																				if (!nextValue) {
 																					delete currentMap[channel]
 																				} else {
@@ -315,16 +354,72 @@ const Page = () => {
 
 																				setValues({
 																					...values,
-																					channelSignalKinds: currentMap
+																						channelSignalKinds: currentMap,
+																						channelSignalAxes:
+																							nextValue === "acc"
+																								? {
+																										...(typeof values.channelSignalAxes === "object" && values.channelSignalAxes !== null
+																											? (values.channelSignalAxes as Record<string, string>)
+																											: {}),
+																										[channel]: signalAxisValue || "x"
+																								}
+																							: (() => {
+																								const nextAxes =
+																									typeof values.channelSignalAxes === "object" && values.channelSignalAxes !== null
+																											? { ...(values.channelSignalAxes as Record<string, string>) }
+																											: {}
+																										delete nextAxes[channel]
+																										return nextAxes
+																								})()
 																				})
 																			}}
-																			className="border-primary bg-background-accent text-over-background absolute inset-0 h-12 w-full appearance-none rounded-full border-[2px] px-3 text-center text-sm"
+																			className="border-primary bg-background-accent text-over-background absolute left-0 top-0 h-12 w-full appearance-none rounded-full border-[2px] px-3 text-center text-sm"
 																		>
-																			{SIGNAL_TYPE_OPTIONS.map(option => (
-																				<option
-																					key={`${channel}-${option.value || "unspecified"}`}
-																					value={option.value}
-																				>
+																			{SIGNAL_TYPE_OPTIONS.map(option => {
+																				// Disable ACC option if already 3 channels use it and current channel is not ACC
+																				const isAccDisabled =
+																					option.value === "acc" &&
+																					signalTypeValue !== "acc" &&
+																					(() => {
+																						const currentMap =
+																							typeof values.channelSignalKinds === "object" &&
+																							values.channelSignalKinds !== null
+																								? (values.channelSignalKinds as Record<string, string>)
+																								: {}
+																						return Object.values(currentMap).filter(kind => kind === "acc").length >= 3
+																					})()
+
+																				return (
+																					<option
+																						key={`${channel}-${option.value || "unspecified"}`}
+																						value={option.value}
+																						disabled={isAccDisabled}
+																					>
+																						{option.label}{isAccDisabled ? " (max 3 channels)" : ""}
+																					</option>
+																				)
+																			})}
+																		</select>
+																	) : null}
+																	{signalTypeValue === "acc" ? (
+																		<select
+																			value={signalAxisValue}
+																			onChange={event => {
+																				const nextAxis = event.target.value
+																				setValues({
+																					...values,
+																					channelSignalAxes: {
+																						...(typeof values.channelSignalAxes === "object" && values.channelSignalAxes !== null
+																							? (values.channelSignalAxes as Record<string, string>)
+																							: {}),
+																						[channel]: nextAxis
+																					}
+																				})
+																			}}
+																				className="border-primary bg-background-accent text-over-background absolute left-0 top-14 h-12 w-full appearance-none rounded-full border-[2px] px-3 text-center text-sm"
+																		>
+																			{ACC_AXIS_OPTIONS.map(option => (
+																				<option key={`${channel}-axis-${option.value || "unspecified"}`} value={option.value}>
 																					{option.label}
 																				</option>
 																			))}

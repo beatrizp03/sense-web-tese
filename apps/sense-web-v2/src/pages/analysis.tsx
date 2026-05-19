@@ -4,6 +4,7 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
 import { AnalysisProgressPanel } from "../components/analysis/AnalysisProgressPanel"
+import { useBusyGuard } from "../hooks/useBusyGuard"
 
 type AnalysisTab = "import" | "results"
 
@@ -20,6 +21,13 @@ const SIGNAL_TYPE_OPTIONS = [
 	{ label: "ACC", value: "acc" }
 ]
 
+const ACC_AXIS_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "X axis", value: "x" },
+	{ label: "Y axis", value: "y" },
+	{ label: "Z axis", value: "z" }
+]
+
 function toRecord(value: unknown): Record<string, string> {
 	if (!value || typeof value !== "object") return {}
 	return Object.fromEntries(
@@ -29,10 +37,21 @@ function toRecord(value: unknown): Record<string, string> {
 	) as Record<string, string>
 }
 
+function toAxisRecord(value: unknown): Record<string, string> {
+	if (!value || typeof value !== "object") return {}
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>).filter(
+			([, axis]) => typeof axis === "string" && ["x", "y", "z"].includes(axis)
+		)
+	) as Record<string, string>
+}
+
 function formatNumber(value: unknown): string {
 	if (typeof value !== "number" || !Number.isFinite(value)) return "--"
 	return value.toFixed(2)
 }
+
+const ANALYSIS_STORAGE_KEY = "analysis:last"
 
 const Page = () => {
 	const [activeTab, setActiveTab] = useState<AnalysisTab>("import")
@@ -40,13 +59,60 @@ const Page = () => {
 	const [manifest, setManifest] = useState<any>(null)
 	const [analysisResult, setAnalysisResult] = useState<any>(null)
 	const [signalKinds, setSignalKinds] = useState<Record<string, string>>({})
+	const [signalAxes, setSignalAxes] = useState<Record<string, string>>({})
 	const [loading, setLoading] = useState(false)
 	const [status, setStatus] = useState("Import a finalized session folder to begin.")
 	const [error, setError] = useState("")
 	const [showProgressPanel, setShowProgressPanel] = useState(false)
 	const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null)
 	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
+	const [hydrated, setHydrated] = useState(false)
 	const analysisInProgressRef = useRef(false)
+
+	useBusyGuard(loading ? "Analysis" : null)
+
+	useEffect(() => {
+		try {
+			const saved = sessionStorage.getItem(ANALYSIS_STORAGE_KEY)
+			if (saved) {
+				const parsed = JSON.parse(saved)
+				if (typeof parsed.sessionFolder === "string") setSessionFolder(parsed.sessionFolder)
+				if (parsed.manifest) setManifest(parsed.manifest)
+				if (parsed.analysisResult) setAnalysisResult(parsed.analysisResult)
+				if (parsed.signalKinds) setSignalKinds(parsed.signalKinds)
+				if (parsed.signalAxes) setSignalAxes(parsed.signalAxes)
+				if (parsed.activeTab === "import" || parsed.activeTab === "results") setActiveTab(parsed.activeTab)
+				if (typeof parsed.status === "string") setStatus(parsed.status)
+				if (typeof parsed.showProgressPanel === "boolean") setShowProgressPanel(parsed.showProgressPanel)
+				if (typeof parsed.analysisStartTime === "number") setAnalysisStartTime(parsed.analysisStartTime)
+			}
+		} catch {
+			// ignore corrupted storage
+		}
+		setHydrated(true)
+	}, [])
+
+	useEffect(() => {
+		if (!hydrated) return
+		try {
+			sessionStorage.setItem(
+				ANALYSIS_STORAGE_KEY,
+				JSON.stringify({
+					sessionFolder,
+					manifest,
+					analysisResult,
+					signalKinds,
+					signalAxes,
+					activeTab,
+					status,
+					showProgressPanel,
+					analysisStartTime
+				})
+			)
+		} catch {
+			// ignore quota / serialization errors
+		}
+	}, [hydrated, sessionFolder, manifest, analysisResult, signalKinds, signalAxes, activeTab, status, showProgressPanel, analysisStartTime])
 
 	const channels = useMemo(() => {
 		return Array.isArray(manifest?.channels) ? manifest.channels.map(String) : []
@@ -67,6 +133,16 @@ const Page = () => {
 		}, {})
 	}, [channels, manifest, signalKinds])
 
+	const appliedSignalAxes = useMemo(() => {
+		const existing = toAxisRecord(manifest?.analysis?.signalAxes ?? manifest?.channelSignalAxes)
+		return channels.reduce((acc: Record<string, string>, channel) => {
+			const selectedKind = signalKinds[channel] ?? toRecord(manifest?.analysis?.signalKinds ?? manifest?.channelSignalKinds)[channel] ?? ""
+			const selectedAxis = signalAxes[channel] ?? existing[channel] ?? ""
+			if (selectedKind === "acc" && selectedAxis) acc[channel] = selectedAxis
+			return acc
+		}, {})
+	}, [channels, manifest, signalAxes, signalKinds])
+
 	const loadSessionBundle = useCallback(async (folder: string) => {
 		setError("")
 		setLoading(true)
@@ -80,6 +156,7 @@ const Page = () => {
 			setSessionFolder(folder)
 			setManifest(sessionManifest)
 			setSignalKinds(toRecord(sessionManifest.analysis?.signalKinds ?? sessionManifest.channelSignalKinds))
+			setSignalAxes(toAxisRecord(sessionManifest.analysis?.signalAxes ?? sessionManifest.channelSignalAxes))
 
 			const existingResult = await window.electronAPI?.readPostHocAnalysisResult?.(folder)
 			setAnalysisResult(existingResult || null)
@@ -90,8 +167,10 @@ const Page = () => {
 			setAnalysisResult(null)
 			setSessionFolder("")
 			setSignalKinds({})
+			setSignalAxes({})
 			setStatus("Import failed.")
 			setError(loadError instanceof Error ? loadError.message : String(loadError))
+			setActiveTab("results")
 		} finally {
 			setLoading(false)
 		}
@@ -146,7 +225,8 @@ const Page = () => {
 		try {
 			const result = await window.electronAPI?.runPostHocAnalysis?.({
 				sessionFolder,
-				signalKinds: appliedSignalKinds
+				signalKinds: appliedSignalKinds,
+				signalAxes: appliedSignalAxes
 			})
 			
 			// Check if the result indicates cancellation
@@ -193,7 +273,7 @@ const Page = () => {
 			setLoading(false)
 			analysisInProgressRef.current = false
 		}
-	}, [appliedSignalKinds, sessionFolder])
+	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder])
 
 	const runAnalysis = useCallback(() => {
 		if (analysisResult) {
@@ -276,6 +356,7 @@ const Page = () => {
 									{channels.length > 0 ? (
 										channels.map(channel => {
 											const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""
+													const selectedAxis = signalAxes[channel] ?? toAxisRecord(manifest?.channelSignalAxes)[channel] ?? ""
 											return (
 												<div key={channel} className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-dark p-4 sm:flex-row sm:items-center sm:justify-between dark:bg-background-accent-light">
 													<div className="flex items-center justify-between gap-3">
@@ -296,6 +377,15 @@ const Page = () => {
 																	}
 																	return next
 																})
+																		setSignalAxes(current => {
+																			const next = { ...current }
+																			if (nextValue === "acc") {
+																				next[channel] = next[channel] || "x"
+																			} else {
+																				delete next[channel]
+																			}
+																			return next
+																		})
 															}}
 															className="min-w-[10rem] rounded-full border border-background-accent bg-background px-3 py-2 text-sm text-over-background-highest outline-none"
 														>
@@ -305,6 +395,25 @@ const Page = () => {
 																</option>
 															))}
 														</select>
+																{selectedValue === "acc" ? (
+																	<select
+																		value={selectedAxis}
+																		onChange={event => {
+																			const nextAxis = event.target.value
+																			setSignalAxes(current => ({
+																				...current,
+																				[channel]: nextAxis
+																			}))
+																		}}
+																		className="min-w-[8rem] rounded-full border border-background-accent bg-background px-3 py-2 text-sm text-over-background-highest outline-none"
+																	>
+																		{ACC_AXIS_OPTIONS.map(option => (
+																			<option key={`${channel}-axis-${option.value || "empty"}`} value={option.value}>
+																				{option.label}
+																			</option>
+																		))}
+																	</select>
+																) : null}
 													</div>
 												</div>
 										)
@@ -355,6 +464,7 @@ const Page = () => {
 			<AnalysisProgressPanel
 				key={analysisStartTime}
 				isVisible={showProgressPanel}
+				startTime={analysisStartTime}
 				onCancel={() => {
 					setShowProgressPanel(false)
 					window.electronAPI?.cancelPostHocAnalysis?.()

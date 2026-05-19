@@ -15,6 +15,7 @@ interface AnalysisProgressPanelProps {
   onRetry?: () => void
   totalTime?: number
   resultPath?: string
+  startTime?: number | null
 }
 
 export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
@@ -23,6 +24,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   onRetry,
   totalTime,
   resultPath,
+  startTime,
 }) => {
   const [progress, setProgress] = useState<ProgressState>({
     percentage: 0,
@@ -35,15 +37,16 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   useEffect(() => {
     if (!isVisible) return
 
-    // When component mounts or isVisible changes, initialize startTime to now
-    const now = Date.now()
+    // Use the parent's persisted start timestamp if provided, otherwise stamp now.
+    // This keeps the elapsed counter correct across full page reloads.
+    const effectiveStart = typeof startTime === "number" ? startTime : Date.now()
     setProgress((prev) => ({
       ...prev,
-      startTime: now,
+      startTime: effectiveStart,
       isRunning: true,
-      percentage: 0,
-      signalKind: "preparing",
-      elapsedSeconds: 0,
+      percentage: prev.percentage || 0,
+      signalKind: prev.signalKind || "preparing",
+      elapsedSeconds: Math.max(0, Math.floor((Date.now() - effectiveStart) / 1000)),
     }))
 
     const handleProgress = (event: any) => {

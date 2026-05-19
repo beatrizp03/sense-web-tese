@@ -189,6 +189,7 @@ def build_manifest(
     started_at_ms: int,
     ended_at_ms: int,
     chunks: list[dict],
+    channel_signal_axes: dict[str, str] | None = None,
 ) -> dict:
     """Build a session.json byte-for-byte shaped like one the renderer writes for
     a live acquisition.
@@ -198,7 +199,7 @@ def build_manifest(
         + f"{started_at_ms % 1000:03d}Z"
     )
     resolution_bits = [SCIENTISST_CHANNEL_SIZES.get(ch, 12) for ch in channels]
-    return {
+    manifest = {
         "sessionId": session_id,
         "startedAt": started_at_ms,
         "deviceType": "sense",
@@ -224,6 +225,9 @@ def build_manifest(
         "timestamp": started_at_ms,
         "endedAt": ended_at_ms,
     }
+    if channel_signal_axes is not None:
+        manifest["channelSignalAxes"] = channel_signal_axes
+    return manifest
 
 
 def write_session(
@@ -235,6 +239,7 @@ def write_session(
     channel_signal_kinds: dict[str, str],
     signals: dict[str, np.ndarray],
     chunk_size: int,
+    channel_signal_axes: dict[str, str] | None = None,
 ) -> tuple[int, int]:
     """
     Stream signals to disk as N chunk files plus a session.json manifest.
@@ -269,6 +274,7 @@ def write_session(
         started_at_ms=started_ms,
         ended_at_ms=ended_ms,
         chunks=chunks_meta,
+        channel_signal_axes=channel_signal_axes,
     )
     with (session_dir / "session.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)

@@ -15,6 +15,10 @@ const SESSION_SETTINGS_HISTORY_FILE = 'session-settings-history.json';
 const MAX_SESSION_SETTINGS_HISTORY = 5;
 const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.py');
 
+// Renderer-reported busy reason: blocks reload shortcuts and warns before unload.
+// null = idle; otherwise a short string like "recording" or "analyzing".
+let busyReason = null;
+
 function getSessionSettingsHistoryPath() {
   return path.join(app.getPath('userData'), SESSION_SETTINGS_HISTORY_FILE);
 }
@@ -36,6 +40,11 @@ function getSettingsFingerprint(settings) {
       .filter(([key, value]) => channels.includes(String(key)) && typeof value === 'string' && value.length > 0)
       .sort(([a], [b]) => String(a).localeCompare(String(b)))
     : [];
+  const channelSignalAxes = settings.channelSignalAxes && typeof settings.channelSignalAxes === 'object'
+    ? Object.entries(settings.channelSignalAxes)
+      .filter(([key, value]) => channels.includes(String(key)) && typeof value === 'string' && value.length > 0)
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    : [];
 
   return JSON.stringify({
     deviceType: settings.deviceType ?? null,
@@ -43,7 +52,8 @@ function getSettingsFingerprint(settings) {
     baudRate: settings.baudRate ?? null,
     samplingRate: settings.samplingRate ?? null,
     channels,
-    channelSignalKinds
+    channelSignalKinds,
+    channelSignalAxes
   });
 }
 
@@ -54,6 +64,17 @@ function normalizeSignalKindsPayload(signalKinds) {
     Object.entries(signalKinds)
       .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
       .map(([channel, value]) => [String(channel), value.trim().toLowerCase()])
+  );
+}
+
+function normalizeSignalAxesPayload(signalAxes) {
+  if (!signalAxes || typeof signalAxes !== 'object') return {};
+
+  return Object.fromEntries(
+    Object.entries(signalAxes)
+      .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+      .map(([channel, value]) => [String(channel), value.trim().toLowerCase()])
+      .filter(([, value]) => value === 'x' || value === 'y' || value === 'z')
   );
 }
 
@@ -136,7 +157,8 @@ function persistAnalysisResult(sessionFolderPath, result) {
         lastRunAt: result.completedAt || new Date().toISOString(),
         resultPath: path.relative(sessionFolderPath, resultPath),
         worker: 'python-analysis-worker',
-        signalKinds: result?.analysisConfig?.channelSignalKinds || {}
+        signalKinds: result?.analysisConfig?.channelSignalKinds || {},
+        signalAxes: result?.analysisConfig?.channelSignalAxes || {}
       };
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     } catch (error) {
@@ -179,6 +201,7 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
     fs.mkdirSync(outputDir, { recursive: true });
 
     const selectedSignalKinds = normalizeSignalKindsPayload(options.signalKinds);
+    const selectedSignalAxes = normalizeSignalAxesPayload(options.signalAxes);
     const env = {
       ...process.env,
       PYTHONUNBUFFERED: '1'
@@ -186,6 +209,10 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
 
     if (Object.keys(selectedSignalKinds).length > 0) {
       env.SENSE_ANALYSIS_SIGNAL_KINDS_JSON = JSON.stringify(selectedSignalKinds);
+    }
+
+    if (Object.keys(selectedSignalAxes).length > 0) {
+      env.SENSE_ANALYSIS_SIGNAL_AXES_JSON = JSON.stringify(selectedSignalAxes);
     }
 
     const args = [
@@ -349,12 +376,40 @@ function createWindow() {
     },
   });
 
-  // Intercept window close to warn if acquisition is running
+  // Intercept window close to warn if acquisition or analysis is running
   win.on('close', (e) => {
-    if (sessionFolder && sampleWriter) {
+    if ((sessionFolder && sampleWriter) || busyReason) {
       e.preventDefault();
       win.webContents.send('show-close-warning');
     }
+  });
+
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!busyReason) return;
+    if (input.type !== 'keyDown') return;
+    const key = (input.key || '').toLowerCase();
+    const isReloadCombo =
+      key === 'f5' ||
+      (input.control && key === 'r') ||
+      (input.control && input.shift && key === 'r');
+    if (isReloadCombo) {
+      event.preventDefault();
+      console.log(`[main] blocked reload (${key}) while ${busyReason}`);
+    }
+  });
+
+  win.webContents.on('will-prevent-unload', (event) => {
+    if (!busyReason) return; // not busy → allow unload as usual
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Stay', 'Leave anyway'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Operation in progress',
+      message: `${busyReason} in progress — leaving will discard live state.`,
+      detail: 'Click "Stay" to remain on the page, or "Leave anyway" to reload/navigate (data already written to disk is safe).',
+    });
+    if (choice === 0) event.preventDefault(); // Stay → block unload
   });
   //win.webContents.openDevTools({ mode: "detach" });
 
@@ -780,6 +835,13 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
     const manifest = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
     return manifest;
   } catch (e) {
+    // Missing file is an expected case (user picked a non-session folder);
+    // return null so the renderer can show a friendly "re-import" message
+    // instead of surfacing a raw IPC stack trace.
+    if (e && e.code === 'ENOENT') {
+      console.log('[read-session-manifest] no session.json at', sessionPath);
+      return null;
+    }
     console.error('[read-session-manifest] Failed to read manifest:', e);
     throw e;
   }

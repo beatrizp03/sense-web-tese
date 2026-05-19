@@ -371,5 +371,6 @@ contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge metho
   stopPerfLoggerIfPending: (status) => ipcRenderer.invoke('stop-perf-logger-if-pending', status),
   loadSessionSettingsHistory: () => ipcRenderer.invoke('load-session-settings-history'),
   saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot),
-  clearSessionSettingsHistory: () => ipcRenderer.invoke('clear-session-settings-history')
+  clearSessionSettingsHistory: () => ipcRenderer.invoke('clear-session-settings-history'),
+  setBusy: (reason) => ipcRenderer.send('set-busy', reason || null)
 });

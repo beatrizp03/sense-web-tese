@@ -36,6 +36,8 @@ class SessionManager {
             sampleRate: meta.sampleRate,
             channels: meta.channels,
             channelNames: meta.channelNames || {},
+            channelSignalKinds: meta.channelSignalKinds || {},
+            channelSignalAxes: meta.channelSignalAxes || {},
             adcChars: meta.adcChars || {},
             firmwareVersion: meta.firmwareVersion || "",
             segments: [],
