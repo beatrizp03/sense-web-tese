@@ -49,6 +49,35 @@ enum STATUS {
 	OUT_OF_STORAGE
 }
 
+const LIVE_SIGNAL_TYPE_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "ECG", value: "ecg" },
+	{ label: "EDA", value: "eda" },
+	{ label: "PPG", value: "ppg" },
+	{ label: "EMG", value: "emg" },
+	{ label: "RSP", value: "rsp" },
+	{ label: "EOG", value: "eog" },
+	{ label: "EEG", value: "eeg" },
+	{ label: "PCG", value: "pcg" },
+	{ label: "ACC", value: "acc" }
+]
+
+const LIVE_ACC_AXIS_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "X", value: "x" },
+	{ label: "Y", value: "y" },
+	{ label: "Z", value: "z" }
+]
+
+function writeLiveSettingsPatch(updates: Record<string, unknown>) {
+	try {
+		const current = JSON.parse(localStorage.getItem("settings") || "{}")
+		localStorage.setItem("settings", JSON.stringify({ ...current, ...updates }))
+	} catch {
+		// ignore corrupted/locked settings storage
+	}
+}
+
 const fullConfig = resolveConfig(tailwindConfig)
 const lineColorLight = fullConfig.theme.colors["primary-light"]
 const lineColorDark = fullConfig.theme.colors["primary-dark"]
@@ -191,6 +220,9 @@ const Page = () => {
 	const [channelData, setChannelData] = useState<ChannelSeries>({});
 	const channelsRef = useRef<string[]>([]);
 	const [channels, setChannels] = useState<string[]>([]);
+	const [liveSignalKinds, setLiveSignalKinds] = useState<Record<string, string>>({});
+	const [liveSignalAxes, setLiveSignalAxes] = useState<Record<string, string>>({});
+	const [liveChannelNames, setLiveChannelNames] = useState<Record<string, string>>({});
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
 	const uiWindowFramesRef = useRef(0);
@@ -599,6 +631,14 @@ const Page = () => {
 				typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
 					? (settings.channelSignalKinds as Record<string, string>)
 					: {}
+			const configuredSignalAxes =
+				typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
+					? (settings.channelSignalAxes as Record<string, string>)
+					: {}
+			const configuredChannelNames =
+				typeof settings.channelNames === "object" && settings.channelNames !== null
+					? (settings.channelNames as Record<string, string>)
+					: {}
 			const sessionChannels = (device.getChannels?.() ?? []).map(String)
 			const channelSignalKinds = Object.fromEntries(
 				Object.entries(configuredSignalKinds).filter(
@@ -608,12 +648,34 @@ const Page = () => {
 						signalKind.length > 0
 				)
 			)
+			const channelSignalAxes = Object.fromEntries(
+				Object.entries(configuredSignalAxes).filter(
+					([channel, axis]) =>
+						sessionChannels.includes(channel) &&
+						channelSignalKinds[channel] === "acc" &&
+						typeof axis === "string" &&
+						(axis === "x" || axis === "y" || axis === "z")
+				)
+			)
+			const channelNames = Object.fromEntries(
+				Object.entries(configuredChannelNames).filter(
+					([channel, name]) =>
+						sessionChannels.includes(channel) &&
+						typeof name === "string" &&
+						name.length > 0
+				)
+			)
+			setLiveSignalKinds(channelSignalKinds)
+			setLiveSignalAxes(channelSignalAxes)
+			setLiveChannelNames(channelNames)
 			await window.electronAPI?.createSession?.({
 				sessionId: `${now}`,
 				startedAt: now,
 				sampleRate,
 				channels: sessionChannels,
 				channelSignalKinds,
+				channelSignalAxes,
+				channelNames,
 				sessionFolder,
 				adcChars,
 				firmwareVersion
@@ -885,7 +947,7 @@ const Page = () => {
 					initialValues={{
 						channelName: channels.reduce(
 							(acc, channel) => {
-							acc[channel] = channel || "";
+							acc[channel] = liveChannelNames[channel] ?? "";
 							return acc;
 						},
 						{} as Record<string, string>
@@ -893,21 +955,79 @@ const Page = () => {
 					}}
 					onSubmit={async values => {
 						const { channelName } = values;
+						setLiveChannelNames(channelName);
 						window.electronAPI?.setChannelNames?.(channelName);
+						writeLiveSettingsPatch({ channelNames: channelName });
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">
 						<FormikAutoSubmit delay={100} />
 						{channels.map(channel => {
+							const kind = liveSignalKinds[channel] ?? "";
+							const axis = liveSignalAxes[channel] ?? "";
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row">
+									<div className="flex w-full flex-row items-center gap-2">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
 											className="mb-0"
 											placeholder={channel}
 										/>
+										<select
+											value={kind}
+											onChange={(event) => {
+												const nextKind = event.target.value;
+												setLiveSignalKinds(prev => {
+													const next = { ...prev };
+													if (!nextKind) delete next[channel]; else next[channel] = nextKind;
+													window.electronAPI?.updateSessionMeta?.({ channelSignalKinds: next });
+													writeLiveSettingsPatch({ channelSignalKinds: next });
+													return next;
+												});
+												setLiveSignalAxes(prev => {
+													const next = { ...prev };
+													if (nextKind === "acc") {
+														if (!next[channel]) next[channel] = "x";
+													} else {
+														if (!(channel in next)) return prev;
+														delete next[channel];
+													}
+													window.electronAPI?.updateSessionMeta?.({ channelSignalAxes: next });
+													writeLiveSettingsPatch({ channelSignalAxes: next });
+													return next;
+												});
+											}}
+											className="min-w-[6rem] rounded-md border border-background-accent bg-background px-2 py-1 text-sm text-over-background-highest outline-none"
+										>
+											{LIVE_SIGNAL_TYPE_OPTIONS.map(option => (
+												<option key={`${channel}-kind-${option.value || "empty"}`} value={option.value}>
+													{option.label}
+												</option>
+											))}
+										</select>
+										{kind === "acc" && (
+											<select
+												value={axis}
+												onChange={(event) => {
+													const nextAxis = event.target.value;
+													setLiveSignalAxes(prev => {
+														const next = { ...prev };
+														if (!nextAxis) delete next[channel]; else next[channel] = nextAxis;
+														window.electronAPI?.updateSessionMeta?.({ channelSignalAxes: next });
+														writeLiveSettingsPatch({ channelSignalAxes: next });
+														return next;
+													});
+												}}
+												className="min-w-[4rem] rounded-md border border-background-accent bg-background px-2 py-1 text-sm text-over-background-highest outline-none"
+											>
+												{LIVE_ACC_AXIS_OPTIONS.map(option => (
+													<option key={`${channel}-axis-${option.value || "empty"}`} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
+										)}
 									</div>
 									<div className="bg-background-accent flex w-full flex-col rounded-md">
 										<div className="w-full p-4">

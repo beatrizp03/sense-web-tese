@@ -33,12 +33,11 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
     startTime: null,
     isRunning: true,
   })
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false)
 
   useEffect(() => {
     if (!isVisible) return
 
-    // Use the parent's persisted start timestamp if provided, otherwise stamp now.
-    // This keeps the elapsed counter correct across full page reloads.
     const effectiveStart = typeof startTime === "number" ? startTime : Date.now()
     setProgress((prev) => ({
       ...prev,
@@ -221,13 +220,44 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
 
         {onCancel && (
           <button
-            onClick={onCancel}
+            onClick={() => setShowCancelConfirm(true)}
             className="w-full rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
           >
             Cancel
           </button>
         )}
       </div>
+
+      {showCancelConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-lg bg-background-accent-light p-6 shadow-lg dark:bg-background-accent-dark">
+            <div className="flex items-center gap-3 mb-4">
+              <span className="text-2xl">⚠️</span>
+              <h2 className="text-xl font-semibold text-over-background-highest-light dark:text-over-background-highest-dark">Stop analysis?</h2>
+            </div>
+            <p className="text-sm text-over-background-medium-light dark:text-over-background-medium-dark mb-6">
+              The analysis is still in progress. Do you want to stop it? Any partial results will be discarded.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowCancelConfirm(false)}
+                className="flex-1 rounded-lg border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
+              >
+                Continue
+              </button>
+              <button
+                onClick={() => {
+                  setShowCancelConfirm(false)
+                  onCancel?.()
+                }}
+                className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
+              >
+                Stop Analysis
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
