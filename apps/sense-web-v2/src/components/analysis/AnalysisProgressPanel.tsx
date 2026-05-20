@@ -39,14 +39,13 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
     if (!isVisible) return
 
     const effectiveStart = typeof startTime === "number" ? startTime : Date.now()
-    setProgress((prev) => ({
-      ...prev,
+    setProgress({
+      percentage: 0,
+      signalKind: "preparing",
+      elapsedSeconds: 0,
       startTime: effectiveStart,
       isRunning: true,
-      percentage: prev.percentage || 0,
-      signalKind: prev.signalKind || "preparing",
-      elapsedSeconds: Math.max(0, Math.floor((Date.now() - effectiveStart) / 1000)),
-    }))
+    })
 
     const handleProgress = (event: any) => {
       const { percentage, signalKind } = event.detail
@@ -83,7 +82,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
       window.removeEventListener("analysis-complete", handleAnalysisComplete)
       window.removeEventListener("analysis-error", handleAnalysisError)
     }
-  }, [isVisible])
+  }, [isVisible, startTime])
 
   useEffect(() => {
     if (!progress.startTime || !progress.isRunning) return
@@ -116,13 +115,19 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   if (progress.errorMessage) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-        <div className="w-full max-w-md rounded-lg border border-error-accent/40 bg-background-accent/70 p-6 shadow-xl backdrop-blur-md">
+        <div className="w-full max-w-md rounded-lg bg-background-accent-dark p-6 shadow-lg dark:bg-background-accent-light">
           <div className="flex items-center gap-3 mb-4">
-            <span className="text-2xl">✗</span>
-            <h2 className="text-xl font-semibold text-error">Analysis Failed</h2>
+            <span className="text-2xl text-over-background-highest-dark dark:text-over-background-highest-light">✗</span>
+            <h2 className="text-xl font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">Analysis Failed</h2>
           </div>
-          <p className="text-sm text-over-background-medium mb-6">{progress.errorMessage}</p>
+          <p className="text-sm text-over-background-medium-dark dark:text-over-background-medium-light mb-6">{progress.errorMessage}</p>
           <div className="flex gap-3">
+            <button
+              onClick={onCancel}
+              className="flex-1 rounded-lg border border-over-background-highest-dark bg-transparent px-4 py-2 text-sm font-medium text-over-background-highest-dark hover:bg-black/5 dark:border-over-background-highest-light dark:text-over-background-highest-light dark:hover:bg-white/5"
+            >
+              Close
+            </button>
             {onRetry && (
               <button
                 onClick={onRetry}
@@ -131,12 +136,6 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
                 Retry
               </button>
             )}
-            <button
-              onClick={onCancel}
-              className="flex-1 rounded-lg border border-over-primary-highest bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
-            >
-              Close
-            </button>
           </div>
         </div>
       </div>

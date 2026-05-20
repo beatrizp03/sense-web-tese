@@ -61,6 +61,13 @@ const CHANNEL_OPTIONS = [
 	{ name: "AX2", value: "AX2" }
 ]
 
+function getOrderedEegChannels(
+	channelSignalKinds: Record<string, string>,
+	channels: string[]
+) {
+	return channels.filter(channel => channelSignalKinds[channel] === "eeg")
+}
+
 const schema = Yup.object().shape({
 	deviceType: Yup.string().oneOf(["sense", "maker"]).required(),
 	communication: Yup.number()
@@ -189,11 +196,16 @@ const Page = () => {
 									["x", "y", "z"].includes(axis)
 							)
 						)
+						const eegChannels = getOrderedEegChannels(
+							channelSignalKinds,
+							selectedChannels
+						)
 
 						localStorage.setItem(
 							"settings",
 							JSON.stringify({
 								...values,
+								...(eegChannels.length > 0 ? { eegChannels } : {}),
 								channelSignalKinds,
 								channelSignalAxes
 							})

@@ -4,6 +4,7 @@ export type SessionSettings = {
 	baudRate?: number
 	samplingRate?: number
 	channels?: string[]
+	eegChannels?: string[]
 	channelSignalKinds?: Record<string, string>
 	channelSignalAxes?: Record<string, string>
 	[key: string]: unknown
@@ -89,6 +90,9 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 	const channels = Array.isArray(settings.channels)
 		? [...settings.channels].map(String).sort()
 		: []
+	const eegChannels = Array.isArray(settings.eegChannels)
+		? settings.eegChannels.map(String).filter(channel => channel.length > 0)
+		: []
 	const channelSignalKinds =
 		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
 			? Object.entries(settings.channelSignalKinds)
@@ -118,6 +122,7 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 		baudRate: settings.baudRate ?? null,
 		samplingRate: settings.samplingRate ?? null,
 		channels,
+		eegChannels,
 		channelSignalKinds,
 		channelSignalAxes
 	})

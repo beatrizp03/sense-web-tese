@@ -69,6 +69,13 @@ const LIVE_ACC_AXIS_OPTIONS = [
 	{ label: "Z", value: "z" }
 ]
 
+function getOrderedEegChannels(
+	channelSignalKinds: Record<string, string>,
+	channels: string[]
+) {
+	return channels.filter(channel => channelSignalKinds[channel] === "eeg")
+}
+
 function writeLiveSettingsPatch(updates: Record<string, unknown>) {
 	try {
 		const current = JSON.parse(localStorage.getItem("settings") || "{}")
@@ -465,11 +472,13 @@ const Page = () => {
 					["x", "y", "z"].includes(signalAxis)
 			)
 		)
+		const eegChannels = getOrderedEegChannels(channelSignalKinds, deviceChannels)
 		window.electronAPI?.updateSessionMeta?.({
 			segment: segmentRef.current,
 			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
 			deviceType: device instanceof Maker ? "Maker" : "ScientISST Sense",
+			...(eegChannels.length > 0 ? { eegChannels } : {}),
 			channelSignalKinds,
 			channelSignalAxes,
 			timestamp: Date.now()
@@ -673,6 +682,9 @@ const Page = () => {
 				startedAt: now,
 				sampleRate,
 				channels: sessionChannels,
+				...(getOrderedEegChannels(channelSignalKinds, sessionChannels).length > 0
+					? { eegChannels: getOrderedEegChannels(channelSignalKinds, sessionChannels) }
+					: {}),
 				channelSignalKinds,
 				channelSignalAxes,
 				channelNames,
@@ -967,7 +979,7 @@ const Page = () => {
 							const axis = liveSignalAxes[channel] ?? "";
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row items-center gap-2">
+									<div className="flex w-full flex-row">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
@@ -981,8 +993,12 @@ const Page = () => {
 												setLiveSignalKinds(prev => {
 													const next = { ...prev };
 													if (!nextKind) delete next[channel]; else next[channel] = nextKind;
-													window.electronAPI?.updateSessionMeta?.({ channelSignalKinds: next });
-													writeLiveSettingsPatch({ channelSignalKinds: next });
+													const nextEegChannels = getOrderedEegChannels(next, channels)
+													window.electronAPI?.updateSessionMeta?.({
+														channelSignalKinds: next,
+														eegChannels: nextEegChannels
+													});
+													writeLiveSettingsPatch({ channelSignalKinds: next, eegChannels: nextEegChannels });
 													return next;
 												});
 												setLiveSignalAxes(prev => {

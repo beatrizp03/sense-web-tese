@@ -41,6 +41,7 @@ declare global {
       cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
       readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
+      openExternalPath?: (path: string) => Promise<void>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
       confirmClose?: (shouldClose: boolean) => void;

@@ -25,6 +25,7 @@ export class SessionManager {
       sampleRate: meta.sampleRate,
       channels: meta.channels,
       channelNames: meta.channelNames || {},
+      ...(Array.isArray(meta.eegChannels) && meta.eegChannels.length > 0 ? { eegChannels: meta.eegChannels } : {}),
       channelSignalKinds: meta.channelSignalKinds || {},
       channelSignalAxes: meta.channelSignalAxes || {},
       adcChars: meta.adcChars || {},
@@ -52,6 +53,9 @@ export class SessionManager {
     if (!this.manifest) return;
     const manifest = this.manifest as any;
     Object.assign(manifest, patch);
+    if (Array.isArray(manifest.eegChannels) && manifest.eegChannels.length === 0) {
+      delete manifest.eegChannels;
+    }
     const resolutionBits = [];
     for (let j = 0; j < manifest.channels.length; j++) {
       resolutionBits.push((ScientISSTFrame as any).CHANNEL_SIZES[manifest.channels[j]]);

@@ -465,6 +465,7 @@ const Page = () => {
 				key={analysisStartTime}
 				isVisible={showProgressPanel}
 				startTime={analysisStartTime}
+				onRetry={proceedWithAnalysis}
 				onCancel={() => {
 					setShowProgressPanel(false)
 					window.electronAPI?.cancelPostHocAnalysis?.()

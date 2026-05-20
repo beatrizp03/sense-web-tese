@@ -32,7 +32,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import mean, pstdev
+from statistics import mean, pstdev, median
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 try:
@@ -219,6 +219,41 @@ def merge_signal_axis_maps(manifest: Dict[str, Any], overrides: Dict[str, str]) 
     return merged
 
 
+def normalize_channel_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+
+    result: List[str] = []
+    for item in value:
+        if isinstance(item, str):
+            channel = item.strip()
+            if channel and channel not in result:
+                result.append(channel)
+    return result
+
+
+def ordered_channels(manifest: Dict[str, Any], channel_keys: Sequence[str]) -> List[str]:
+    available = [str(channel) for channel in channel_keys]
+    preferred_order = normalize_channel_list(manifest.get("channels"))
+
+    ordered = [channel for channel in preferred_order if channel in available]
+    for channel in available:
+        if channel not in ordered:
+            ordered.append(channel)
+    return ordered
+
+
+def ordered_eeg_channels(manifest: Dict[str, Any], available_channels: Sequence[str]) -> List[str]:
+    available = [str(channel) for channel in available_channels]
+    preferred_order = normalize_channel_list(manifest.get("eegChannels"))
+
+    ordered = [channel for channel in preferred_order if channel in available]
+    if ordered:
+        return ordered
+
+    return [channel for channel in available if (infer_signal_kind(manifest, channel) or "").lower() == "eeg"]
+
+
 def load_chunk_frames(chunk_path: Path) -> List[Dict[str, Any]]:
     data = load_json(chunk_path)
     if isinstance(data, dict) and isinstance(data.get("frames"), list):
@@ -387,8 +422,9 @@ def count_progress_units(
         for chunk_file in segment_files:
             frames.extend(load_chunk_frames(chunk_file))
 
-        channels = sorted({key for frame in frames for key in frame_channels(frame).keys()})
+        channels = ordered_channels(manifest, sorted({key for frame in frames for key in frame_channels(frame).keys()}))
         acc_group_counted = False
+        eeg_group_counted = False
         for channel_key in channels:
             normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
             normalized_axis = infer_signal_axis(manifest, channel_key) if normalized_kind == "acc" else None
@@ -396,6 +432,12 @@ def count_progress_units(
                 if not acc_group_counted:
                     biosppy_total += 1
                     acc_group_counted = True
+                continue
+            if normalized_kind == "eeg":
+                if not eeg_group_counted:
+                    biosppy_total += 1
+                    neurokit2_total += 1
+                    eeg_group_counted = True
                 continue
             if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
                 biosppy_total += 1
@@ -407,12 +449,13 @@ def count_progress_units(
 
 def basic_stats(values: Sequence[float]) -> Dict[str, Any]:
     if not values:
-        return {"count": 0, "mean": None, "std": None, "min": None, "max": None}
+        return {"count": 0, "mean": None, "median": None, "std": None, "min": None, "max": None}
 
     if len(values) == 1:
         return {
             "count": 1,
             "mean": values[0],
+            "median": values[0],
             "std": 0.0,
             "min": values[0],
             "max": values[0],
@@ -421,6 +464,7 @@ def basic_stats(values: Sequence[float]) -> Dict[str, Any]:
     return {
         "count": len(values),
         "mean": mean(values),
+        "median": median(values),
         "std": pstdev(values),
         "min": min(values),
         "max": max(values),
@@ -619,6 +663,16 @@ def _progress_label(signal_name: str, channel_key: Optional[str], phase: str) ->
     if channel_key:
         return f"{signal_name} ({channel_key}): {phase}"
     return f"{signal_name}: {phase}"
+
+
+def _coerce_signal(values: Sequence[float]) -> Any:
+    if np is None:
+        return values
+
+    try:
+        return np.asarray(values, dtype=float)
+    except Exception:
+        return values
 
 
 def apply_biosppy_analysis(record: Dict[str, Any], kind: str, values: Sequence[float], sample_rate: float) -> None:
@@ -1014,11 +1068,11 @@ def analyze_eeg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eeg", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal = _coerce_signal(values)
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "eeg", values, sample_rate)
+    apply_biosppy_analysis(record, "eeg", signal, sample_rate)
 
     if nk is not None:
         try:
@@ -1066,9 +1120,13 @@ def analyze_acc(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "acc", "libraries": []}
+    signal = _coerce_signal(values)
 
     axis_count = 1
-    if values and isinstance(values[0], (list, tuple)):
+    if np is not None and hasattr(signal, "ndim"):
+        if signal.ndim > 1:
+            axis_count = int(signal.shape[1])
+    elif values and isinstance(values[0], (list, tuple)):
         axis_count = len(values[0])
 
     if axis_count <= 1:
@@ -1081,7 +1139,7 @@ def analyze_acc(
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "acc", values, sample_rate)
+    apply_biosppy_analysis(record, "acc", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy ACC", channel_key, "detecting peaks & features"))
@@ -1189,9 +1247,10 @@ def process_segment(
             "warnings": ["Segment contains no frames to process"],
         }
 
-    channels = sorted({key for frame in frames for key in frame_channels(frame).keys()})
+    channels = ordered_channels(manifest, sorted({key for frame in frames for key in frame_channels(frame).keys()}))
     result_channels: List[Dict[str, Any]] = []
     acc_group_entries: List[Dict[str, Any]] = []
+    eeg_group_entries: List[Dict[str, Any]] = []
     for channel_key in channels:
         label = infer_label(channel_key, manifest)
         kind = infer_signal_kind(manifest, channel_key)
@@ -1223,6 +1282,29 @@ def process_segment(
                 "label": label,
                 "kind": kind,
                 "axis": axis,
+                "indices": indices,
+                "values": values,
+            })
+            continue
+
+        if (kind or "").lower() == "eeg":
+            if not values:
+                result_channels.append({
+                    "channel": channel_key,
+                    "label": label,
+                    "signalKind": kind or "generic",
+                    "summary": {"count": 0, "mean": None, "std": None, "min": None, "max": None},
+                    "warnings": ["Channel contains no valid samples"],
+                })
+                if progress is not None:
+                    progress.advance_biosppy(1, f"BioSPPy: EEG ({label})")
+                    progress.advance_neurokit2(1, f"NeuroKit2: EEG ({label})")
+                continue
+
+            eeg_group_entries.append({
+                "channel": channel_key,
+                "label": label,
+                "kind": kind,
                 "indices": indices,
                 "values": values,
             })
@@ -1261,6 +1343,50 @@ def process_segment(
         channel_record["signalKind"] = kind or "generic"
 
         result_channels.append(channel_record)
+
+    if eeg_group_entries:
+        ordered_eeg_entries = ordered_eeg_channels(
+            manifest,
+            [str(entry["channel"]) for entry in eeg_group_entries],
+        )
+        eeg_entries_by_channel = {str(entry["channel"]): entry for entry in eeg_group_entries}
+        eeg_group_channels = [channel for channel in ordered_eeg_entries if channel in eeg_entries_by_channel]
+        eeg_group_label = ", ".join(
+            str(eeg_entries_by_channel[channel]["label"])
+            for channel in eeg_group_channels
+            if eeg_entries_by_channel[channel].get("label")
+        ) or "EEG"
+        group_indices, group_values = channel_matrix_series(frames, eeg_group_channels)
+
+        if group_values:
+            eeg_analysis = analyze_eeg(group_values, sample_rate, channel_key=eeg_group_label, progress=progress)
+        else:
+            eeg_analysis = {
+                "signalKind": "eeg",
+                "libraries": [],
+                "analysis": analyze_generic([]),
+                "warnings": ["EEG channels could not be aligned into a shared multi-channel signal; using scalar fallbacks."],
+            }
+
+        for entry in eeg_group_channels:
+            eeg_entry = eeg_entries_by_channel[entry]
+            channel_result = analyze_channel(
+                channel_key=str(eeg_entry["channel"]),
+                label=str(eeg_entry["label"]),
+                kind=str(eeg_entry["kind"]),
+                values=eeg_entry["values"],
+                sample_rate=sample_rate,
+                indices=eeg_entry["indices"],
+                output_folder=output_folder / f"segment-{segment_index}",
+                eda_method=eda_method,
+                progress=None,
+                analysis_override=eeg_analysis,
+            )
+            channel_record = dict(channel_result)
+            channel_record["channel"] = str(eeg_entry["channel"])
+            channel_record["label"] = str(eeg_entry["label"])
+            channel_record["signalKind"] = "eeg"
+            result_channels.append(channel_record)
 
     if acc_group_entries:
         # Validate: ACC can have at most 3 axes (X, Y, Z)
@@ -1363,6 +1489,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
     analysis_manifest = dict(manifest)
     analysis_manifest["channelSignalKinds"] = merge_signal_kind_maps(manifest, selected_signal_kinds)
     analysis_manifest["channelSignalAxes"] = merge_signal_axis_maps(manifest, selected_signal_axes)
+    analysis_manifest["eegChannels"] = normalize_channel_list(manifest.get("eegChannels"))
 
     grouped_entries = group_entries_by_segment(chunk_entries)
     segment_results: List[Dict[str, Any]] = []
@@ -1416,6 +1543,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             "batchMode": "load-session-process-entire-dataset-store-features",
             "channelSignalKinds": analysis_manifest.get("channelSignalKinds", {}),
             "channelSignalAxes": analysis_manifest.get("channelSignalAxes", {}),
+            **({"eegChannels": analysis_manifest.get("eegChannels", [])} if analysis_manifest.get("eegChannels") else {}),
             "signalKindOverrides": selected_signal_kinds,
             "signalAxisOverrides": selected_signal_axes,
             "edaMethod": eda_method or "neurokit2-default",
@@ -1437,6 +1565,7 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                 "signalKind",
                 "count",
                 "mean",
+                "median",
                 "std",
                 "min",
                 "max",
@@ -1460,6 +1589,7 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         channel.get("signalKind"),
                         summary.get("count"),
                         summary.get("mean"),
+                        summary.get("median"),
                         summary.get("std"),
                         summary.get("min"),
                         summary.get("max"),
@@ -1495,6 +1625,10 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         continue
 
                     for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
+                        # Exclude time-axis auxiliary features (ts, *_ts, ts_*) from features.csv
+                        if feature_name == "ts" or feature_name.endswith("_ts") or feature_name.startswith("ts_"):
+                            continue
+
                         if isinstance(value, (int, float, str, bool)) or value is None:
                             serialized = value
                         else:
@@ -1533,7 +1667,12 @@ def append_features_readme_section(output_folder: Path) -> None:
                 if len(row) < 6:
                     continue
                 lib = row[4] or "unknown"
-                feat = row[5] or ""
+                feat = (row[5] or "").strip()
+                # Exclude time-axis auxiliary columns (ts / *_ts / ts_*)
+                if not feat:
+                    continue
+                if feat == "ts" or feat.endswith("_ts") or feat.startswith("ts_"):
+                    continue
                 libs.setdefault(lib, set()).add(feat)
     except Exception:
         return
@@ -1548,33 +1687,111 @@ def append_features_readme_section(output_folder: Path) -> None:
         "HRV_LFHF": "Ratio of LF to HF power - balance of autonomic tone.",
         "HRV_PAS": "Probability-based or pseudospectral HRV metric (library-specific); consult NeuroKit2 docs for exact definition.",
 
-        # BioSPPy / signal-level
+        # BioSPPy / signal-level (common outputs)
+        "ts": "Time axis for the processed signal (seconds).",
+        "filtered": "Filtered version of the raw signal (library-specific filtering).",
         "filtered_mean": "Mean of the filtered signal (post-processing).",
         "filtered_std": "Standard deviation of the filtered signal.",
         "filtered_max": "Maximum value in the filtered signal.",
         "filtered_min": "Minimum value in the filtered signal.",
         "filtered_count": "Number of samples in the filtered signal.",
-        "heart_rate_mean": "Average heart rate (beats per minute).",
-        "heart_rate_max": "Maximum heart rate observed (BPM).",
-        "heart_rate_min": "Minimum heart rate observed (BPM).",
+
+        # BioSPPy ECG outputs
+        "rpeaks": "Indices of detected R-peaks in the ECG signal.",
+        "templates_ts": "Time axis for heartbeat templates (seconds, template-aligned).",
+        "templates": "Extracted heartbeat templates aligned on R-peaks.",
+        "heart_rate_ts": "Time axis for instantaneous heart rate samples (seconds).",
+        "heart_rate": "Instantaneous heart rate (beats per minute).",
         "rpeaks_count": "Number of detected R-peaks in the ECG signal.",
+
+        # BioSPPy ECG additional waveform positions
+        "Q_positions": "Estimated Q-wave sample indices across templates.",
+        "Q_start_positions": "Estimated Q-wave start indices.",
+        "S_positions": "Estimated S-wave sample indices across templates.",
+        "S_end_positions": "Estimated S-wave end indices.",
+        "P_positions": "Estimated P-wave sample indices across templates.",
+        "P_start_positions": "Estimated P-wave start indices.",
+        "P_end_positions": "Estimated P-wave end indices.",
+        "T_positions": "Estimated T-wave sample indices across templates.",
+        "T_start_positions": "Estimated T-wave start indices.",
+        "T_end_positions": "Estimated T-wave end indices.",
+
+        # BioSPPy EDA outputs
+        "edr": "Electrodermal Response (phasic) component of the EDA signal.",
+        "edl": "Electrodermal Level (tonic) component of the EDA signal.",
+        "onsets": "Detected SCR onset sample indices.",
+        "peaks": "Detected SCR peak sample indices.",
+        "amplitudes": "SCR pulse amplitudes (peak - preceding trough).",
+        "phasic_rate": "Phasic SCR rate (events per 60s) or per-window value.",
+        "rise_times": "Time from SCR onset to peak (seconds).",
+        "half_rec": "Half-recovery time (seconds) for SCR pulses.",
+        "six_rec": "63% recovery time (seconds) for SCR pulses.",
+
+        # BioSPPy PPG outputs
+        "peaks": "Indices of detected PPG pulse peaks.",
+        "templates_ts": "Time axis for PPG pulse templates (seconds).",
+        "templates": "Extracted PPG pulse templates aligned on systolic peaks.",
+        "onsets": "PPG pulse onset indices (start of beats).",
+        "segments_loc": "Start/end indices for each PPG pulse segment.",
+        "params": "Auxiliary parameters returned by some peak/onset functions.",
+
+        # BioSPPy Respiration outputs
+        "zeros": "Indices of respiration zero-crossings (cycle boundaries).",
+        "resp_rate_ts": "Time axis for respiration rate samples (seconds).",
+        "resp_rate": "Instantaneous respiration rate (Hz).",
+        "resp_rate_mean": "Mean respiration rate over the interval.",
+        # NeuroKit2 EMG features
+        "EMG_Raw": "Raw EMG signal samples (preprocessed).",
+        "EMG_Clean": "Cleaned EMG signal after filtering/detrending.",
+        "EMG_Amplitude": "Linear envelope of the EMG (activation amplitude).",
+        "EMG_Activity": "Binary activity mask (1 when amplitude > threshold).",
+        "EMG_Onsets": "Detected onset samples for EMG activations.",
+        "EMG_Offsets": "Detected offset samples for EMG activations.",
+        "EMG_Activation_N": "Number of detected activation bursts in the interval.",
+        "EMG_Amplitude_Mean": "Mean amplitude of detected EMG activations.",
+        "EMG_Amplitude_SD": "Standard deviation of EMG activation amplitudes.",
+        "EMG_Amplitude_Max": "Maximum activation amplitude observed.",
+        "EMG_Amplitude_Max_Time": "Time/sample index of the maximum activation amplitude.",
+        "EMG_Bursts": "Count of EMG bursts (activations) in the epoch/interval.",
+
+        # NeuroKit2 RSP / respiration features
+        "RSP_Raw": "Raw respiration belt signal samples.",
+        "RSP_Clean": "Cleaned respiration signal after preprocessing.",
+        "RSP_Peaks": "Detected exhalation peak samples (marked as 1 in a vector).",
+        "RSP_Troughs": "Detected inhalation trough samples (marked as 1 in a vector).",
+        "RSP_Rate": "Instantaneous respiration rate interpolated between peaks (breaths/min).",
+        "RSP_Amplitude": "Interpolated respiratory amplitude per breath.",
+        "RSP_Phase": "Binary respiratory phase signal (1=inspiration, 0=expiration).",
+        "RSP_Phase_Completion": "Fractional completion of current respiratory phase (0..1).",
+        "RSP_RVT": "Respiratory Volume per Time (RVT) — volume*time index per sample.",
+        "RSP_Rate_Mean": "Mean respiration rate over the analyzed interval.",
+        "RSP_Rate_SD": "Standard deviation of respiration rate over the interval.",
+
+        # Respiratory Rate Variability (RRV) metrics (rsp_rrv)
+        "RRV_SDBB": "Standard deviation of breath-to-breath intervals (ms).",
+        "RRV_RMSSD": "Root mean square of successive differences of breath intervals (ms).",
+        "RRV_SDSD": "Standard deviation of successive differences of breath intervals.",
+        "RRV_BBx": "Count of successive interval differences greater than x seconds.",
+        "RRV_pBBx": "Proportion of successive interval differences greater than x seconds.",
+        "RRV_VLF": "Very-low-frequency spectral power of respiratory rate variability.",
+        "RRV_LF": "Low-frequency spectral power of respiratory rate variability.",
+        "RRV_HF": "High-frequency spectral power of respiratory rate variability.",
+        "RRV_LFHF": "Ratio of LF to HF power in respiratory rate variability.",
+        "RRV_LFn": "Normalized low-frequency power (RRV).",
+        "RRV_HFn": "Normalized high-frequency power (RRV).",
+        "RRV_SD1": "Poincaré plot short-term variability (SD1) of breath intervals.",
+        "RRV_SD2": "Poincaré plot long-term variability (SD2) of breath intervals.",
+        "RRV_SD2SD1": "Ratio SD2/SD1 — long-to-short term variability ratio.",
+        "RRV_DFA_alpha1": "Detrended Fluctuation Analysis alpha1 (short-term fractal scaling).",
+        "RRV_DFA_alpha2": "Detrended Fluctuation Analysis alpha2 (long-term fractal scaling).",
+        "RRV_ApEn": "Approximate entropy of respiratory rate variability.",
+        "RRV_SampEn": "Sample entropy of respiratory rate variability.",
     }
 
     def describe(feature: str, lib: str) -> str:
         if feature in known:
             return known[feature]
-        # Prefix-based fallbacks
-        if feature.startswith("HRV_"):
-            return f"{feature}: heart-rate-variability derived metric (NeuroKit2). See NeuroKit2.hrv docs."
-        if feature.startswith("ECG_") or feature.startswith("ECG"):
-            return f"{feature}: ECG-derived timing or peaks-related value (NeuroKit2)."
-        if feature.startswith("templates_") or feature.startswith("ts_"):
-            return f"{feature}: time-series summary statistic or template timing (library-specific)."
-        if feature.startswith("HRV_"):
-            return f"{feature}: HRV metric (NeuroKit2)."
-        if feature:
-            return f"{feature}: feature generated by {lib}; consult the library docs for details."
-        return "Unnamed feature"
+        return "See NeuroKit2 or Biosspy docs."
 
     lines: List[str] = []
     lines.append("## Features extracted by analysis\n")
