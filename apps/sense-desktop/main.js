@@ -207,6 +207,22 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       PYTHONUNBUFFERED: '1'
     };
 
+    // Respect renderer-requested EDA/library preference when provided
+    if (options && typeof options.edaMethod === 'string' && options.edaMethod.trim().length > 0) {
+      env.SENSE_ANALYSIS_EDA_METHOD = options.edaMethod.trim();
+    }
+
+    // Wire renderer outlier-removal checkbox to worker: if renderer explicitly
+    // sets `outlierRemoval` and it's false, disable library outlier removal.
+    if (options && typeof options.outlierRemoval === 'boolean') {
+      if (!options.outlierRemoval) {
+        env.SENSE_ANALYSIS_DISABLE_OUTLIER_REMOVAL = '1';
+      } else {
+        // Ensure not set when enabled
+        delete env.SENSE_ANALYSIS_DISABLE_OUTLIER_REMOVAL;
+      }
+    }
+
     if (Object.keys(selectedSignalKinds).length > 0) {
       env.SENSE_ANALYSIS_SIGNAL_KINDS_JSON = JSON.stringify(selectedSignalKinds);
     }

@@ -69,6 +69,18 @@ CHUNK_FILENAME_RE = re.compile(r"^sample(?P<sample>\d+)_chunk(?P<chunk>\d+)\.jso
 SUPPORTED_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}
 ACC_AXIS_ORDER = {"x": 0, "y": 1, "z": 2}
 
+# Global toggle set at startup to disable library-provided outlier removal
+DISABLE_OUTLIER_REMOVAL = False
+SELECTED_LIBRARY_PREFERENCE: Optional[str] = None
+
+
+def _allows_biosppy_progress() -> bool:
+    return SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != "neurokit"
+
+
+def _allows_neurokit2_progress() -> bool:
+    return SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != "biosppy"
+
 # --- ScientISST sense.py FileWriter compatibility ---------------------------
 SENSE_FILEWRITER_API_VERSION = "1.2.0"
 SENSE_CHANNEL_RESOLUTION_BITS = {
@@ -84,11 +96,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-folder", required=True, help="Path to the analysis output folder")
     parser.add_argument(
         "--eda-method",
-        default=os.environ.get("SENSE_ANALYSIS_EDA_METHOD", "").strip() or "neurokit",
+        default=os.environ.get("SENSE_ANALYSIS_EDA_METHOD", "").strip() or "",
         help=(
-            "NeuroKit2 EDA cleaning method passed to nk.eda_process "
-            "(one of 'neurokit' or 'biosppy'; default: neurokit)."
+            "Preferred analysis library for signals: 'neurokit', 'biosppy', or 'both'. "
+            "When unset or empty the worker will attempt to run both libraries when available."
         ),
+    )
+    parser.add_argument(
+        "--disable-outlier-removal",
+        action="store_true",
+        default=bool(str(os.environ.get("SENSE_ANALYSIS_DISABLE_OUTLIER_REMOVAL", "")).strip()),
+        help="Disable library-provided outlier removal (NeuroKit2 / BioSPPy).",
     )
     return parser.parse_args()
 
@@ -429,19 +447,21 @@ def count_progress_units(
             normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
             normalized_axis = infer_signal_axis(manifest, channel_key) if normalized_kind == "acc" else None
             if normalized_kind == "acc" and normalized_axis in ACC_AXIS_ORDER:
-                if not acc_group_counted:
+                if not acc_group_counted and _allows_biosppy_progress():
                     biosppy_total += 1
                     acc_group_counted = True
                 continue
             if normalized_kind == "eeg":
                 if not eeg_group_counted:
-                    biosppy_total += 1
-                    neurokit2_total += 1
+                    if _allows_biosppy_progress():
+                        biosppy_total += 1
+                    if _allows_neurokit2_progress():
+                        neurokit2_total += 1
                     eeg_group_counted = True
                 continue
-            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS:
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and _allows_biosppy_progress():
                 biosppy_total += 1
-            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS and _allows_neurokit2_progress():
                 neurokit2_total += 1
 
     return biosppy_total, neurokit2_total
@@ -626,19 +646,29 @@ class AnalysisProgressTracker:
 
     def start_analysis(self) -> None:
         """Emit initialization message for analysis phase."""
-        if not self.biosppy_started and self.biosppy_total > 0:
+        has_biosppy = self.biosppy_total > 0
+        has_neurokit2 = self.neurokit2_total > 0
+        if not has_biosppy and not has_neurokit2:
+            return
+
+        if has_biosppy and not self.biosppy_started:
             self.biosppy_started = True
-            if not self.neurokit2_started and self.neurokit2_total > 0:
-                self.neurokit2_started = True
-                self.emit("Initializing analysis", force=True)
+        if has_neurokit2 and not self.neurokit2_started:
+            self.neurokit2_started = True
+        if self.biosppy_started or self.neurokit2_started:
+            self.emit("Initializing analysis", force=True)
 
     def advance_biosppy(self, amount: float, label: str) -> None:
+        if not _allows_biosppy_progress():
+            return
         if self.biosppy_total <= 0 or amount <= 0:
             return
         self.biosppy_done = min(float(self.biosppy_total), self.biosppy_done + amount)
         self.emit(label)
 
     def advance_neurokit2(self, amount: float, label: str) -> None:
+        if not _allows_neurokit2_progress():
+            return
         if self.neurokit2_total <= 0 or amount <= 0:
             return
         self.neurokit2_done = min(float(self.neurokit2_total), self.neurokit2_done + amount)
@@ -676,6 +706,11 @@ def _coerce_signal(values: Sequence[float]) -> Any:
 
 
 def apply_biosppy_analysis(record: Dict[str, Any], kind: str, values: Sequence[float], sample_rate: float) -> None:
+    # Respect global preference: if 'neurokit' was explicitly requested, skip BioSPPy
+    if SELECTED_LIBRARY_PREFERENCE == 'neurokit':
+        record.setdefault("warnings", []).append("BioSPPy skipped due to library preference: neurokit")
+        return
+
     if process_biosppy_signal is None:
         record.setdefault("warnings", []).append("BioSPPy wrapper is unavailable in this environment.")
         return
@@ -753,6 +788,312 @@ def extract_neurokit2_features(record: Dict[str, Any]) -> None:
         record["neurokit2Features"] = features
 
 
+def _normalize_peak_indices(value: Any) -> List[int]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        for candidate_key in (
+            "peaks",
+            "rpeaks",
+            "ECG_R_Peaks",
+            "PPG_Peaks",
+            "SCR_Peaks",
+            "EOG_Blinks",
+            "EOG_Onsets",
+            "Blinks",
+        ):
+            if candidate_key in value:
+                return _normalize_peak_indices(value[candidate_key])
+        return []
+    if np is not None and hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except Exception:
+            value = str(value)
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    normalized: List[int] = []
+    seen = set()
+    for item in value:
+        candidate = safe_float(item)
+        if candidate is None:
+            continue
+        peak_index = int(round(candidate))
+        if peak_index < 0 or peak_index in seen:
+            continue
+        seen.add(peak_index)
+        normalized.append(peak_index)
+    return normalized
+
+
+def _refresh_peak_feature_stats(features: Dict[str, Any], peak_key: str, peaks: Sequence[int]) -> None:
+    peak_values = [float(value) for value in peaks]
+    stats = basic_stats(peak_values)
+    features[f"{peak_key}_count"] = stats["count"]
+    features[f"{peak_key}_mean"] = stats["mean"]
+    features[f"{peak_key}_std"] = stats["std"]
+    features[f"{peak_key}_min"] = stats["min"]
+    features[f"{peak_key}_max"] = stats["max"]
+
+
+def _set_outlier_removal_status(target: Dict[str, Any], *, applied: bool, reason: Optional[str] = None, **details: Any) -> None:
+    status: Dict[str, Any] = {"applied": applied}
+    if reason:
+        status["reason"] = reason
+    for key, value in details.items():
+        if value is not None:
+            status[key] = value
+    target["outlierRemoval"] = status
+
+
+def _apply_biosppy_outlier_removal(record: Dict[str, Any], signal_kind: str, signal: Sequence[float], sample_rate: float) -> None:
+    # Respect global disable flag
+    try:
+        if DISABLE_OUTLIER_REMOVAL:
+            return
+    except NameError:
+        pass
+    if (signal_kind or "").lower() != "ecg":
+        return
+
+    biosppy_block = record.get("biosppy")
+    if not isinstance(biosppy_block, dict):
+        return
+
+    if (signal_kind or "").lower() != "ecg":
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason=f"BioSPPy outlier removal is only available for ECG, not {str(signal_kind).upper() or 'this signal'}.",
+        )
+        return
+
+    output = biosppy_block.get("output")
+    if not isinstance(output, dict):
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason="BioSPPy ECG outlier removal was not run because the ECG output is unavailable.",
+        )
+        return
+
+    peaks = _normalize_peak_indices(output.get("rpeaks"))
+    if len(peaks) < 3:
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason="BioSPPy ECG outlier removal was not run because fewer than 3 peaks were detected.",
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    try:
+        from biosppy.signals import ecg as biosppy_ecg
+    except Exception:
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason="BioSPPy ECG outlier removal was not run because the BioSPPy ECG helper is unavailable.",
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    try:
+        corrected = biosppy_ecg.correct_rpeaks(
+            signal=signal,
+            rpeaks=peaks,
+            sampling_rate=float(sample_rate),
+        )
+    except Exception as exc:
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason=f"BioSPPy ECG outlier removal failed: {exc}",
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    corrected_peaks = _normalize_peak_indices(getattr(corrected, "rpeaks", None))
+    if not corrected_peaks:
+        _set_outlier_removal_status(
+            biosppy_block,
+            applied=False,
+            reason="BioSPPy ECG outlier removal did not produce corrected peaks.",
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    output["rpeaks"] = corrected_peaks
+    biosppy_features = record.get("biosppyFeatures")
+    if isinstance(biosppy_features, dict):
+        _refresh_peak_feature_stats(biosppy_features, "rpeaks", corrected_peaks)
+
+    biosppy_block["outlierRemoval"] = {
+        "applied": True,
+        "method": "biosppy.signals.ecg.correct_rpeaks",
+        "inputPeakCount": len(peaks),
+        "outputPeakCount": len(corrected_peaks),
+        "correctedPeaks": corrected_peaks,
+    }
+
+
+def _apply_neurokit2_outlier_removal(record: Dict[str, Any], signal_kind: str, sample_rate: float) -> None:
+    # Respect global disable flag
+    try:
+        if DISABLE_OUTLIER_REMOVAL:
+            return
+    except NameError:
+        pass
+
+    if nk is None:
+        return
+
+    nk_block = record.get("neurokit2")
+    if not isinstance(nk_block, dict):
+        return
+
+    info = nk_block.get("info")
+    if not isinstance(info, dict):
+        _set_outlier_removal_status(
+            nk_block,
+            applied=False,
+            reason="NeuroKit2 outlier removal was not run because peak metadata is unavailable.",
+        )
+        return
+
+    peak_key_map = {
+        "ecg": ["ECG_R_Peaks"],
+        "ppg": ["PPG_Peaks"],
+        "eda": ["SCR_Peaks", "SCR_Onsets"],
+        "rsp": ["RSP_Peaks"],
+        "eog": ["EOG_Blinks", "EOG_Onsets", "Blinks"],
+    }
+
+    candidate_keys = peak_key_map.get((signal_kind or "").lower(), [])
+    peak_key = next((key for key in candidate_keys if key in info), None)
+    if not peak_key:
+        _set_outlier_removal_status(
+            nk_block,
+            applied=False,
+            reason=f"NeuroKit2 outlier removal is not available for {str(signal_kind).upper() or 'this signal'} in the current result.",
+        )
+        return
+
+    peaks = _normalize_peak_indices(info.get(peak_key))
+    if len(peaks) < 3:
+        _set_outlier_removal_status(
+            nk_block,
+            applied=False,
+            reason=f"NeuroKit2 outlier removal was not run for {str(signal_kind).upper()} because fewer than 3 peaks were detected.",
+            peakKey=peak_key,
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    try:
+        correction_info, corrected_peaks = nk.signal_fixpeaks(
+            peaks,
+            sampling_rate=float(sample_rate),
+            show=False,
+        )
+    except Exception as exc:
+        _set_outlier_removal_status(
+            nk_block,
+            applied=False,
+            reason=f"NeuroKit2 outlier removal failed: {exc}",
+            peakKey=peak_key,
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    corrected = _normalize_peak_indices(corrected_peaks)
+    if not corrected:
+        _set_outlier_removal_status(
+            nk_block,
+            applied=False,
+            reason=f"NeuroKit2 outlier removal did not produce corrected peaks for {peak_key}.",
+            peakKey=peak_key,
+            inputPeakCount=len(peaks),
+        )
+        return
+
+    info[peak_key] = corrected
+    nk_block["outlierRemoval"] = {
+        "applied": True,
+        "method": "neurokit2.signal_fixpeaks",
+        "peakKey": peak_key,
+        "inputPeakCount": len(peaks),
+        "outputPeakCount": len(corrected),
+        "correctedPeaks": corrected,
+        "correction": serialize_numpy_like(correction_info),
+    }
+
+
+def _finite_only_signal(signal: Any) -> Any:
+    if np is not None:
+        try:
+            array = np.asarray(signal, dtype=float)
+            if array.ndim == 0:
+                return array.reshape(1)
+            if array.ndim == 1:
+                finite_mask = np.isfinite(array)
+                return array[finite_mask] if not bool(finite_mask.all()) else array
+            finite_mask = np.all(np.isfinite(array), axis=tuple(range(1, array.ndim)))
+            return array[finite_mask] if not bool(finite_mask.all()) else array
+        except Exception:
+            pass
+
+    if isinstance(signal, list):
+        cleaned: List[Any] = []
+        for item in signal:
+            if isinstance(item, (list, tuple)):
+                row = [_value for _value in item if safe_float(_value) is not None]
+                if len(row) == len(item) and row:
+                    cleaned.append(list(row))
+            else:
+                value = safe_float(item)
+                if value is not None:
+                    cleaned.append(value)
+        return cleaned
+
+    return signal
+
+
+def _prepare_signal_for_analysis(signal_kind: str, values: Sequence[float], sample_rate: float) -> Tuple[Any, Dict[str, Any]]:
+    normalized_kind = (signal_kind or "").lower()
+    cleaned_signal = _finite_only_signal(values)
+    preprocessing: Dict[str, Any] = {
+        "signalKind": normalized_kind,
+        "steps": ["finite-value-sanitization"],
+    }
+
+    if nk is None:
+        return cleaned_signal, preprocessing
+
+    cleaner_specs = {
+        "ecg": (nk.ecg_clean, {}),
+        "ppg": (nk.ppg_clean, {}),
+        "emg": (nk.emg_clean, {}),
+        "rsp": (nk.rsp_clean, {}),
+        "eda": (nk.eda_clean, {}),
+        "eog": (nk.eog_clean, {}),
+    }
+
+    cleaner_entry = cleaner_specs.get(normalized_kind)
+    if cleaner_entry is None:
+        return cleaned_signal, preprocessing
+
+    cleaner, cleaner_kwargs = cleaner_entry
+    try:
+        cleaned_signal = cleaner(cleaned_signal, sampling_rate=float(sample_rate), **cleaner_kwargs)
+        preprocessing["steps"].append(f"neurokit2.{normalized_kind}_clean")
+    except Exception as exc:
+        preprocessing.setdefault("warnings", []).append(f"NeuroKit2 {normalized_kind.upper()} cleaning failed: {exc}")
+
+    return cleaned_signal, preprocessing
+
+
 def analyze_ecg(
     values: Sequence[float],
     sample_rate: float,
@@ -760,16 +1101,23 @@ def analyze_ecg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "ecg", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("ecg", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy ECG", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "ecg", values, sample_rate)
+    apply_biosppy_analysis(record, "ecg", signal, sample_rate)
+    # Apply BioSPPy ECG peak correction (outlier removal) so downstream features use corrected peaks
+    try:
+        _apply_biosppy_outlier_removal(record, "ecg", signal, sample_rate)
+    except Exception:
+        # Don't let outlier removal failures stop analysis; record warnings are emitted inside helper
+        pass
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy ECG", channel_key, "detecting peaks & features"))
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 ECG", channel_key, "processing & HRV"))
@@ -780,10 +1128,19 @@ def analyze_ecg(
                 "signalsColumns": list(getattr(signals, "columns", [])),
                 "info": serialize_numpy_like(info),
             }
+            _apply_neurokit2_outlier_removal(record, "ecg", sample_rate)
             if info is not None:
                 try:
-                    hrv = nk.hrv(info, sampling_rate=float(sample_rate))
-                    record["neurokit2"]["hrv"] = serialize_df_like(hrv)
+                    corrected_info = record["neurokit2"].get("info")
+                    # Only run HRV when corrected peaks are present and sufficient
+                    peaks_for_hrv = _normalize_peak_indices(corrected_info)
+                    if len(peaks_for_hrv) >= 3:
+                        hrv = nk.hrv(corrected_info, sampling_rate=float(sample_rate))
+                        record["neurokit2"]["hrv"] = serialize_df_like(hrv)
+                    else:
+                        record.setdefault("warnings", []).append(
+                            "NeuroKit2 HRV skipped: insufficient peaks after outlier removal"
+                        )
                 except Exception as exc:
                     record.setdefault("warnings", []).append(f"NeuroKit2 HRV processing failed: {exc}")
         except Exception as exc:
@@ -804,40 +1161,34 @@ def analyze_eda(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eda", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("eda", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EDA", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "eda", values, sample_rate)
+    apply_biosppy_analysis(record, "eda", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EDA", channel_key, "detecting peaks & features"))
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EDA", channel_key, "processing & decomposition"))
 
-            method_used = None
             try:
-                if eda_method:
-                    signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate), method=eda_method)
-                    method_used = eda_method
-                else:
-                    signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate))
+                signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate))
             except (TypeError, ValueError):
                 signals, info = nk.eda_process(signal, sampling_rate=float(sample_rate))
-                method_used = None
 
             record["libraries"].append("neurokit2")
             nk_block: Dict[str, Any] = {
                 "signalsColumns": list(getattr(signals, "columns", [])),
                 "info": serialize_numpy_like(info),
             }
-            if method_used:
-                nk_block["method"] = method_used
             record["neurokit2"] = nk_block
+            _apply_neurokit2_outlier_removal(record, "eda", sample_rate)
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EDA processing failed: {exc}")
 
@@ -855,17 +1206,18 @@ def analyze_ppg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "ppg", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("ppg", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy PPG", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "ppg", values, sample_rate)
+    apply_biosppy_analysis(record, "ppg", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy PPG", channel_key, "detecting peaks & features"))
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 PPG", channel_key, "processing & features"))
@@ -876,6 +1228,7 @@ def analyze_ppg(
                 "signalsColumns": list(getattr(signals, "columns", [])),
                 "info": serialize_numpy_like(info),
             }
+            _apply_neurokit2_outlier_removal(record, "ppg", sample_rate)
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 PPG processing failed: {exc}")
 
@@ -893,17 +1246,18 @@ def analyze_emg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "emg", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("emg", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EMG", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "emg", values, sample_rate)
+    apply_biosppy_analysis(record, "emg", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EMG", channel_key, "detecting peaks & features"))
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EMG", channel_key, "processing & features"))
@@ -931,17 +1285,18 @@ def analyze_rsp(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "rsp", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("rsp", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy RSP", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "rsp", values, sample_rate)
+    apply_biosppy_analysis(record, "rsp", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy RSP", channel_key, "detecting peaks & features"))
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 RSP", channel_key, "processing & features"))
@@ -952,6 +1307,7 @@ def analyze_rsp(
                 "signalsColumns": list(getattr(signals, "columns", [])),
                 "info": serialize_numpy_like(info),
             }
+            _apply_neurokit2_outlier_removal(record, "rsp", sample_rate)
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 RSP processing failed: {exc}")
 
@@ -1035,9 +1391,10 @@ def analyze_eog(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eog", "libraries": []}
-    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+    signal, preprocessing = _prepare_signal_for_analysis("eog", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EOG", channel_key, "processing & features"))
@@ -1052,6 +1409,7 @@ def analyze_eog(
             if derived:
                 nk_block["derivedFeatures"] = derived
             record["neurokit2"] = nk_block
+            _apply_neurokit2_outlier_removal(record, "eog", sample_rate)
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 EOG processing failed: {exc}")
 
@@ -1068,13 +1426,14 @@ def analyze_eeg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "eeg", "libraries": []}
-    signal = _coerce_signal(values)
+    signal, preprocessing = _prepare_signal_for_analysis("eeg", values, sample_rate)
+    record["preprocessing"] = preprocessing
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EEG", channel_key, "filtering & segmentation"))
 
     apply_biosppy_analysis(record, "eeg", signal, sample_rate)
 
-    if nk is not None:
+    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EEG", channel_key, "processing & features"))
@@ -1102,10 +1461,12 @@ def analyze_pcg(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "pcg", "libraries": []}
+    signal, preprocessing = _prepare_signal_for_analysis("pcg", values, sample_rate)
+    record["preprocessing"] = preprocessing
     if progress is not None:
         progress.advance_biosppy(0.25, _progress_label("BioSPPy PCG", channel_key, "filtering & segmentation"))
 
-    apply_biosppy_analysis(record, "pcg", values, sample_rate)
+    apply_biosppy_analysis(record, "pcg", signal, sample_rate)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy PCG", channel_key, "detecting peaks & features"))
@@ -1120,7 +1481,8 @@ def analyze_acc(
     progress: Optional[AnalysisProgressTracker] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {"signalKind": "acc", "libraries": []}
-    signal = _coerce_signal(values)
+    signal, preprocessing = _prepare_signal_for_analysis("acc", values, sample_rate)
+    record["preprocessing"] = preprocessing
 
     axis_count = 1
     if np is not None and hasattr(signal, "ndim"):
@@ -1140,7 +1502,6 @@ def analyze_acc(
         progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "filtering & segmentation"))
 
     apply_biosppy_analysis(record, "acc", signal, sample_rate)
-
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy ACC", channel_key, "detecting peaks & features"))
         progress.advance_biosppy(0.25, _progress_label("BioSPPy ACC", channel_key, "complete"))
@@ -1190,6 +1551,31 @@ def analyze_channel(
     if analysis_override is not None:
         record["analysis"] = analysis_override
         analysis_record = record.get("analysis")
+        if isinstance(analysis_record, dict):
+            # Apply any library-provided outlier removal available for the override
+            try:
+                _apply_biosppy_outlier_removal(analysis_record, normalized_kind, values, sample_rate)
+            except Exception:
+                pass
+            try:
+                _apply_neurokit2_outlier_removal(analysis_record, normalized_kind, sample_rate)
+            except Exception:
+                pass
+            extract_neurokit2_features(analysis_record)
+
+            preprocessing = analysis_record.get("preprocessing")
+            if isinstance(preprocessing, dict):
+                record["preprocessing"] = preprocessing
+
+            outlier_info: Dict[str, Any] = {}
+            biosppy_block = analysis_record.get("biosppy") if isinstance(analysis_record.get("biosppy"), dict) else None
+            nk_block = analysis_record.get("neurokit2") if isinstance(analysis_record.get("neurokit2"), dict) else None
+            if biosppy_block and isinstance(biosppy_block.get("outlierRemoval"), dict):
+                outlier_info["biosppy"] = biosppy_block.get("outlierRemoval")
+            if nk_block and isinstance(nk_block.get("outlierRemoval"), dict):
+                outlier_info["neurokit2"] = nk_block.get("outlierRemoval")
+            if outlier_info:
+                record["outlierRemoval"] = outlier_info
         return record
 
     if normalized_kind == "ecg":
@@ -1219,6 +1605,38 @@ def analyze_channel(
     analysis_record = record.get("analysis")
     if isinstance(analysis_record, dict):
         extract_neurokit2_features(analysis_record)
+
+        # Promote preprocessing metadata to the channel-level record for visibility
+        preprocessing = analysis_record.get("preprocessing")
+        if isinstance(preprocessing, dict):
+            record["preprocessing"] = preprocessing
+
+        # Collect outlier removal info from library blocks (if any) and expose at top-level
+        outlier_info: Dict[str, Any] = {}
+        biosppy_block = analysis_record.get("biosppy") if isinstance(analysis_record.get("biosppy"), dict) else None
+        nk_block = analysis_record.get("neurokit2") if isinstance(analysis_record.get("neurokit2"), dict) else None
+        if biosppy_block and isinstance(biosppy_block.get("outlierRemoval"), dict):
+            outlier_info["biosppy"] = biosppy_block.get("outlierRemoval")
+        if nk_block and isinstance(nk_block.get("outlierRemoval"), dict):
+            outlier_info["neurokit2"] = nk_block.get("outlierRemoval")
+        if outlier_info:
+            record["outlierRemoval"] = outlier_info
+        elif not DISABLE_OUTLIER_REMOVAL:
+            if normalized_kind in {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}:
+                if normalized_kind == "acc":
+                    reason = "Outlier removal is not available for ACC channels."
+                elif normalized_kind == "pcg":
+                    reason = "Outlier removal is not available for PCG channels."
+                elif normalized_kind == "eeg":
+                    reason = "Outlier removal is not available for EEG channels in this worker."
+                elif normalized_kind == "ecg":
+                    reason = "Outlier removal was enabled, but no library produced corrected peaks for this ECG channel."
+                else:
+                    reason = f"Outlier removal was enabled, but no correction step ran for {normalized_kind.upper()}."
+                record["outlierRemoval"] = {
+                    "applied": False,
+                    "reason": reason,
+                }
 
     return record
 
@@ -1558,21 +1976,23 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            [
-                "segment",
-                "channel",
-                "label",
-                "signalKind",
-                "count",
-                "mean",
-                "median",
-                "std",
-                "min",
-                "max",
-                "libraries",
-                "seriesPath",
-            ]
-        )
+                [
+                    "segment",
+                    "channel",
+                    "label",
+                    "signalKind",
+                    "count",
+                    "mean",
+                    "median",
+                    "std",
+                    "min",
+                    "max",
+                    "libraries",
+                    "seriesPath",
+                    "preprocessing",
+                    "outlierRemoval",
+                ]
+            )
         for segment in result.get("segments", []):
             segment_index = segment.get("segment") if isinstance(segment, dict) else None
             for channel in segment.get("channels", []) if isinstance(segment, dict) else []:
@@ -1581,6 +2001,12 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
 
                 summary = channel.get("summary", {})
                 analysis = channel.get("analysis", {})
+                preprocessing = channel.get("preprocessing")
+                if preprocessing is None and isinstance(analysis, dict):
+                    preprocessing = analysis.get("preprocessing")
+                outlier_removal = channel.get("outlierRemoval")
+                if outlier_removal is None and isinstance(analysis, dict):
+                    outlier_removal = analysis.get("outlierRemoval")
                 writer.writerow(
                     [
                         segment_index,
@@ -1597,6 +2023,8 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         if isinstance(analysis.get("libraries"), list)
                         else "",
                         channel.get("seriesPath"),
+                        json.dumps(sanitize_for_json(preprocessing), ensure_ascii=False),
+                        json.dumps(sanitize_for_json(outlier_removal), ensure_ascii=False),
                     ]
                 )
 
@@ -1618,6 +2046,39 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                 analysis = channel.get("analysis", {})
                 if not isinstance(analysis, dict):
                     continue
+
+                # Export preprocessing and outlierRemoval metadata as special 'meta' rows
+                preprocessing = channel.get("preprocessing")
+                if preprocessing is None:
+                    preprocessing = analysis.get("preprocessing")
+                if preprocessing is not None:
+                    writer.writerow(
+                        [
+                            segment_index,
+                            channel.get("channel"),
+                            channel.get("label"),
+                            channel.get("signalKind"),
+                            "meta",
+                            "preprocessing",
+                            json.dumps(sanitize_for_json(preprocessing), ensure_ascii=False),
+                        ]
+                    )
+
+                outlier = channel.get("outlierRemoval")
+                if outlier is None:
+                    outlier = analysis.get("outlierRemoval")
+                if outlier is not None:
+                    writer.writerow(
+                        [
+                            segment_index,
+                            channel.get("channel"),
+                            channel.get("label"),
+                            channel.get("signalKind"),
+                            "meta",
+                            "outlierRemoval",
+                            json.dumps(sanitize_for_json(outlier), ensure_ascii=False),
+                        ]
+                    )
 
                 for library, feature_key in [("biosppy", "biosppyFeatures"), ("neurokit2", "neurokit2Features")]:
                     features = analysis.get(feature_key, {})
@@ -2062,6 +2523,16 @@ def write_signal_csvs(
 
 def main() -> int:
     args = parse_args()
+    # make disable flag visible to helper functions
+    global DISABLE_OUTLIER_REMOVAL
+    DISABLE_OUTLIER_REMOVAL = bool(getattr(args, "disable_outlier_removal", False))
+    # Make renderer-specified library preference visible to helper functions.
+    global SELECTED_LIBRARY_PREFERENCE
+    pref_raw = getattr(args, "eda_method", None)
+    if isinstance(pref_raw, str) and pref_raw.strip():
+        SELECTED_LIBRARY_PREFERENCE = pref_raw.strip().lower()
+    else:
+        SELECTED_LIBRARY_PREFERENCE = None
     session_folder = Path(args.session_folder).resolve()
     output_folder = Path(args.output_folder).resolve()
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -2165,11 +2636,19 @@ CSV export is performed after analysis completes.
             )
         return 0
     except Exception as exc:
+        import traceback as _traceback
+        _trace = _traceback.format_exc()
+        # Emit full traceback for debugging in dev runs
+        try:
+            sys.stderr.write(_trace + "\n")
+        except Exception:
+            pass
         error = {
             "error": str(exc),
             "sessionFolder": str(session_folder),
             "outputFolder": str(output_folder),
             "failedAt": now_iso(),
+            "trace": _trace,
         }
         sys.stderr.write(json.dumps(error, ensure_ascii=False))
         sys.stderr.flush()

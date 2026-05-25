@@ -121,6 +121,58 @@ def _result_to_mapping(result: Any) -> Dict[str, Any]:
     return {}
 
 
+def _normalize_peak_indices(value: Any) -> List[int]:
+    if value is None:
+        return []
+    if np is not None and hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except Exception:
+            value = str(value)
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    normalized: List[int] = []
+    seen = set()
+    for item in value:
+        candidate = _safe_float(item)
+        if candidate is None:
+            continue
+        peak_index = int(round(candidate))
+        if peak_index < 0 or peak_index in seen:
+            continue
+        seen.add(peak_index)
+        normalized.append(peak_index)
+    return normalized
+
+
+def _correct_ecg_peak_outliers(signal: Any, result_mapping: Dict[str, Any], sample_rate: float) -> None:
+    peaks = _normalize_peak_indices(result_mapping.get("rpeaks"))
+    if len(peaks) < 3:
+        result_mapping.setdefault("warnings", []).append(
+            "BioSPPy ECG peak correction skipped: fewer than 3 peaks present"
+        )
+        return
+
+    try:
+        from biosppy.signals import ecg as biosppy_ecg
+    except Exception:
+        return
+
+    try:
+        corrected = biosppy_ecg.correct_rpeaks(
+            signal=signal,
+            rpeaks=peaks,
+            sampling_rate=float(sample_rate),
+        )
+    except Exception:
+        return
+
+    corrected_peaks = _normalize_peak_indices(getattr(corrected, "rpeaks", None))
+    if corrected_peaks:
+        result_mapping["rpeaks"] = corrected_peaks
+
+
 def _extract_features(result_mapping: Dict[str, Any]) -> Dict[str, Any]:
     features: Dict[str, Any] = {}
     for key, raw_value in result_mapping.items():
@@ -194,6 +246,8 @@ def process_signal(signal_kind: str, values: Sequence[float], sample_rate: float
     try:
         result = handler(signal=signal, sampling_rate=float(sample_rate), show=False)
         result_mapping = _result_to_mapping(result)
+        if normalized_kind == "ecg":
+            _correct_ecg_peak_outliers(signal, result_mapping, sample_rate)
         serializable = (
             _to_serializable(result_mapping)
             if result_mapping
