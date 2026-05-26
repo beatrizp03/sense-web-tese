@@ -188,6 +188,18 @@ const Page = () => {
 	const analysisSource = analysisResult ?? manifest?.analysis ?? null
 	const analysisPolicy = analysisSource?.analysisPolicy ?? analysisSource?.analysisConfig?.libraryPolicy ?? analysisSource?.worker?.libraryPolicy ?? null
 
+	const summaryRows = useMemo(() => {
+		return analysisSource?.segments?.flatMap?.((seg: any) => {
+			return (seg?.channels || []).map((ch: any) => ({
+				segment: seg.segment,
+				channel: ch.channel,
+				label: ch.label,
+				kind: ch.signalKind,
+				summary: ch.summary ?? {},
+			}))
+		}) ?? []
+	}, [analysisSource])
+
 	const getChannelAnalysisMetadata = useCallback((channel: any) => {
 		const analysis = channel?.analysis ?? {}
 		return {
@@ -661,7 +673,7 @@ const Page = () => {
 							</div>
 						</div>
 					) : (
-						<div className="-mt-3  space-y-0">
+						<div className="-mt-3 space-y-0">
 							<div className="rounded-xl border border-background-accent bg-background-accent p-4">
 								<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Analysis status</p>
 								<p className="mt-2 text-sm text-over-background-highest">{status}</p>
@@ -692,97 +704,141 @@ const Page = () => {
 							</div>
 
 							{currentAnalysis && (
-								<div className="rounded-xl border border-background-accent p-4">
-									<div className="flex items-center gap-2">
-										<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Library policy</p>
-										<button
-											type="button"
-											onClick={() => setShowLibraryPolicyLegend(true)}
-											className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
-											aria-label={showLibraryPolicyLegend ? "Hide library policy help" : "Show library policy help"}
-											aria-expanded={showLibraryPolicyLegend}
-											title="Show library policy help"
-										>
-											?
-										</button>
-									</div>
-									<p className="text-sm text-over-background-highest-light dark:text-over-background-highest-dark p-2">
-										{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}
-									</p>
-									<div className="grid gap-3 sm:grid-cols-2">
-										<div className="rounded-lg border border-background-accent-high px-3 py-2">
-											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary library</div>
-											<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+								<div className="space-y-0">
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Library policy</p>
+											<button
+												type="button"
+												onClick={() => setShowLibraryPolicyLegend(true)}
+												className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
+												aria-label={showLibraryPolicyLegend ? "Hide library policy help" : "Show library policy help"}
+												aria-expanded={showLibraryPolicyLegend}
+												title="Show library policy help"
+											>
+												?
+											</button>
 										</div>
-										<div className="rounded-lg border border-background-accent-high px-3 py-2">
-											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary library</div>
-											<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+										<p className="p-2 text-sm text-over-background-highest-light dark:text-over-background-highest-dark">
+											{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}
+										</p>
+										<div className="grid gap-3 sm:grid-cols-2">
+											<div className="rounded-lg border border-background-accent-high px-3 py-2">
+												<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary library</div>
+												<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+											</div>
+											<div className="rounded-lg border border-background-accent-high px-3 py-2">
+												<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary library</div>
+												<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+											</div>
 										</div>
 									</div>
-									<div className="mt-3 flex items-center gap-2">
-										<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Outlier Removal & Preprocessing</p>
-										<button
-											type="button"
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary statistics</p>
+										</div>
+										<div className="mt-3 rounded-lg border border-background-accent-high p-3">
+											<div className="overflow-x-auto">
+												<table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-xs text-over-background-highest-light dark:text-over-background-highest-dark">
+													<thead>
+														<tr>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Segment</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Signal kind</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Mean</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Median</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Std</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Min</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Max</th>
+														</tr>
+													</thead>
+													<tbody>
+														{summaryRows.length > 0 ? summaryRows.map((row: any) => (
+															<tr key={`${row.segment}-${row.channel}`} className="align-top">
+																<td className="border-b border-background-accent-high px-3 py-3">{row.segment ?? "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3 font-medium">{row.label || row.channel || "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{row.kind || "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.mean)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.median)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.std)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.min)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.max)}</td>
+															</tr>
+														)) : (
+															<tr>
+																<td className="px-3 py-3 text-over-background-medium" colSpan={8}>No summary statistics available.</td>
+															</tr>
+														)}
+													</tbody>
+												</table>
+											</div>
+										</div>	
+									</div>
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Outlier Removal & Preprocessing</p>
+											<button
+												type="button"
 												onClick={() => setShowOutlierRemovalLegend(true)}
-											className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
-											aria-label={showOutlierRemovalLegend ? "Hide outlier removal legend" : "Show outlier removal legend"}
-											aria-expanded={showOutlierRemovalLegend}
-											title="Show outlier removal legend"
-										>
-											?
-										</button>
-									</div>
-									{segmentAnalysisRows.length > 0 ? (
-										<div className="mt-3 space-y-4 text-sm">
+												className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
+												aria-label={showOutlierRemovalLegend ? "Hide outlier removal legend" : "Show outlier removal legend"}
+												aria-expanded={showOutlierRemovalLegend}
+												title="Show outlier removal legend"
+											>
+												?
+											</button>
+										</div>
+										{segmentAnalysisRows.length > 0 ? (
+											<div className="mt-3 space-y-4 text-sm">
 												{(Array.from(new Set(segmentAnalysisRows.map((row: any) => String(row.segment)))) as string[]).map(segmentId => {
 													const rows = segmentAnalysisRows.filter((row: any) => String(row.segment) === segmentId)
-												return (
+													return (
 														<div key={segmentId} className="rounded-lg border border-background-accent-high p-3">
 															<div className="mb-3 text-sm font-semibold">Segment {segmentId}</div>
-														<div className="overflow-x-auto">
-															<table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-xs text-over-background-highest-light dark:text-over-background-highest-dark">
-																<thead>
-																	<tr>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Kind</th>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples in</th>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples kept</th>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rejected</th>
-																		<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rate</th>
-																	</tr>
-																</thead>
-																<tbody>
-																	{rows.map((entry: any) => {
-																		const rowKey = `${entry.segment}-${entry.channel}`
-																		const detailLines = getDetailLines(entry)
-																		return (
-																			<tr key={rowKey} className="align-top">
-																				<td className="border-b border-background-accent-high px-3 py-3 font-medium">{entry.label || entry.channel}</td>
-																				<td className="border-b border-background-accent-high px-3 py-3">{entry.kind || "--"}</td>
-																				<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.inputCount)}</td>
-																				<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.keptCount)}</td>
-																				<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.rejectedCount)}</td>
-																				<td className="border-b border-background-accent-high px-3 py-3">
-																					<div className="flex items-center justify-between gap-3">
-																						<div>{formatTablePercent(entry.rate)}</div>
-																						{detailLines.length > 0 && (
-																							<button
-																								type="button"
-																								onClick={() => { setSelectedDetailEntry(entry); setShowDetailModal(true) }}
-																								className="ml-3 rounded px-2 py-1 text-xs text-over-background-low bg-background-accent-high hover:opacity-90"
-																							>
-																								Details
-																							</button>
-																						)}
-																					</div>
-																				</td>
-																			</tr>
+															<div className="overflow-x-auto">
+																<table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-xs text-over-background-highest-light dark:text-over-background-highest-dark">
+																	<thead>
+																		<tr>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Kind</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples in</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples kept</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rejected</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rate</th>
+																		</tr>
+																	</thead>
+																	<tbody>
+																		{rows.map((entry: any) => {
+																			const rowKey = `${entry.segment}-${entry.channel}`
+																			const detailLines = getDetailLines(entry)
+																			return (
+																				<tr key={rowKey} className="align-top">
+																					<td className="border-b border-background-accent-high px-3 py-3 font-medium">{entry.label || entry.channel}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{entry.kind || "--"}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.inputCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.keptCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.rejectedCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">
+																						<div className="flex items-center justify-between gap-3">
+																							<div>{formatTablePercent(entry.rate)}</div>
+																							{detailLines.length > 0 && (
+																								<button
+																									type="button"
+																									onClick={() => { setSelectedDetailEntry(entry); setShowDetailModal(true) }}
+																									className="ml-3 rounded px-2 py-1 text-xs text-over-background-low bg-background-accent-high hover:opacity-90"
+																								>
+																									Details
+																								</button>
+																							)}
+																						</div>
+																					</td>
+																				</tr>
 																		)
-																	})}
-																</tbody>
-															</table>
+																		})}
+																	</tbody>
+																</table>
+															</div>
 														</div>
-													</div>
 												)
 											})}
 										</div>
@@ -790,6 +846,7 @@ const Page = () => {
 										<p className="mt-3 text-sm text-over-background-medium">No preprocessing or outlier removal metadata was recorded for this analysis.</p>
 									)}
 								</div>
+							</div>
 							)}
 						</div>
 					)}
