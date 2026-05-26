@@ -68,6 +68,21 @@ RESERVED_FRAME_KEYS = {
 CHUNK_FILENAME_RE = re.compile(r"^sample(?P<sample>\d+)_chunk(?P<chunk>\d+)\.json$", re.IGNORECASE)
 SUPPORTED_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}
 ACC_AXIS_ORDER = {"x": 0, "y": 1, "z": 2}
+PRIMARY_LIBRARY = "biosppy"
+SECONDARY_LIBRARY = "neurokit2"
+
+SIGNAL_LIBRARY_POLICY: Dict[str, Dict[str, Any]] = {
+    "ecg": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "eda": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "ppg": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "emg": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "rsp": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "eeg": {"primary": PRIMARY_LIBRARY, "secondary": [SECONDARY_LIBRARY]},
+    "pcg": {"primary": PRIMARY_LIBRARY, "secondary": []},
+    "acc": {"primary": PRIMARY_LIBRARY, "secondary": []},
+    "eog": {"primary": SECONDARY_LIBRARY, "secondary": []},
+    "hrv": {"primary": SECONDARY_LIBRARY, "secondary": [], "derivedFrom": "ecg"},
+}
 
 # Global toggle set at startup to disable library-provided outlier removal
 DISABLE_OUTLIER_REMOVAL = False
@@ -235,6 +250,31 @@ def merge_signal_axis_maps(manifest: Dict[str, Any], overrides: Dict[str, str]) 
         if channel and axis in ACC_AXIS_ORDER:
             merged[channel] = axis
     return merged
+
+
+def signal_library_policy(signal_kind: Optional[str]) -> Dict[str, Any]:
+    normalized_kind = str(signal_kind or "").strip().lower()
+    policy = dict(SIGNAL_LIBRARY_POLICY.get(normalized_kind, {"primary": None, "secondary": []}))
+    policy["signalKind"] = normalized_kind or "unknown"
+    if normalized_kind and normalized_kind not in SIGNAL_LIBRARY_POLICY:
+        policy["primary"] = None
+        policy["secondary"] = []
+    return policy
+
+
+def build_library_policy_manifest() -> Dict[str, Any]:
+    signal_policies = {
+        signal_kind: signal_library_policy(signal_kind)
+        for signal_kind in sorted(SUPPORTED_SIGNAL_KINDS)
+    }
+    signal_policies["hrv"] = signal_library_policy("hrv")
+
+    return {
+        "summary": "BioSPPy primary + NeuroKit2 secondary on overlapping signals",
+        "primaryLibrary": PRIMARY_LIBRARY,
+        "secondaryLibrary": SECONDARY_LIBRARY,
+        "signalPolicies": signal_policies,
+    }
 
 
 def normalize_channel_list(value: Any) -> List[str]:
@@ -1534,6 +1574,7 @@ def analyze_channel(
         "signalKind": normalized_kind or "generic",
         "summary": basic_stats(values),
     }
+    record["libraryPolicy"] = signal_library_policy(normalized_kind)
 
     record["_indices"] = indices
     record["_values"] = values
@@ -1552,6 +1593,7 @@ def analyze_channel(
         record["analysis"] = analysis_override
         analysis_record = record.get("analysis")
         if isinstance(analysis_record, dict):
+            analysis_record.setdefault("libraryPolicy", record["libraryPolicy"])
             # Apply any library-provided outlier removal available for the override
             try:
                 _apply_biosppy_outlier_removal(analysis_record, normalized_kind, values, sample_rate)
@@ -1604,6 +1646,7 @@ def analyze_channel(
 
     analysis_record = record.get("analysis")
     if isinstance(analysis_record, dict):
+        analysis_record.setdefault("libraryPolicy", record["libraryPolicy"])
         extract_neurokit2_features(analysis_record)
 
         # Promote preprocessing metadata to the channel-level record for visibility
@@ -1908,6 +1951,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
     analysis_manifest["channelSignalKinds"] = merge_signal_kind_maps(manifest, selected_signal_kinds)
     analysis_manifest["channelSignalAxes"] = merge_signal_axis_maps(manifest, selected_signal_axes)
     analysis_manifest["eegChannels"] = normalize_channel_list(manifest.get("eegChannels"))
+    library_policy = build_library_policy_manifest()
 
     grouped_entries = group_entries_by_segment(chunk_entries)
     segment_results: List[Dict[str, Any]] = []
@@ -1941,6 +1985,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
         total_chunks += len(segment_files)
 
     biosppy_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"]
+    neurokit2_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "hrv"]
 
     return {
         "sessionId": manifest.get("sessionId"),
@@ -1952,11 +1997,15 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             "name": "python-analysis-worker",
             "biosppyAvailable": process_biosppy_signal is not None,
             "neurokit2Available": nk is not None,
+            "libraryPolicy": library_policy,
             "libraryStrategy": {
+                "summary": library_policy["summary"],
                 "biosppy": biosppy_strategy,
-                "neurokit2": ["ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "hrv"],
+                "neurokit2": neurokit2_strategy,
+                "signalPolicies": library_policy["signalPolicies"],
             },
         },
+        "analysisPolicy": library_policy,
         "analysisConfig": {
             "batchMode": "load-session-process-entire-dataset-store-features",
             "channelSignalKinds": analysis_manifest.get("channelSignalKinds", {}),
@@ -1965,6 +2014,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             "signalKindOverrides": selected_signal_kinds,
             "signalAxisOverrides": selected_signal_axes,
             "edaMethod": eda_method or "neurokit2-default",
+            "libraryPolicy": library_policy,
         },
         "segments": segment_results,
         "warnings": [],

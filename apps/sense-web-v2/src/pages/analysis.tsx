@@ -72,6 +72,18 @@ function formatNumber(value: unknown): string {
 	return value.toFixed(2)
 }
 
+function formatLibraryName(value: unknown): string {
+	if (typeof value !== "string" || !value.trim()) return "--"
+	if (value === "biosppy") return "BioSPPy"
+	if (value === "neurokit2") return "NeuroKit2"
+	return value
+}
+
+function formatSignalList(value: unknown): string {
+	if (!Array.isArray(value) || value.length === 0) return "--"
+	return value.map(item => String(item).toUpperCase()).join(", ")
+}
+
 const ANALYSIS_STORAGE_KEY = "analysis:last"
 
 const Page = () => {
@@ -87,6 +99,7 @@ const Page = () => {
 	const [showProgressPanel, setShowProgressPanel] = useState(false)
 	const [outlierRemovalEnabled, setOutlierRemovalEnabled] = useState(true)
 	const [showOutlierRemovalLegend, setShowOutlierRemovalLegend] = useState(false)
+	const [showLibraryPolicyLegend, setShowLibraryPolicyLegend] = useState(false)
 	const [edaMethodSelection, setEdaMethodSelection] = useState<"neurokit" | "biosppy" | "auto">("auto")
 	const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null)
 	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
@@ -173,6 +186,7 @@ const Page = () => {
 	}, [channels, manifest, signalAxes, signalKinds])
 
 	const analysisSource = analysisResult ?? manifest?.analysis ?? null
+	const analysisPolicy = analysisSource?.analysisPolicy ?? analysisSource?.analysisConfig?.libraryPolicy ?? analysisSource?.worker?.libraryPolicy ?? null
 
 	const getChannelAnalysisMetadata = useCallback((channel: any) => {
 		const analysis = channel?.analysis ?? {}
@@ -194,6 +208,19 @@ const Page = () => {
 		window.addEventListener("keydown", onKeyDown)
 		return () => window.removeEventListener("keydown", onKeyDown)
 	}, [showOutlierRemovalLegend])
+
+	useEffect(() => {
+		if (!showLibraryPolicyLegend) return
+
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				setShowLibraryPolicyLegend(false)
+			}
+		}
+
+		window.addEventListener("keydown", onKeyDown)
+		return () => window.removeEventListener("keydown", onKeyDown)
+	}, [showLibraryPolicyLegend])
 
 	const getOutlierRemovalReason = useCallback((outlierRemoval: any) => {
 		if (!outlierRemoval) return ""
@@ -667,6 +694,32 @@ const Page = () => {
 							{currentAnalysis && (
 								<div className="rounded-xl border border-background-accent p-4">
 									<div className="flex items-center gap-2">
+										<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Library policy</p>
+										<button
+											type="button"
+											onClick={() => setShowLibraryPolicyLegend(true)}
+											className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
+											aria-label={showLibraryPolicyLegend ? "Hide library policy help" : "Show library policy help"}
+											aria-expanded={showLibraryPolicyLegend}
+											title="Show library policy help"
+										>
+											?
+										</button>
+									</div>
+									<p className="text-sm text-over-background-highest-light dark:text-over-background-highest-dark p-2">
+										{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}
+									</p>
+									<div className="grid gap-3 sm:grid-cols-2">
+										<div className="rounded-lg border border-background-accent-high px-3 py-2">
+											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary library</div>
+											<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+										</div>
+										<div className="rounded-lg border border-background-accent-high px-3 py-2">
+											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary library</div>
+											<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+										</div>
+									</div>
+									<div className="mt-3 flex items-center gap-2">
 										<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Outlier Removal & Preprocessing</p>
 										<button
 											type="button"
@@ -811,6 +864,50 @@ const Page = () => {
 				</div>
 			)}
 
+			{showLibraryPolicyLegend && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+					onClick={() => setShowLibraryPolicyLegend(false)}
+					role="presentation"
+				>
+					<div
+						className="w-full max-w-3xl rounded-xl bg-background-accent-dark p-5 shadow-2xl dark:bg-background-accent-light"
+						onClick={event => event.stopPropagation()}
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="library-policy-legend-title"
+					>
+						<div className="flex items-start justify-between gap-4">
+							<div>
+								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-highest-dark dark:text-over-background-highest-light">Help</p>
+								<h2 id="library-policy-legend-title" className="mt-1 text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">
+									Library policy summary
+								</h2>
+							</div>
+							<button
+								type="button"
+								onClick={() => setShowLibraryPolicyLegend(false)}
+								className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-white transition-colors hover:opacity-90"
+								aria-label="Close library policy help"
+							>
+								Close
+							</button>
+						</div>
+						<div className="mt-4 space-y-4 text-[11px] text-over-background-medium dark:text-over-background-medium-light">
+							<div className="grid gap-2 sm:grid-cols-2">
+								<div>BioSPPy primary signals: ECG, EDA, PPG, EMG, RSP, EEG, PCG, ACC</div>
+								<div>NeuroKit2 secondary signals: ECG, EDA, PPG, EMG, RSP, EEG</div>
+								<div>NeuroKit2-only signals: EOG, HRV</div>
+								<div>Stored policy coverage: {formatSignalList(Object.keys(analysisPolicy?.signalPolicies ?? {}))}</div>
+							</div>
+							<p className="text-[11px] text-over-background-medium-dark dark:text-over-background-medium-light">
+								HRV is derived from ECG.
+							</p>
+						</div>
+					</div>
+				</div>
+			)}
+
 			{showDetailModal && selectedDetailEntry && (
 				<div
 					className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
@@ -846,7 +943,7 @@ const Page = () => {
 									<div className="text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">{formatTableCount(selectedDetailEntry.inputCount)}</div>
 								</div>
 								<div>
-									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light\">Samples kept</div>
+									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light">Samples kept</div>
 									<div className="text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">{formatTableCount(selectedDetailEntry.keptCount)}</div>
 								</div>
 								<div>
