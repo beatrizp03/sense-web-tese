@@ -173,6 +173,23 @@ def _correct_ecg_peak_outliers(signal: Any, result_mapping: Dict[str, Any], samp
         result_mapping["rpeaks"] = corrected_peaks
 
 
+def _flatten_numeric(value: Any) -> List[float]:
+    """Recursively collect finite numbers from a (possibly multi-dimensional)
+    sequence. Some BioSPPy outputs are 2-D — e.g. EEG band powers are
+    (windows x channels) and ECG/PPG templates are (beats x samples). Without
+    flattening, only 1-D arrays (the time axes) yield stats, so the meaningful
+    features are silently dropped."""
+    result: List[float] = []
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            result.extend(_flatten_numeric(item))
+        return result
+    numeric = _safe_float(value)
+    if numeric is not None:
+        result.append(numeric)
+    return result
+
+
 def _extract_features(result_mapping: Dict[str, Any]) -> Dict[str, Any]:
     features: Dict[str, Any] = {}
     for key, raw_value in result_mapping.items():
@@ -183,11 +200,7 @@ def _extract_features(result_mapping: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if isinstance(value, list):
-            numeric_values: List[float] = []
-            for item in value:
-                numeric_item = _safe_float(item)
-                if numeric_item is not None:
-                    numeric_values.append(numeric_item)
+            numeric_values = _flatten_numeric(value)
 
             if numeric_values:
                 stats = _numeric_stats(numeric_values)

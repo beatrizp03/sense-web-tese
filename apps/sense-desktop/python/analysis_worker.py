@@ -84,10 +84,39 @@ SIGNAL_LIBRARY_POLICY: Dict[str, Dict[str, Any]] = {
     "hrv": {"primary": SECONDARY_LIBRARY, "secondary": [], "derivedFrom": "ecg"},
 }
 
-# Global toggle set at startup to disable library-provided outlier removal
 DISABLE_OUTLIER_REMOVAL = False
+# Global default library preference: "neurokit", "biosppy", or None (run both).
 SELECTED_LIBRARY_PREFERENCE: Optional[str] = None
+SIGNAL_KIND_LIBRARY_PREFERENCES: Dict[str, str] = {}
+# Channel kind/axis overrides and exclusions sourced from the run config.
+SIGNAL_KIND_OVERRIDES: Dict[str, str] = {}
+SIGNAL_AXIS_OVERRIDES: Dict[str, str] = {}
+EXCLUDED_CHANNELS: set = set()
 
+def _normalize_library_pref(value: Any) -> Optional[str]:
+    """Normalize a free-form library token to "neurokit", "biosppy", or Default."""
+    text = str(value or "").strip().lower()
+    if text in ("neurokit", "neurokit2", "nk"):
+        return "neurokit"
+    if text in ("biosppy", "bio"):
+        return "biosppy"
+    return None
+
+
+def resolve_library_preference(signal_kind: Optional[str]) -> Optional[str]:
+    """Resolve which single library to use for a signal kind."""
+    normalized_kind = str(signal_kind or "").strip().lower()
+    if normalized_kind and normalized_kind in SIGNAL_KIND_LIBRARY_PREFERENCES:
+        return SIGNAL_KIND_LIBRARY_PREFERENCES[normalized_kind]
+    return SELECTED_LIBRARY_PREFERENCE
+
+
+def _biosppy_enabled_for(signal_kind: Optional[str]) -> bool:
+    return resolve_library_preference(signal_kind) != "neurokit"
+
+
+def _neurokit_enabled_for(signal_kind: Optional[str]) -> bool:
+    return nk is not None and resolve_library_preference(signal_kind) != "biosppy"
 
 def _allows_biosppy_progress() -> bool:
     return SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != "neurokit"
@@ -109,6 +138,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run post-hoc signal analysis for a SENSE session")
     parser.add_argument("--session-folder", required=True, help="Path to a session folder")
     parser.add_argument("--output-folder", required=True, help="Path to the analysis output folder")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("SENSE_ANALYSIS_CONFIG", "").strip() or None,
+        help=(
+            "Path to a JSON run-config file. When provided it supersedes the legacy "
+            "SENSE_ANALYSIS_* env-vars and the --eda-method/--disable-outlier-removal flags."
+        ),
+    )
     parser.add_argument(
         "--eda-method",
         default=os.environ.get("SENSE_ANALYSIS_EDA_METHOD", "").strip() or "",
@@ -234,6 +271,66 @@ def load_signal_axis_overrides() -> Dict[str, str]:
         return {}
 
     return normalize_signal_axis_map(parsed)
+
+
+def normalize_signal_kind_library_map(raw_map: Any) -> Dict[str, str]:
+    """Normalize a {signalKind: library} map, dropping unknown kinds and the
+    'auto'/None entries that mean 'use the global default'."""
+    if not isinstance(raw_map, dict):
+        return {}
+
+    normalized: Dict[str, str] = {}
+    for kind, library in raw_map.items():
+        if not isinstance(kind, str):
+            continue
+        candidate_kind = kind.strip().lower()
+        if candidate_kind not in SUPPORTED_SIGNAL_KINDS:
+            continue
+        candidate_library = _normalize_library_pref(library)
+        if candidate_library is not None:
+            normalized[candidate_kind] = candidate_library
+    return normalized
+
+
+def normalize_excluded_channels(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+
+    result: List[str] = []
+    for item in value:
+        if isinstance(item, str):
+            channel = item.strip()
+            if channel and channel not in result:
+                result.append(channel)
+    return result
+
+
+def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
+    config_path = getattr(args, "config", None)
+    if config_path:
+        path = Path(config_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Analysis config file not found: {path}")
+        raw = load_json(path)
+        if not isinstance(raw, dict):
+            raise ValueError("Analysis config file must contain a JSON object")
+        return {
+            "libraryPreference": _normalize_library_pref(raw.get("libraryPreference")),
+            "signalKindLibraries": normalize_signal_kind_library_map(raw.get("signalKindLibraries")),
+            "disableOutlierRemoval": bool(raw.get("disableOutlierRemoval", False)),
+            "signalKinds": normalize_signal_kind_map(raw.get("channelSignalKinds")),
+            "signalAxes": normalize_signal_axis_map(raw.get("channelSignalAxes")),
+            "excludedChannels": normalize_excluded_channels(raw.get("excludedChannels")),
+        }
+
+    return {
+        "libraryPreference": _normalize_library_pref(getattr(args, "eda_method", None)),
+        "signalKindLibraries": {},
+        "disableOutlierRemoval": bool(getattr(args, "disable_outlier_removal", False)),
+        "signalKinds": load_signal_kind_overrides(),
+        "signalAxes": load_signal_axis_overrides(),
+        "excludedChannels": [],
+    }
 
 
 def merge_signal_kind_maps(manifest: Dict[str, Any], overrides: Dict[str, str]) -> Dict[str, str]:
@@ -484,6 +581,8 @@ def count_progress_units(
         acc_group_counted = False
         eeg_group_counted = False
         for channel_key in channels:
+            if channel_key in EXCLUDED_CHANNELS:
+                continue
             normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
             normalized_axis = infer_signal_axis(manifest, channel_key) if normalized_kind == "acc" else None
             if normalized_kind == "acc" and normalized_axis in ACC_AXIS_ORDER:
@@ -746,9 +845,10 @@ def _coerce_signal(values: Sequence[float]) -> Any:
 
 
 def apply_biosppy_analysis(record: Dict[str, Any], kind: str, values: Sequence[float], sample_rate: float) -> None:
-    # Respect global preference: if 'neurokit' was explicitly requested, skip BioSPPy
-    if SELECTED_LIBRARY_PREFERENCE == 'neurokit':
-        record.setdefault("warnings", []).append("BioSPPy skipped due to library preference: neurokit")
+    if resolve_library_preference(kind) == 'neurokit':
+        record.setdefault("warnings", []).append(
+            f"BioSPPy skipped due to library preference: neurokit ({(kind or 'signal').upper()})"
+        )
         return
 
     if process_biosppy_signal is None:
@@ -1157,7 +1257,7 @@ def analyze_ecg(
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy ECG", channel_key, "detecting peaks & features"))
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("ecg"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 ECG", channel_key, "processing & HRV"))
@@ -1212,7 +1312,7 @@ def analyze_eda(
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EDA", channel_key, "detecting peaks & features"))
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("eda"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EDA", channel_key, "processing & decomposition"))
@@ -1257,7 +1357,7 @@ def analyze_ppg(
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy PPG", channel_key, "detecting peaks & features"))
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("ppg"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 PPG", channel_key, "processing & features"))
@@ -1297,7 +1397,7 @@ def analyze_emg(
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EMG", channel_key, "detecting peaks & features"))
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("emg"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EMG", channel_key, "processing & features"))
@@ -1336,7 +1436,7 @@ def analyze_rsp(
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy RSP", channel_key, "detecting peaks & features"))
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("rsp"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 RSP", channel_key, "processing & features"))
@@ -1434,7 +1534,7 @@ def analyze_eog(
     signal, preprocessing = _prepare_signal_for_analysis("eog", values, sample_rate)
     record["preprocessing"] = preprocessing
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("eog"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EOG", channel_key, "processing & features"))
@@ -1473,7 +1573,7 @@ def analyze_eeg(
 
     apply_biosppy_analysis(record, "eeg", signal, sample_rate)
 
-    if nk is not None and (SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != 'biosppy'):
+    if _neurokit_enabled_for("eeg"):
         try:
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EEG", channel_key, "processing & features"))
@@ -1593,7 +1693,6 @@ def analyze_channel(
         record["analysis"] = analysis_override
         analysis_record = record.get("analysis")
         if isinstance(analysis_record, dict):
-            analysis_record.setdefault("libraryPolicy", record["libraryPolicy"])
             # Apply any library-provided outlier removal available for the override
             try:
                 _apply_biosppy_outlier_removal(analysis_record, normalized_kind, values, sample_rate)
@@ -1646,7 +1745,6 @@ def analyze_channel(
 
     analysis_record = record.get("analysis")
     if isinstance(analysis_record, dict):
-        analysis_record.setdefault("libraryPolicy", record["libraryPolicy"])
         extract_neurokit2_features(analysis_record)
 
         # Promote preprocessing metadata to the channel-level record for visibility
@@ -1723,6 +1821,31 @@ def process_segment(
                 progress.start_analysis()
         
         indices, values = channel_series(frames, channel_key)
+
+        if channel_key in EXCLUDED_CHANNELS:
+            excluded_result = analyze_channel(
+                channel_key=channel_key,
+                label=label,
+                kind=None,
+                values=values,
+                sample_rate=sample_rate,
+                indices=indices,
+                output_folder=output_folder / f"segment-{segment_index}",
+                eda_method=eda_method,
+                progress=None,
+            )
+            channel_record = dict(excluded_result)
+            channel_record["channel"] = channel_key
+            channel_record["label"] = label
+            channel_record["signalKind"] = kind or "generic"
+            channel_record["excluded"] = True
+            if axis in ACC_AXIS_ORDER:
+                channel_record["accAxis"] = axis
+            channel_record.setdefault("warnings", []).append(
+                "Channel excluded from library analysis; exported raw series and basic statistics only."
+            )
+            result_channels.append(channel_record)
+            continue
 
         if (kind or "").lower() == "acc" and axis in ACC_AXIS_ORDER:
             if not values:
@@ -1938,15 +2061,15 @@ def emit_phase_progress(signal_index: int, phase: str, total_signals: int) -> No
 
 
 def build_result(session_folder: Path, output_folder: Path, eda_method: Optional[str]) -> Tuple[Dict[str, Any], AnalysisProgressTracker]:
-    print("[progress] 0% Loading chunks and parsing data", flush=True)
+    print("[progress] 1% Loading chunks and parsing data", flush=True)
     manifest = load_session_manifest(session_folder)
     sample_rate = resolve_sample_rate(manifest)
     chunk_entries = discover_chunk_entries(session_folder, manifest)
     if not chunk_entries:
         raise FileNotFoundError(f"No chunk files found in {session_folder}")
 
-    selected_signal_kinds = load_signal_kind_overrides()
-    selected_signal_axes = load_signal_axis_overrides()
+    selected_signal_kinds = dict(SIGNAL_KIND_OVERRIDES)
+    selected_signal_axes = dict(SIGNAL_AXIS_OVERRIDES)
     analysis_manifest = dict(manifest)
     analysis_manifest["channelSignalKinds"] = merge_signal_kind_maps(manifest, selected_signal_kinds)
     analysis_manifest["channelSignalAxes"] = merge_signal_axis_maps(manifest, selected_signal_axes)
@@ -1997,12 +2120,10 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             "name": "python-analysis-worker",
             "biosppyAvailable": process_biosppy_signal is not None,
             "neurokit2Available": nk is not None,
-            "libraryPolicy": library_policy,
             "libraryStrategy": {
                 "summary": library_policy["summary"],
                 "biosppy": biosppy_strategy,
                 "neurokit2": neurokit2_strategy,
-                "signalPolicies": library_policy["signalPolicies"],
             },
         },
         "analysisPolicy": library_policy,
@@ -2013,8 +2134,10 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             **({"eegChannels": analysis_manifest.get("eegChannels", [])} if analysis_manifest.get("eegChannels") else {}),
             "signalKindOverrides": selected_signal_kinds,
             "signalAxisOverrides": selected_signal_axes,
+            "excludedChannels": sorted(EXCLUDED_CHANNELS),
+            "libraryPreference": SELECTED_LIBRARY_PREFERENCE or "auto",
+            "signalKindLibraries": dict(SIGNAL_KIND_LIBRARY_PREFERENCES),
             "edaMethod": eda_method or "neurokit2-default",
-            "libraryPolicy": library_policy,
         },
         "segments": segment_results,
         "warnings": [],
@@ -2080,6 +2203,16 @@ def write_summary_csv(output_folder: Path, result: Dict[str, Any]) -> None:
 
 
 
+def _compact_meta_value(value: Any, max_list: int = 25) -> Any:
+    if isinstance(value, dict):
+        return {key: _compact_meta_value(item, max_list) for key, item in value.items()}
+    if isinstance(value, list):
+        if len(value) > max_list:
+            return f"<{len(value)} items omitted — see analysis.json>"
+        return [_compact_meta_value(item, max_list) for item in value]
+    return value
+
+
 def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
     csv_path = output_folder / "features.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
@@ -2110,7 +2243,7 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                             channel.get("signalKind"),
                             "meta",
                             "preprocessing",
-                            json.dumps(sanitize_for_json(preprocessing), ensure_ascii=False),
+                            json.dumps(_compact_meta_value(sanitize_for_json(preprocessing)), ensure_ascii=False),
                         ]
                     )
 
@@ -2126,7 +2259,7 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                             channel.get("signalKind"),
                             "meta",
                             "outlierRemoval",
-                            json.dumps(sanitize_for_json(outlier), ensure_ascii=False),
+                            json.dumps(_compact_meta_value(sanitize_for_json(outlier)), ensure_ascii=False),
                         ]
                     )
 
@@ -2136,8 +2269,10 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         continue
 
                     for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                        # Exclude time-axis auxiliary features (ts, *_ts, ts_*) from features.csv
-                        if feature_name == "ts" or feature_name.endswith("_ts") or feature_name.startswith("ts_"):
+                        # Exclude time-axis ('ts') columns from features.csv, including
+                        # stat-flattened variants like 'features_ts_mean'/'templates_ts_std'
+                        # where 'ts' sits mid-name. Match 'ts' as any underscore token.
+                        if "ts" in feature_name.split("_"):
                             continue
 
                         if isinstance(value, (int, float, str, bool)) or value is None:
@@ -2160,13 +2295,16 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
 
 def append_features_readme_section(output_folder: Path) -> None:
     """Append a human-readable 'Features extracted' section to README.md describing
-    the features present in `features.csv` grouped by library. Uses a small
-    mapping for well-known keys and conservative fallbacks for unknown names.
-    """
+    the features present in `features.csv` grouped by library. """
     features_path = output_folder / "features.csv"
     readme_path = output_folder / "README.md"
     if not features_path.exists():
         return
+
+    try:
+        csv.field_size_limit(10 ** 7)
+    except Exception:
+        pass
 
     # Collect features per library
     libs: Dict[str, set] = {}
@@ -2179,10 +2317,11 @@ def append_features_readme_section(output_folder: Path) -> None:
                     continue
                 lib = row[4] or "unknown"
                 feat = (row[5] or "").strip()
-                # Exclude time-axis auxiliary columns (ts / *_ts / ts_*)
+                # Exclude time-axis ('ts') columns, incl. mid-name variants like
+                # 'features_ts_mean'. Match 'ts' as any underscore token.
                 if not feat:
                     continue
-                if feat == "ts" or feat.endswith("_ts") or feat.startswith("ts_"):
+                if "ts" in feat.split("_"):
                     continue
                 libs.setdefault(lib, set()).add(feat)
     except Exception:
@@ -2238,6 +2377,16 @@ def append_features_readme_section(output_folder: Path) -> None:
         "half_rec": "Half-recovery time (seconds) for SCR pulses.",
         "six_rec": "63% recovery time (seconds) for SCR pulses.",
 
+        # NeuroKit2 EDA / SCR features
+        "SCR_Peaks": "Sample indices of detected Skin Conductance Response (SCR) peaks.",
+        "SCR_Onsets": "Sample indices where each SCR begins (onset).",
+        "SCR_Height": "Skin conductance level at each SCR peak.",
+        "SCR_Amplitude": "Amplitude of each SCR (rise above the tonic level).",
+        "SCR_RiseTime": "Time from SCR onset to peak (seconds).",
+        "SCR_RecoveryTime": "Time from SCR peak to half-amplitude recovery (seconds).",
+        "SCR_Recovery": "Sample indices of SCR half-recovery points.",
+        "sampling_rate": "Sampling rate used for the analysis (Hz).",
+
         # BioSPPy PPG outputs
         "peaks": "Indices of detected PPG pulse peaks.",
         "templates_ts": "Time axis for PPG pulse templates (seconds).",
@@ -2251,6 +2400,16 @@ def append_features_readme_section(output_folder: Path) -> None:
         "resp_rate_ts": "Time axis for respiration rate samples (seconds).",
         "resp_rate": "Instantaneous respiration rate (Hz).",
         "resp_rate_mean": "Mean respiration rate over the interval.",
+
+        # BioSPPy EEG band-power outputs (per time window, per channel)
+        "theta": "Theta-band (4-8 Hz) power over time windows.",
+        "alpha_low": "Low alpha-band (8-10 Hz) power over time windows.",
+        "alpha_high": "High alpha-band (10-13 Hz) power over time windows.",
+        "beta": "Beta-band (13-25 Hz) power over time windows.",
+        "gamma": "Gamma-band (25-40 Hz) power over time windows.",
+        "plf": "Phase-Locking Factor between EEG channel pairs.",
+        "plf_pairs": "Channel index pairs used for the phase-locking factor.",
+        "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
         # NeuroKit2 EMG features
         "EMG_Raw": "Raw EMG signal samples (preprocessed).",
         "EMG_Clean": "Cleaned EMG signal after filtering/detrending.",
@@ -2299,10 +2458,18 @@ def append_features_readme_section(output_folder: Path) -> None:
         "RRV_SampEn": "Sample entropy of respiratory rate variability.",
     }
 
+    stat_suffixes = ("_mean", "_std", "_median", "_min", "_max", "_count")
+
     def describe(feature: str, lib: str) -> str:
         if feature in known:
             return known[feature]
-        return "See NeuroKit2 or Biosspy docs."
+        for suffix in stat_suffixes:
+            if feature.endswith(suffix):
+                base = feature[: -len(suffix)]
+                if base in known:
+                    stat = suffix[1:]
+                    return f"{stat.capitalize()} of: {known[base]}"
+        return "See NeuroKit2 or BioSPPy docs."
 
     lines: List[str] = []
     lines.append("## Features extracted by analysis\n")
@@ -2434,9 +2601,7 @@ def write_signal_csvs(
     else:
         sample_rate_field = int(sr_value) if sr_value.is_integer() else sr_value
 
-    # Prefer an explicit top-level `device` label (set by the app) for the
-    # Device metadata. Fall back to csvHeader.Device, then to deviceType
-    # labels.
+
     device_field = None
     if isinstance(manifest.get("device"), str) and manifest.get("device").strip():
         device_field = manifest.get("device").strip()
@@ -2573,16 +2738,17 @@ def write_signal_csvs(
 
 def main() -> int:
     args = parse_args()
-    # make disable flag visible to helper functions
-    global DISABLE_OUTLIER_REMOVAL
-    DISABLE_OUTLIER_REMOVAL = bool(getattr(args, "disable_outlier_removal", False))
-    # Make renderer-specified library preference visible to helper functions.
-    global SELECTED_LIBRARY_PREFERENCE
-    pref_raw = getattr(args, "eda_method", None)
-    if isinstance(pref_raw, str) and pref_raw.strip():
-        SELECTED_LIBRARY_PREFERENCE = pref_raw.strip().lower()
-    else:
-        SELECTED_LIBRARY_PREFERENCE = None
+    config = load_run_config(args)
+    global DISABLE_OUTLIER_REMOVAL, SELECTED_LIBRARY_PREFERENCE, SIGNAL_KIND_LIBRARY_PREFERENCES
+    global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS
+    DISABLE_OUTLIER_REMOVAL = bool(config.get("disableOutlierRemoval", False))
+    SELECTED_LIBRARY_PREFERENCE = config.get("libraryPreference")
+    SIGNAL_KIND_LIBRARY_PREFERENCES = dict(config.get("signalKindLibraries", {}))
+    SIGNAL_KIND_OVERRIDES = dict(config.get("signalKinds", {}))
+    SIGNAL_AXIS_OVERRIDES = dict(config.get("signalAxes", {}))
+    EXCLUDED_CHANNELS = set(config.get("excludedChannels", []))
+
+    eda_method = SELECTED_LIBRARY_PREFERENCE or "auto"
     session_folder = Path(args.session_folder).resolve()
     output_folder = Path(args.output_folder).resolve()
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -2593,7 +2759,7 @@ def main() -> int:
         result, progress = build_result(
             session_folder,
             output_folder,
-            args.eda_method,
+            eda_method,
         )
         analyze_seconds = time.perf_counter() - analysis_started
         chunk_count = int(result.get("chunkCount") or 0)
@@ -2670,7 +2836,7 @@ CSV export is performed after analysis completes.
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
                 f"— {chunk_count} chunks, {frame_count} frames"
-                f"{sample_rate_suffix} (eda_method={args.eda_method}, "
+                f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}MB)",
                 flush=True,
             )
@@ -2680,7 +2846,7 @@ CSV export is performed after analysis completes.
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
                 f"— {chunk_count} chunks, {frame_count} frames"
-                f"{sample_rate_suffix} (eda_method={args.eda_method}, "
+                f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}KB)",
                 flush=True,
             )

@@ -78,6 +78,46 @@ function normalizeSignalAxesPayload(signalAxes) {
   );
 }
 
+function normalizeLibraryPreference(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (text === 'neurokit' || text === 'neurokit2' || text === 'nk') return 'neurokit';
+  if (text === 'biosppy' || text === 'bio') return 'biosppy';
+  return 'auto';
+}
+
+function normalizeSignalKindLibraries(map) {
+  if (!map || typeof map !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(map)
+      .map(([kind, library]) => [String(kind).trim().toLowerCase(), normalizeLibraryPreference(library)])
+      .filter(([kind, library]) => kind && (library === 'neurokit' || library === 'biosppy'))
+  );
+}
+
+function normalizeExcludedChannels(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = [];
+  for (const item of list) {
+    if (typeof item === 'string' && item.trim() && !seen.includes(item.trim())) {
+      seen.push(item.trim());
+    }
+  }
+  return seen;
+}
+
+function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
+  const opts = options || {};
+  return {
+    version: 1,
+    libraryPreference: normalizeLibraryPreference(opts.edaMethod ?? opts.libraryPreference),
+    signalKindLibraries: normalizeSignalKindLibraries(opts.signalKindLibraries),
+    disableOutlierRemoval: opts.outlierRemoval === false,
+    channelSignalKinds: signalKinds,
+    channelSignalAxes: signalAxes,
+    excludedChannels: normalizeExcludedChannels(opts.excludedChannels)
+  };
+}
+
 function loadSessionSettingsHistoryFromDisk() {
   try {
     const historyPath = getSessionSettingsHistoryPath();
@@ -102,12 +142,6 @@ function saveSessionSettingsHistoryToDisk(history) {
   }
 }
 
-// Resolves how to invoke the post-hoc analysis worker. Two shapes are possible:
-//   - 'frozen': a PyInstaller-built standalone binary (no .py script arg).
-//   - 'python': a Python interpreter that runs analysis_worker.py.
-// In a packaged build we refuse to fall back to a system `python` on PATH,
-// because end users overwhelmingly will not have one and we'd rather error
-// loudly than spawn a confusing ENOENT/command-not-found at analysis time.
 function resolveAnalysisWorkerCommand(preferredExecutable) {
   const explicitExecutable = preferredExecutable || process.env.PYTHON_EXECUTABLE || process.env.PYTHON;
   if (explicitExecutable) {
@@ -207,34 +241,20 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       PYTHONUNBUFFERED: '1'
     };
 
-    // Respect renderer-requested EDA/library preference when provided
-    if (options && typeof options.edaMethod === 'string' && options.edaMethod.trim().length > 0) {
-      env.SENSE_ANALYSIS_EDA_METHOD = options.edaMethod.trim();
-    }
-
-    // Wire renderer outlier-removal checkbox to worker: if renderer explicitly
-    // sets `outlierRemoval` and it's false, disable library outlier removal.
-    if (options && typeof options.outlierRemoval === 'boolean') {
-      if (!options.outlierRemoval) {
-        env.SENSE_ANALYSIS_DISABLE_OUTLIER_REMOVAL = '1';
-      } else {
-        // Ensure not set when enabled
-        delete env.SENSE_ANALYSIS_DISABLE_OUTLIER_REMOVAL;
-      }
-    }
-
-    if (Object.keys(selectedSignalKinds).length > 0) {
-      env.SENSE_ANALYSIS_SIGNAL_KINDS_JSON = JSON.stringify(selectedSignalKinds);
-    }
-
-    if (Object.keys(selectedSignalAxes).length > 0) {
-      env.SENSE_ANALYSIS_SIGNAL_AXES_JSON = JSON.stringify(selectedSignalAxes);
+    const runConfig = buildAnalysisRunConfig(options, selectedSignalKinds, selectedSignalAxes);
+    const configPath = path.join(outputDir, 'analysis-config.json');
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(runConfig, null, 2));
+    } catch (writeError) {
+      reject(new Error(`Failed to write analysis config file: ${writeError.message}`));
+      return;
     }
 
     const args = [
       ...workerCommand.scriptArgs,
       '--session-folder', sessionFolderPath,
-      '--output-folder', outputDir
+      '--output-folder', outputDir,
+      '--config', configPath
     ];
 
     const child = spawn(workerCommand.command, args, {
