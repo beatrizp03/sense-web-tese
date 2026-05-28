@@ -773,11 +773,17 @@ class AnalysisProgressTracker:
         percentage = self._current_percentage()
         label_changed = label != self.last_emitted_label
         percentage_changed = percentage > self.last_percentage
-        
-        if force or label_changed or percentage_changed:
-            print(f"[progress] {percentage}% {label}", flush=True)
-            self.last_percentage = percentage
-            self.last_emitted_label = label
+
+        if not (force or label_changed or percentage_changed):
+            return
+
+        display_percentage = percentage
+        if display_percentage <= self.last_percentage:
+            display_percentage = min(self.last_percentage + 1, 99)
+
+        print(f"[progress] {display_percentage}% {label}", flush=True)
+        self.last_percentage = display_percentage
+        self.last_emitted_label = label
 
     def mark_data_prepared(self) -> None:
         self.data_prepared = True
@@ -1578,14 +1584,41 @@ def analyze_eeg(
             if progress is not None:
                 progress.advance_neurokit2(0.2, _progress_label("NeuroKit2 EEG", channel_key, "processing & features"))
 
-            signals, info = nk.eeg_process(signal, sampling_rate=float(sample_rate))
+            import mne
+
+            matrix = np.asarray(signal, dtype=float)
+            if matrix.ndim == 1:
+                matrix = matrix.reshape(-1, 1)
+            channel_count = int(matrix.shape[1])
+            mne_info = mne.create_info(
+                [f"EEG{index + 1}" for index in range(channel_count)],
+                sfreq=float(sample_rate),
+                ch_types="eeg",
+            )
+            raw = mne.io.RawArray(matrix.T, mne_info, verbose="ERROR")
+
+            power = nk.eeg_power(
+                raw,
+                sampling_rate=float(sample_rate),
+                frequency_band=["Delta", "Theta", "Alpha", "Beta", "Gamma"],
+            )
+            band_columns = [column for column in getattr(power, "columns", []) if column != "Channel"]
+            band_info: Dict[str, Any] = {}
+            for band in band_columns:
+                values = [safe_float(value) for value in power[band].tolist()]
+                values = [value for value in values if value is not None]
+                if values:
+                    band_info[f"EEG_Power_{band}"] = values
+
             record["libraries"].append("neurokit2")
             record["neurokit2"] = {
-                "signalsColumns": list(getattr(signals, "columns", [])),
-                "info": serialize_numpy_like(info),
+                "method": "neurokit2.eeg_power",
+                "bands": band_columns,
+                "channelCount": channel_count,
+                "info": band_info,
             }
         except Exception as exc:
-            record.setdefault("warnings", []).append(f"NeuroKit2 EEG processing failed: {exc}")
+            record.setdefault("warnings", []).append(f"NeuroKit2 EEG band-power extraction failed: {exc}")
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EEG", channel_key, "detecting peaks & features"))
@@ -2410,6 +2443,13 @@ def append_features_readme_section(output_folder: Path) -> None:
         "plf": "Phase-Locking Factor between EEG channel pairs.",
         "plf_pairs": "Channel index pairs used for the phase-locking factor.",
         "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
+
+        # NeuroKit2 EEG band powers (nk.eeg_power, per channel)
+        "EEG_Power_Delta": "NeuroKit2 EEG power in the delta band (0.5-4 Hz).",
+        "EEG_Power_Theta": "NeuroKit2 EEG power in the theta band (4-8 Hz).",
+        "EEG_Power_Alpha": "NeuroKit2 EEG power in the alpha band (8-13 Hz).",
+        "EEG_Power_Beta": "NeuroKit2 EEG power in the beta band (13-30 Hz).",
+        "EEG_Power_Gamma": "NeuroKit2 EEG power in the gamma band (30-45 Hz).",
         # NeuroKit2 EMG features
         "EMG_Raw": "Raw EMG signal samples (preprocessed).",
         "EMG_Clean": "Cleaned EMG signal after filtering/detrending.",

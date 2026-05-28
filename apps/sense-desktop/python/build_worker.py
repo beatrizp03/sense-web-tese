@@ -37,11 +37,9 @@ def main() -> int:
         "--distpath", str(dist_dir),
         "--workpath", str(work_dir),
         "--specpath", str(work_dir),
-        # neurokit2 and biosppy use dynamic imports that PyInstaller's static
-        # analysis misses. Pull their submodules in bulk rather than chasing
-        # ModuleNotFoundError at runtime.
         "--collect-all", "neurokit2",
         "--collect-all", "biosppy",
+        "--collect-all", "mne",
         "--collect-submodules", "scipy",
         "--collect-submodules", "sklearn",
         str(worker),
