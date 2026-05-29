@@ -1,11 +1,9 @@
-import Link from "next/link"
-
 import clsx from "clsx"
 
 export interface FooterLinkSectionProps {
 	title: React.ReactNode
 	links: Array<{
-		href: React.ComponentPropsWithoutRef<typeof Link>["href"]
+		href: string
 		label: React.ReactNode
 	}>
 	className?: string
@@ -28,13 +26,15 @@ const FooterLinkSection: React.FC<FooterLinkSectionProps> = ({
 		>
 			<h4 className="mb-2 font-secondary text-2xl">{title}</h4>
 			{links.map(({ href, label }, index) => (
-				<Link
+				<a
 					key={index}
 					href={href}
+					target="_blank"
+					rel="noopener noreferrer"
 					className="text-over-primary-highest motion-safe:hover:scale-hover motion-safe:active:scale-pressed"
 				>
 					{label}
-				</Link>
+				</a>
 			))}
 		</div>
 	)

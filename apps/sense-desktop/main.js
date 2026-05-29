@@ -176,6 +176,34 @@ function getAnalysisOutputDir(sessionFolderPath) {
   return path.join(sessionFolderPath, 'analysis');
 }
 
+function isExternalHttpUrl(url) {
+  try {
+    const parsed = new URL(String(url));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function openExternalElectronWindow(url) {
+  const externalWindow = new BrowserWindow({
+    width: 1200,
+    height: 900,
+    show: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false
+    }
+  });
+
+  externalWindow.loadURL(url);
+  externalWindow.on('closed', () => {
+    // allow GC
+  });
+}
+
 function persistAnalysisResult(sessionFolderPath, result) {
   const outputDir = getAnalysisOutputDir(sessionFolderPath);
   fs.mkdirSync(outputDir, { recursive: true });
@@ -410,6 +438,21 @@ function createWindow() {
       // CRITICAL: Prevent Chromium from throttling timers/storage when window is backgrounded
       backgroundThrottling: false,
     },
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternalHttpUrl(url)) {
+      openExternalElectronWindow(url);
+      return { action: 'deny' };
+    }
+
+    return { action: 'allow' };
+  });
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isExternalHttpUrl(url)) return;
+    event.preventDefault();
+    openExternalElectronWindow(url);
   });
 
   // Intercept window close to warn if acquisition or analysis is running

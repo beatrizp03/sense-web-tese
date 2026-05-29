@@ -979,7 +979,7 @@ const Page = () => {
 							const axis = liveSignalAxes[channel] ?? "";
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row">
+									<div className="flex w-full flex-row gap-4">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
@@ -1014,7 +1014,7 @@ const Page = () => {
 													return next;
 												});
 											}}
-											className="min-w-[6rem] rounded-md border border-background-accent bg-background px-2 py-1 text-sm text-over-background-highest outline-none"
+											className="h-12 min-w-[6rem] rounded-md border border-background-accent bg-background px-2 py-0 text-xs text-over-background-highest outline-none"
 										>
 											{LIVE_SIGNAL_TYPE_OPTIONS.map(option => (
 												<option key={`${channel}-kind-${option.value || "empty"}`} value={option.value}>
@@ -1035,7 +1035,7 @@ const Page = () => {
 														return next;
 													});
 												}}
-												className="min-w-[4rem] rounded-md border border-background-accent bg-background px-2 py-1 text-sm text-over-background-highest outline-none"
+												className="h-12 min-w-[4rem] rounded-md border border-background-accent bg-background px-2 py-0 text-sm text-over-background-highest outline-none"
 											>
 												{LIVE_ACC_AXIS_OPTIONS.map(option => (
 													<option key={`${channel}-axis-${option.value || "empty"}`} value={option.value}>
