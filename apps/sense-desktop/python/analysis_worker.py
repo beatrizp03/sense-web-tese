@@ -789,7 +789,7 @@ class AnalysisProgressTracker:
         self.data_prepared = True
         self.emit("Data preparation complete")
 
-    def start_analysis(self) -> None:
+    def start_analysis(self, label: Optional[str] = None) -> None:
         """Emit initialization message for analysis phase."""
         has_biosppy = self.biosppy_total > 0
         has_neurokit2 = self.neurokit2_total > 0
@@ -801,7 +801,7 @@ class AnalysisProgressTracker:
         if has_neurokit2 and not self.neurokit2_started:
             self.neurokit2_started = True
         if self.biosppy_started or self.neurokit2_started:
-            self.emit("Initializing analysis", force=True)
+            self.emit(label or "Initializing analysis", force=True)
 
     def advance_biosppy(self, amount: float, label: str) -> None:
         if not _allows_biosppy_progress():
@@ -1138,8 +1138,9 @@ def _apply_neurokit2_outlier_removal(record: Dict[str, Any], signal_kind: str, s
         return
 
     try:
+        peaks_array = np.asarray(peaks, dtype=int) if np is not None else peaks
         correction_info, corrected_peaks = nk.signal_fixpeaks(
-            peaks,
+            peaks_array,
             sampling_rate=float(sample_rate),
             show=False,
         )
@@ -1851,7 +1852,9 @@ def process_segment(
         if progress is not None:
             normalized_kind = (kind or "").lower()
             if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
-                progress.start_analysis()
+                progress.start_analysis(
+                    label=_progress_label(normalized_kind.upper(), channel_key, "initializing analysis"),
+                )
         
         indices, values = channel_series(frames, channel_key)
 

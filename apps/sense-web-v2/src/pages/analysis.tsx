@@ -350,7 +350,6 @@ const Page = () => {
 		return analysisSource?.segments?.flatMap?.((seg: any) => {
 			return (seg?.channels || []).map((ch: any) => {
 				const metadata = getChannelAnalysisMetadata(ch)
-				const summaryCount = typeof ch?.summary?.count === "number" ? ch.summary.count : null
 				const outlier = metadata.outlierRemoval
 				const preprocessing = metadata.preprocessing
 				const method = outlier?.method ?? outlier?.biosppy?.method ?? outlier?.neurokit2?.method ?? null
@@ -361,14 +360,14 @@ const Page = () => {
 						? outlier.biosppy.inputPeakCount
 						: typeof outlier?.neurokit2?.inputPeakCount === "number"
 							? outlier.neurokit2.inputPeakCount
-							: summaryCount
+							: null
 				const keptCount = typeof outlier?.outputPeakCount === "number"
 					? outlier.outputPeakCount
 					: typeof outlier?.biosppy?.outputPeakCount === "number"
 						? outlier.biosppy.outputPeakCount
 						: typeof outlier?.neurokit2?.outputPeakCount === "number"
 							? outlier.neurokit2.outputPeakCount
-							: summaryCount
+							: (typeof inputCount === "number" ? inputCount : null)
 				const rejectedCount = typeof inputCount === "number" && typeof keptCount === "number"
 					? Math.max(0, inputCount - keptCount)
 					: null
@@ -895,8 +894,8 @@ const Page = () => {
 																		<tr>
 																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
 																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Kind</th>
-																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples in</th>
-																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Samples kept</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Peaks in the Session</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Peaks kept</th>
 																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rejected</th>
 																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rate</th>
 																		</tr>
@@ -1090,11 +1089,11 @@ const Page = () => {
 						<div className="mt-4 overflow-x-auto text-[11px] text-over-background-medium-dark dark:text-over-background-medium-light">
 							<div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
 								<div>
-									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light">Samples in</div>
+									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light">Peaks in the Session</div>
 									<div className="text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">{formatTableCount(selectedDetailEntry.inputCount)}</div>
 								</div>
 								<div>
-									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light">Samples kept</div>
+									<div className="text-xs text-over-background-medium-dark dark:text-over-background-medium-light">Peaks kept</div>
 									<div className="text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">{formatTableCount(selectedDetailEntry.keptCount)}</div>
 								</div>
 								<div>
