@@ -35,6 +35,8 @@ from pathlib import Path
 from statistics import mean, pstdev, median
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from analysis_logger import AnalysisLogger
+
 try:
     import numpy as np
 except Exception: 
@@ -733,9 +735,10 @@ NEUROKIT2_PROGRESS_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "ee
 
 
 class AnalysisProgressTracker:
-    def __init__(self, biosppy_total: int, neurokit2_total: int) -> None:
+    def __init__(self, biosppy_total: int, neurokit2_total: int, logger: Optional[AnalysisLogger] = None) -> None:
         self.biosppy_total = max(0, int(biosppy_total))
         self.neurokit2_total = max(0, int(neurokit2_total))
+        self.logger = logger
         self.biosppy_done = 0.0
         self.neurokit2_done = 0.0
         self.data_prepared = False
@@ -781,7 +784,10 @@ class AnalysisProgressTracker:
         if display_percentage <= self.last_percentage:
             display_percentage = min(self.last_percentage + 1, 99)
 
-        print(f"[progress] {display_percentage}% {label}", flush=True)
+        if self.logger is not None:
+            self.logger.log_progress(display_percentage, label)
+        else:
+            print(f"[progress] {display_percentage}% {label}", flush=True)
         self.last_percentage = display_percentage
         self.last_emitted_label = label
 
@@ -1824,7 +1830,16 @@ def process_segment(
     output_folder: Path,
     eda_method: Optional[str],
     progress: Optional[AnalysisProgressTracker] = None,
+    logger: Optional[AnalysisLogger] = None,
 ) -> Dict[str, Any]:
+    if logger is not None:
+        logger.log_message(
+            f"[analysis][segment-{segment_index}] loading {len(chunk_files)} chunk file(s)",
+            step="segment_load",
+            segment=segment_index,
+            chunkCount=len(chunk_files),
+        )
+
     frames: List[Dict[str, Any]] = []
     for chunk_file in chunk_files:
         frames.extend(load_chunk_frames(chunk_file))
@@ -1839,6 +1854,14 @@ def process_segment(
             "channels": [],
             "warnings": ["Segment contains no frames to process"],
         }
+
+    if logger is not None:
+        logger.log_message(
+            f"[analysis][segment-{segment_index}] processing {frame_count} frame(s)",
+            step="segment_process",
+            segment=segment_index,
+            frameCount=frame_count,
+        )
 
     channels = ordered_channels(manifest, sorted({key for frame in frames for key in frame_channels(frame).keys()}))
     result_channels: List[Dict[str, Any]] = []
@@ -2096,8 +2119,16 @@ def emit_phase_progress(signal_index: int, phase: str, total_signals: int) -> No
         print(f"[progress] {percentage}% {phase.capitalize()}", flush=True)
 
 
-def build_result(session_folder: Path, output_folder: Path, eda_method: Optional[str]) -> Tuple[Dict[str, Any], AnalysisProgressTracker]:
-    print("[progress] 1% Loading chunks and parsing data", flush=True)
+def build_result(
+    session_folder: Path,
+    output_folder: Path,
+    eda_method: Optional[str],
+    logger: Optional[AnalysisLogger] = None,
+) -> Tuple[Dict[str, Any], AnalysisProgressTracker]:
+    if logger is not None:
+        logger.log_progress(1, "Loading chunks and parsing data")
+    else:
+        print("[progress] 1% Loading chunks and parsing data", flush=True)
     manifest = load_session_manifest(session_folder)
     sample_rate = resolve_sample_rate(manifest)
     chunk_entries = discover_chunk_entries(session_folder, manifest)
@@ -2118,7 +2149,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
     total_chunks = 0
 
     biosppy_total, neurokit2_total = count_progress_units(grouped_entries, analysis_manifest)
-    progress = AnalysisProgressTracker(biosppy_total, neurokit2_total)
+    progress = AnalysisProgressTracker(biosppy_total, neurokit2_total, logger=logger)
     progress.mark_data_prepared()
 
     signal_kind_counts: Dict[str, int] = {}
@@ -2132,6 +2163,7 @@ def build_result(session_folder: Path, output_folder: Path, eda_method: Optional
             output_folder,
             eda_method,
             progress=progress,
+            logger=logger,
         )
 
         for channel in segment_result.get("channels", []):
@@ -2781,6 +2813,16 @@ def write_signal_csvs(
 
 def main() -> int:
     args = parse_args()
+    session_folder = Path(args.session_folder).resolve()
+    output_folder = Path(args.output_folder).resolve()
+    output_folder.mkdir(parents=True, exist_ok=True)
+    logger = AnalysisLogger(
+        output_folder / "analysis-log.csv",
+        session_folder=session_folder,
+        output_folder=output_folder,
+        session_name=session_folder.name,
+    )
+    startup_started = time.perf_counter()
     config = load_run_config(args)
     global DISABLE_OUTLIER_REMOVAL, SELECTED_LIBRARY_PREFERENCE, SIGNAL_KIND_LIBRARY_PREFERENCES
     global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS
@@ -2792,49 +2834,65 @@ def main() -> int:
     EXCLUDED_CHANNELS = set(config.get("excludedChannels", []))
 
     eda_method = SELECTED_LIBRARY_PREFERENCE or "auto"
-    session_folder = Path(args.session_folder).resolve()
-    output_folder = Path(args.output_folder).resolve()
-    output_folder.mkdir(parents=True, exist_ok=True)
+    session_name = session_folder.name
 
     try:
-        session_name = session_folder.name
-        analysis_started = time.perf_counter()
-        result, progress = build_result(
-            session_folder,
-            output_folder,
-            eda_method,
+        logger.log_message(
+            "[analysis] worker startup and configuration loaded",
+            step="startup",
+            duration_ms=(time.perf_counter() - startup_started) * 1000.0,
+            libraryPreference=SELECTED_LIBRARY_PREFERENCE or "auto",
+            disableOutlierRemoval=DISABLE_OUTLIER_REMOVAL,
         )
+
+        analysis_started = time.perf_counter()
+        with logger.step("analysis", "Processing signals"):
+            result, progress = build_result(
+                session_folder,
+                output_folder,
+                eda_method,
+                logger=logger,
+            )
         analyze_seconds = time.perf_counter() - analysis_started
         chunk_count = int(result.get("chunkCount") or 0)
         frame_count = int(result.get("frameCount") or 0)
         sample_rate = result.get("sampleRate")
         sample_rate_suffix = f" @ {sample_rate}Hz" if sample_rate else ""
-        print(
+        logger.log_message(
             f"[analysis][{session_name}] analysis phase done in {analyze_seconds:.2f}s, writing outputs...",
-            flush=True,
+            step="analysis",
+            duration_ms=analyze_seconds * 1000.0,
+            chunkCount=chunk_count,
+            frameCount=frame_count,
         )
         progress.emit("Writing output files", force=True)
 
-        write_channel_series_csvs(output_folder, result)
+        with logger.step("write_channel_series", "Writing per-channel series CSVs"):
+            write_channel_series_csvs(output_folder, result)
 
         try:
-            signal_csvs = write_signal_csvs(output_folder, session_folder, result)
+            with logger.step("write_signal_csvs", "Writing sense.py-format signal CSVs"):
+                signal_csvs = write_signal_csvs(output_folder, session_folder, result)
             if signal_csvs:
-                print(
+                logger.log_message(
                     f"[analysis][{session_name}] wrote {len(signal_csvs)} sense.py-format signal CSV(s)",
-                    flush=True,
+                    step="write_signal_csvs",
+                    signalCsvCount=len(signal_csvs),
                 )
-        except Exception as exc:  
-            print(
+        except Exception as exc:
+            logger.log_message(
                 f"[analysis][{session_name}] WARNING: could not write sense.py-format signal CSV(s): {exc}",
-                flush=True,
+                step="write_signal_csvs",
+                status="warning",
+                error=str(exc),
             )
 
-        try:
-            readme_path = output_folder / "README.md"
-            with readme_path.open("w", encoding="utf-8") as rhandle:
-                rhandle.write(
-                    """# Analysis output
+        with logger.step("write_readme", "Writing analysis README"):
+            try:
+                readme_path = output_folder / "README.md"
+                with readme_path.open("w", encoding="utf-8") as rhandle:
+                    rhandle.write(
+                        """# Analysis output
 
 This folder contains CSV summaries, per-channel series, and a raw-signal
 export for the session.
@@ -2856,43 +2914,49 @@ pipeline does not retain them); only raw ADC samples are emitted.
 output phase so the reported "analysis" time measures signal processing only;
 CSV export is performed after analysis completes.
                     """
-                )
-        except Exception:
-            pass
+                    )
+            except Exception:
+                pass
 
-        result = prune_bulky_arrays(result)
-        result = sanitize_for_json(result)
-        result_path = output_folder / "analysis.json"
-        write_summary_csv(output_folder, result)
-        write_features_csv(output_folder, result)
-        try:
-            append_features_readme_section(output_folder)
-        except Exception:
-            pass
-        with result_path.open("w", encoding="utf-8") as handle:
-            json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
+        with logger.step("write_analysis_json", "Writing analysis.json and CSV summaries"):
+            result = prune_bulky_arrays(result)
+            result = sanitize_for_json(result)
+            result_path = output_folder / "analysis.json"
+            write_summary_csv(output_folder, result)
+            write_features_csv(output_folder, result)
+            try:
+                append_features_readme_section(output_folder)
+            except Exception:
+                pass
+            with result_path.open("w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
         progress.mark_csv_written()
         total_seconds = time.perf_counter() - analysis_started
         if result_path.stat().st_size / (1024*1024) > 0.1:
             result_size_mb = result_path.stat().st_size / (1024*1024) 
-            print(
+            logger.log_message(
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
                 f"— {chunk_count} chunks, {frame_count} frames"
                 f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}MB)",
-                flush=True,
+                step="complete",
+                duration_ms=total_seconds * 1000.0,
+                resultSizeMb=result_size_mb,
             )
         else:
             result_size_mb = result_path.stat().st_size / (1024) 
-            print(
+            logger.log_message(
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
                 f"— {chunk_count} chunks, {frame_count} frames"
                 f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}KB)",
-                flush=True,
+                step="complete",
+                duration_ms=total_seconds * 1000.0,
+                resultSizeKb=result_size_mb,
             )
+        logger.close()
         return 0
     except Exception as exc:
         import traceback as _traceback
@@ -2909,6 +2973,19 @@ CSV export is performed after analysis completes.
             "failedAt": now_iso(),
             "trace": _trace,
         }
+        try:
+            logger.log_message(
+                f"[analysis][{session_name}] FAILED: {exc}",
+                step="error",
+                status="error",
+                error=str(exc),
+            )
+        except Exception:
+            pass
+        try:
+            logger.close()
+        except Exception:
+            pass
         sys.stderr.write(json.dumps(error, ensure_ascii=False))
         sys.stderr.flush()
         return 1
