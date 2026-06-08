@@ -26,7 +26,9 @@ import SenseLayout from "../components/layout/SenseLayout"
 import {
 	applySessionSettingsSnapshot,
 	clearLastSessionSettingsPersistent,
+	getCurrentSettings,
 	loadLastSessionSettingsPersistent,
+	saveCurrentSettings,
 	SessionSettingsSnapshot
 } from "../utils/sessionSettingsHistory"
 
@@ -128,9 +130,12 @@ const Page = () => {
 	useEffect(() => {
 		if (typeof window === "undefined" || loaded) return
 
-		setLoaded(true)
 		void (async () => {
-			setSettingsHistory(await loadLastSessionSettingsPersistent())
+			try {
+				setSettingsHistory(await loadLastSessionSettingsPersistent())
+			} catch {
+				setSettingsHistory([])
+			}
 
 			setDefaultValues(current => ({
 				...current,
@@ -138,8 +143,9 @@ const Page = () => {
 					typeof (navigator as any).serial !== "undefined"
 						? SCIENTISST_COMUNICATION_MODE.WEBSERIAL
 						: SCIENTISST_COMUNICATION_MODE.WEBSOCKET,
-				...(JSON.parse(localStorage.getItem("settings") ?? "{}") || {})
+				...getCurrentSettings()
 			}))
+			setLoaded(true)
 		})()
 	}, [loaded])
 
@@ -201,15 +207,12 @@ const Page = () => {
 							selectedChannels
 						)
 
-						localStorage.setItem(
-							"settings",
-							JSON.stringify({
-								...values,
-								...(eegChannels.length > 0 ? { eegChannels } : {}),
-								channelSignalKinds,
-								channelSignalAxes
-							})
-						)
+						saveCurrentSettings({
+							...values,
+							...(eegChannels.length > 0 ? { eegChannels } : {}),
+							channelSignalKinds,
+							channelSignalAxes
+						} as SessionSettingsSnapshot["settings"])
 					}}
 				>
 					{({ values, setValues }) => (
@@ -587,7 +590,7 @@ const Page = () => {
 															
 																setDefaultValues(nextValues)
 																setValues(nextValues)
-																localStorage.setItem("settings", JSON.stringify(nextValues))
+																saveCurrentSettings(nextValues as SessionSettingsSnapshot["settings"])
 																setShowHistoryModal(false)
 															}}
 														>

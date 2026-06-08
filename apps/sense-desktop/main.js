@@ -179,7 +179,19 @@ function getAnalysisOutputDir(sessionFolderPath) {
 function isExternalHttpUrl(url) {
   try {
     const parsed = new URL(String(url));
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+
+    const appUrl = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";
+    try {
+      if (parsed.origin === new URL(appUrl).origin) return false;
+    } catch {
+      // ignore malformed app url and fall through to host checks
+    }
+    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+      return false;
+    }
+
+    return true;
   } catch {
     return false;
   }
@@ -405,10 +417,6 @@ function readPersistedAnalysisResult(sessionFolderPath) {
   }
 }
 
-// serial/USB only; BLE experimental code was removed to simplify the
-// desktop build.  Port enumeration is handled via the native bridge.
-
-// Helps with common Windows GPU/renderer launch issues
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-compositing");
@@ -427,15 +435,9 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: true,
-      // If sandbox initialization is the problem, this avoids it
       sandbox: false,
-      // enable experimental APIs like Web Serial / Web Bluetooth
       experimentalFeatures: true,
-      // you can also explicitly enable blink features if needed
-      // enableBlinkFeatures: "Serial,WebBluetooth",
-      // preload script exposes serial helpers
       preload: require("path").join(__dirname, "preload.js"),
-      // CRITICAL: Prevent Chromium from throttling timers/storage when window is backgrounded
       backgroundThrottling: false,
     },
   });
@@ -455,7 +457,6 @@ function createWindow() {
     openExternalElectronWindow(url);
   });
 
-  // Intercept window close to warn if acquisition or analysis is running
   win.on('close', (e) => {
     if ((sessionFolder && sampleWriter) || busyReason) {
       e.preventDefault();
@@ -490,7 +491,6 @@ function createWindow() {
     });
     if (choice === 0) event.preventDefault(); // Stay → block unload
   });
-  //win.webContents.openDevTools({ mode: "detach" });
 
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     console.error("did-fail-load", { code, desc, url });
@@ -499,9 +499,7 @@ function createWindow() {
     console.error("render-process-gone", details);
   });
   win.webContents.on("console-message", (event) => {
-    // Electron >= v24: event is WebContentsConsoleMessageEventParams
-    // https://www.electronjs.org/docs/latest/breaking-changes/#webcontentsconsole-message-event
-    console.log("[renderer]", event.message);
+   console.log("[renderer]", event.message);
   });
 
   const url = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";
@@ -513,7 +511,6 @@ function createWindow() {
 app.whenReady().then(() => {
   const { session } = require("electron");
 
-  // allow web contents to request serial (and bluetooth if ever used)
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     if (permission === "serial" || permission === "bluetooth") return callback(true);
     callback(false);
@@ -552,8 +549,6 @@ app.whenReady().then(() => {
     if (name === 'csv_export') exportEventsCompleted.csv = true;
     if (name === 'pdf_export') exportEventsCompleted.pdf = true;
 
-    // Keep logger alive after disconnect/finalize and stop only after
-    // both export actions are triggered on summary.
     if (exportEventsCompleted.csv && exportEventsCompleted.pdf) {
       perfLogger.stop();
       perfLogger = null;
@@ -622,7 +617,6 @@ let lastSessionFolder = undefined;
 let sampleWriter = undefined;
 let perfLogger = null;
 let exportEventsCompleted = { csv: false, pdf: false };
-// remember last selected port friendly name when user picks a port in renderer
 let lastSelectedPortLabel = '';
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
@@ -653,9 +647,7 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
     outputDir: sessionFolder,
     baseFilename: `sample${segmentNumber}`
   });
-  // Instantiate BufferManager for this session
   bufferManager = new BufferManager({ chunkSize });
-  // Subscribe StorageSubscriber to BufferManager for chunk writing
   bufferManager.subscribeStorage(chunk => {
     onChunkReady(chunk, (chunkToWrite) => {
       const start = Date.now();
@@ -777,11 +769,8 @@ ipcMain.handle('finalizeSession', (_event, endedAt) => {
   sessionFolder = undefined;
 });
 
-// Called when live.tsx unmounts (navigation away or page close).
-// If the session was not properly finalized (user left without pressing Stop),
-// this resets main-process state so the next start-acquisition creates a new folder.
 ipcMain.on('reset-session', () => {
-  if (!sessionFolder) return; // already clean (finalizeSession was called normally)
+  if (!sessionFolder) return; 
   console.log('[main] Session abandoned — resetting state for next acquisition');
   if (sampleWriter) {
     sampleWriter.finalizeSession();
@@ -966,7 +955,6 @@ ipcMain.handle('cancel-posthoc-analysis', (_event, payload = {}) => {
   return { cancelled: true };
 });
 
-// Example: Flush remaining samples on app exit
 app.on('before-quit', () => {
   try {
     cancelActiveAnalysisJob('Application is quitting');
@@ -976,11 +964,9 @@ app.on('before-quit', () => {
         perfLogger.stop();
         perfLogger = null;
       }
-      // Wait briefly to ensure file handles are closed
       const wait = ms => new Promise(res => setTimeout(res, ms));
       wait(200);
     }
-    // If you have a serial port or device, close it here
     if (global.device && typeof global.device.close === 'function') {
       try {
         global.device.close();

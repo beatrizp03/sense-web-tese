@@ -8,6 +8,7 @@ const serialBuffers = {};
 const serialDataHandlers = new Map();
 const serialCloseHandlers = new Map();
 const serialErrorHandlers = new Map();
+const closingPorts = new Set();
 
 function cleanupPortState(path, port) {
   const target = port || openPorts.get(path);
@@ -34,11 +35,9 @@ function cleanupPortState(path, port) {
   }
   openPorts.delete(path);
   serialBuffers[path] = Buffer.alloc(0);
+  closingPorts.delete(path);
 }
 
-// run a PowerShell command to enumerate Bluetooth devices and
-// return a map from instance ID to friendly name. this allows us to
-// cross-reference the COM ports with their user‑visible names.
 async function getBtNames() {
   return new Promise((resolve, reject) => {
     const { exec } = require('child_process');
@@ -67,7 +66,6 @@ async function getBtNames() {
   });
 }
 
-// Clears all serialBuffers for device connection reset
 function clearRingBuffer() {
   for (const path in serialBuffers) {
     serialBuffers[path] = Buffer.alloc(0);
@@ -78,11 +76,7 @@ async function listPorts() {
   clearRingBuffer(); // Always clear buffer before listing ports
   
   let ports = await SerialPort.list();
-  //console.log('serial ports', ports);
-
-  // normalize each entry to a usable string path; some drivers put the
-  // COM path in `comName` or just `name`. drop anything where we can't
-  // derive a path.
+  
   ports = ports
     .map(p => {
       const portPath = p.path ?? p.comName ?? p.name;
@@ -103,9 +97,7 @@ async function listPorts() {
     console.log('could not query BT names', e.message);
   }
 
-  // convert map to array of address/name pairs so we can match on
-  // the bluetooth MAC that appears in both the instance ID and the pnpId.
-  const btList = [];
+ const btList = [];
   for (const [inst, fn] of btNames) {
     const m = inst.match(/dev_([0-9a-f]{12})/i);
     if (m) {
@@ -113,10 +105,6 @@ async function listPorts() {
     }
   }
   console.log('parsed bluetooth addresses', btList);
-
-  // return only path and friendlyName for display. mark any entries that
-  // appear to be Bluetooth so the user has some hint, and if we have a
-  // matching friendly name from the BT subsystem prefer it.
   return ports.map(p => {
     // re-compute the normalized path here just in case
     const portPath = p.path ?? p.comName ?? p.name;
@@ -158,9 +146,6 @@ async function choosePort() {
     throw new Error('No serial ports available');
   }
 
-  // simply show the chooser; the renderer can treat the returned path as the
-  // COM port to open. this avoids flaky handshake attempts and works
-  // reliably with Bluetooth SPP devices such as the ScientISST board.
   const response = await ipcRenderer.invoke(
     'show-port-dialog',
     ports.map(p => p.friendlyName)
@@ -201,6 +186,7 @@ async function openSerialPort(path, options = {}) {
   const port = new SerialPort({ path, baudRate, autoOpen: false });
   openPorts.set(path, port);
   serialBuffers[path] = Buffer.alloc(0);
+  closingPorts.delete(path);
 
   // Attach one data listener per port
   const onData = (chunk) => {
@@ -233,9 +219,13 @@ async function openSerialPort(path, options = {}) {
 
 async function readSerialPort(path, bytes, timeout) {
   // Only consume from serialBuffers[path], never attach listeners here
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
+      if (closingPorts.has(path)) {
+        reject(new Error(`Read aborted: port ${path} is closing`));
+        return;
+      }
       const buf = serialBuffers[path] || Buffer.alloc(0);
       if (buf.length >= bytes) {
         const out = buf.slice(0, bytes);
@@ -255,6 +245,7 @@ async function readSerialPort(path, bytes, timeout) {
 }
 
 async function closeSerialPort(path) {
+  closingPorts.add(path);
   const port = openPorts.get(path);
   try {
     if (port && port.isOpen) {
@@ -277,8 +268,7 @@ async function closeSerialPort(path) {
   }
 }
 
-contextBridge.exposeInMainWorld('electronAPI', {  // Transport-safe bridge methods
-  // Read a chunk file by absolute path (returns parsed JSON)
+contextBridge.exposeInMainWorld('electronAPI', {  
   readChunkFile: async (filePath) => {
     return await ipcRenderer.invoke('read-chunk-file', filePath);
   },

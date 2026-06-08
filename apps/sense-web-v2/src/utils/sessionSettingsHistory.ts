@@ -133,6 +133,11 @@ export function getCurrentSettings(): SessionSettings {
 	return safeParse<SessionSettings>(window.localStorage.getItem(CURRENT_SETTINGS_KEY), {})
 }
 
+export function saveCurrentSettings(settings: SessionSettings): void {
+	if (!hasLocalStorage()) return
+	window.localStorage.setItem(CURRENT_SETTINGS_KEY, JSON.stringify(settings))
+}
+
 export function loadLastSessionSettings(): SessionSettingsSnapshot[] {
 	if (!hasLocalStorage()) return []
 	const snapshots = safeParse<SessionSettingsSnapshot[]>(

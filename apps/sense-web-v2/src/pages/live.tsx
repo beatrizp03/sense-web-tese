@@ -68,6 +68,8 @@ const LIVE_ACC_AXIS_OPTIONS = [
 	{ label: "Y", value: "y" },
 	{ label: "Z", value: "z" }
 ]
+const IO_INPUTS = ["I1", "I2"]
+const IO_OUTPUTS = ["O1", "O2"]
 
 function getOrderedEegChannels(
 	channelSignalKinds: Record<string, string>,
@@ -200,13 +202,11 @@ const channelSeriesEqual = (a: ChannelSeries, b: ChannelSeries) => {
 
 const Page = () => {
 	const storeBufferThresholdRef = useRef(10000);
-	// Track last chunk flush time and threshold for dynamic adjustment
 
 	const router = useRouter();
 	const isDark = useDarkTheme();
 
 	const deviceRef = useRef<Device | null>(null);
-	// BufferManager is now in main process
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
@@ -230,6 +230,8 @@ const Page = () => {
 	const [liveSignalKinds, setLiveSignalKinds] = useState<Record<string, string>>({});
 	const [liveSignalAxes, setLiveSignalAxes] = useState<Record<string, string>>({});
 	const [liveChannelNames, setLiveChannelNames] = useState<Record<string, string>>({});
+	const channelLastSeqRef = useRef<Map<string, number>>(new Map());
+	const [activeChannels, setActiveChannels] = useState<Record<string, boolean>>({});
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
 	const uiWindowFramesRef = useRef(0);
@@ -239,9 +241,6 @@ const Page = () => {
     useEffect(() => {
         let intervalId: NodeJS.Timeout | null = null;
         function updateUI() {
-			// While acquiring, only finalized buckets should be emitted (ingest path).
-			// Flushing partial buckets every UI tick over-emits points and shrinks
-			// the effective visible time span due to ring buffer eviction.
 			if (status === STATUS.PAUSED) {
 				flushAllBuckets(
 					channelBucketsRef.current,
@@ -354,10 +353,6 @@ const Page = () => {
 		acquisitionStartedRef.current = false;
 	}, []);
 
-
-
-
-	// No BufferManager/StorageSubscriber in renderer; only UI pipeline
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
 			cleanupPipeline();
@@ -477,7 +472,7 @@ const Page = () => {
 			segment: segmentRef.current,
 			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
-			deviceType: device instanceof Maker ? "Maker" : "ScientISST Sense",
+			deviceType: device instanceof Maker ? "maker" : "sense",
 			...(eegChannels.length > 0 ? { eegChannels } : {}),
 			channelSignalKinds,
 			channelSignalAxes,
@@ -707,7 +702,6 @@ const Page = () => {
 
 			device.onFrames = data => {
 				if (data == null) return;
-				// Always pass every frame to main process BufferManager via sendFrame
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
 					validFrames.forEach(frame => {
@@ -723,7 +717,6 @@ const Page = () => {
 
 			device.onError = error => {
 				console.error(error);
-				// No BufferManager in renderer; main process handles chunking
 				if (window.electronAPI?.acquisitionError && sessionFolder) {
 					window.electronAPI.acquisitionError(sessionFolder);
 				}
@@ -830,10 +823,6 @@ const Page = () => {
 		return () => {
 			cleanupPipeline();
 			deviceRef.current?.disconnect?.().catch(() => {});
-			// Reset main-process session state when navigating away.
-			// If finalizeSession was already called (normal stop flow), this is a no-op.
-			// If the user left without stopping, this ensures the next acquisition
-			// gets a fresh session folder instead of continuing the abandoned one.
 			window.electronAPI?.resetSession?.();
 		};
 	}, [cleanupPipeline])
@@ -853,11 +842,9 @@ const Page = () => {
 
 	const [showCloseModal, setShowCloseModal] = useState(false);
 
-	// Ref so event handlers always see the latest status without stale closures
 	const statusRef = useRef(status);
 	useEffect(() => { statusRef.current = status; }, [status]);
 
-	// Electron X button: warn if acquiring, else allow close
 	useEffect(() => {
 		if (!window.electronAPI?.onShowCloseWarning) return;
 		const removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
@@ -868,9 +855,8 @@ const Page = () => {
 			}
 		});
 		return removeCloseListener;
-	}, []); // set up once — statusRef always has the latest value
+	}, []); 
 
-	// In-app navigation (home button): block if acquiring or paused
 	useEffect(() => {
 		const handleRouteChange = (url: string) => {
 			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
@@ -883,6 +869,28 @@ const Page = () => {
 		return () => { router.events.off('routeChangeStart', handleRouteChange); };
 	}, [router.events]);
 
+	const renderIoDots = (ports: string[]) =>
+		ports.map(io => {
+			const on = activeChannels[io] ?? false
+			return (
+				<span
+					key={io}
+					className="flex items-center gap-2 text-sm font-secondary"
+				>
+					{io}
+					<span
+						title={on ? "Receiving" : "Not receiving"}
+						aria-label={on ? "Receiving" : "Not receiving"}
+						className={`h-3 w-3 rounded-full border-2 transition-colors ${
+							on
+								? "border-green-500 bg-green-500"
+								: "border-over-background-highest bg-transparent"
+						}`}
+					/>
+				</span>
+			)
+		})
+
 	return (
 		<SenseLayout
 			className="container flex flex-col items-center justify-start gap-4 p-8"
@@ -893,7 +901,7 @@ const Page = () => {
 			{status === STATUS.CONNECTED && firmwareVersion !== null && (
 				<span>Firmware Version: {firmwareVersion}</span>
 			)}
-			<div className="flex flex-row gap-4">				{(status === STATUS.DISCONNECTED ||
+			<div className="relative flex w-full flex-row items-center justify-center gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
 					(status === STATUS.CONNECTION_LOST &&
@@ -925,6 +933,11 @@ const Page = () => {
 				)}
 				{(status === STATUS.ACQUIRING || status === STATUS.PAUSED) && (
 					<>
+						{status === STATUS.ACQUIRING && (
+							<div className="absolute left-4 flex flex-row gap-6">
+								{renderIoDots(IO_INPUTS)}
+							</div>
+						)}
 						<TextButton
 							size={"base"}
 							onClick={status === STATUS.PAUSED ? resume : pause}
@@ -934,6 +947,11 @@ const Page = () => {
 						<TextButton size={"base"} onClick={stop}>
 							Stop
 						</TextButton>
+						{status === STATUS.ACQUIRING && (
+							<div className="absolute right-4 flex flex-row gap-6">
+								{renderIoDots(IO_OUTPUTS)}
+							</div>
+						)}
 					</>
 				)}
 			</div>
