@@ -556,8 +556,8 @@ const Page = () => {
 
 	return (
 		<SenseLayout
-			title="Signal Analysis"
-			shortTitle="Analysis"
+			title="Processing"
+			shortTitle="Processing"
 			returnHref="/"
 			className="container flex flex-col items-center justify-start gap-6 py-8"
 		>
@@ -566,38 +566,15 @@ const Page = () => {
 					<div className="flex flex-col gap-4">
 						<div className="space-y-0">
 							<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Post-processing</p>
-							<h1 className="font-secondary text-3xl text-over-background-highest">Analysis</h1>
+							<h1 className="font-secondary text-3xl text-over-background-highest">Analysis &amp; Annotation</h1>
 							<p className="max-w-2xl text-sm text-over-background-medium">
-								Import a session folder, map the channels you want, and run the batch analysis.
+								Import a session folder, map the channels you want, and run the batch analysis or annotate.
 							</p>
 						</div>
 						<div className="flex flex-wrap gap-3">
 							<TextButton size="base" onClick={importSessionFolder} disabled={loading}>
 								Import Session Folder
 							</TextButton>
-							<TextButton size="base" onClick={runAnalysis} disabled={loading || !sessionFolder}>
-								Run Analysis
-							</TextButton>
-						</div>
-
-						<div className="mt-3 flex items-center gap-4">
-							<label className="flex items-center gap-2 text-sm">
-								<input
-									type="checkbox"
-									checked={outlierRemovalEnabled}
-									onChange={e => setOutlierRemovalEnabled(e.target.checked)}
-								/>
-								<span>Enable Outlier Removal (library-provided)</span>
-							</label>
-
-							<label className="text-sm flex items-center gap-2">
-								<span>Library used:</span>
-								<select value={edaMethodSelection} onChange={e => setEdaMethodSelection(e.target.value as any)} className="rounded-full border bg-background px-3 py-1 text-sm">
-									<option value="auto">Auto</option>
-									<option value="neurokit">NeuroKit2</option>
-									<option value="biosppy">BioSPPy</option>
-								</select>
-							</label>
 						</div>
 					</div>
 				</div>
@@ -636,7 +613,9 @@ const Page = () => {
 
 							<div className="grid items-start gap-6 lg:grid-cols-5">
 								<div className="space-y-0 lg:col-span-3">
-									<p className="flex min-h-[4.5rem] items-center p-4 text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to exclude it from library analysis.</p>
+									{channels.length > 0 && (
+										<p className="flex min-h-[4.5rem] items-center p-4 text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to exclude it from library analysis.</p>
+									)}
 									{channels.length > 0 ? (
 										channels.map(channel => {
 											const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""
@@ -722,8 +701,8 @@ const Page = () => {
 										)
 										})
 									) : (
-										<div className="rounded-xl border border-dashed border-background-accent p-6 text-sm text-over-background-medium">
-											Import a session folder to load its channels and start analysis.
+										<div className="rounded-xl border border-dashed border-background-accent p-4 text-sm text-over-background-medium">
+											Import a session folder to load its channels and start annotation or analysis.
 										</div>
 									)}
 								</div>
