@@ -26,6 +26,7 @@ import resolveConfig from "tailwindcss/resolveConfig"
 import tailwindConfig from "../../tailwind.config"
 import CanvasChart from "../components/charts/CanvasChart"
 import SenseLayout from "../components/layout/SenseLayout"
+import { useBusyGuard } from "../hooks/useBusyGuard"
 import {
 	SessionSettings,
 	saveLastSessionSettingsPersistent
@@ -46,6 +47,44 @@ enum STATUS {
 	STOPPED,
 	STOPPED_AND_SAVED,
 	OUT_OF_STORAGE
+}
+
+const LIVE_SIGNAL_TYPE_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "ECG", value: "ecg" },
+	{ label: "EDA", value: "eda" },
+	{ label: "PPG", value: "ppg" },
+	{ label: "EMG", value: "emg" },
+	{ label: "RSP", value: "rsp" },
+	{ label: "EOG", value: "eog" },
+	{ label: "EEG", value: "eeg" },
+	{ label: "PCG", value: "pcg" },
+	{ label: "ACC", value: "acc" }
+]
+
+const LIVE_ACC_AXIS_OPTIONS = [
+	{ label: "--", value: "" },
+	{ label: "X", value: "x" },
+	{ label: "Y", value: "y" },
+	{ label: "Z", value: "z" }
+]
+const IO_INPUTS = ["I1", "I2"]
+const IO_OUTPUTS = ["O1", "O2"]
+
+function getOrderedEegChannels(
+	channelSignalKinds: Record<string, string>,
+	channels: string[]
+) {
+	return channels.filter(channel => channelSignalKinds[channel] === "eeg")
+}
+
+function writeLiveSettingsPatch(updates: Record<string, unknown>) {
+	try {
+		const current = JSON.parse(localStorage.getItem("settings") || "{}")
+		localStorage.setItem("settings", JSON.stringify({ ...current, ...updates }))
+	} catch {
+		// ignore corrupted/locked settings storage
+	}
 }
 
 const fullConfig = resolveConfig(tailwindConfig)
@@ -163,19 +202,21 @@ const channelSeriesEqual = (a: ChannelSeries, b: ChannelSeries) => {
 
 const Page = () => {
 	const storeBufferThresholdRef = useRef(10000);
-	// Track last chunk flush time and threshold for dynamic adjustment
 
 	const router = useRouter();
 	const isDark = useDarkTheme();
 
 	const deviceRef = useRef<Device | null>(null);
-	// BufferManager is now in main process
 
 	const subscriptionsRef = useRef<Array<() => void>>([]);
 	const segmentRef = useRef(1);
 	const finalizingAfterErrorRef = useRef(false)
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
+
+	useBusyGuard(
+		status === STATUS.ACQUIRING || status === STATUS.PAUSED ? "Recording" : null
+	);
 
 	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null);
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
@@ -186,6 +227,11 @@ const Page = () => {
 	const [channelData, setChannelData] = useState<ChannelSeries>({});
 	const channelsRef = useRef<string[]>([]);
 	const [channels, setChannels] = useState<string[]>([]);
+	const [liveSignalKinds, setLiveSignalKinds] = useState<Record<string, string>>({});
+	const [liveSignalAxes, setLiveSignalAxes] = useState<Record<string, string>>({});
+	const [liveChannelNames, setLiveChannelNames] = useState<Record<string, string>>({});
+	const channelLastSeqRef = useRef<Map<string, number>>(new Map());
+	const [activeChannels, setActiveChannels] = useState<Record<string, boolean>>({});
 	const [xDomain, setXDomain] = useState<[number, number]>([0, 0]);
 	const frameSequenceRef = useRef(0);
 	const uiWindowFramesRef = useRef(0);
@@ -195,9 +241,6 @@ const Page = () => {
     useEffect(() => {
         let intervalId: NodeJS.Timeout | null = null;
         function updateUI() {
-			// While acquiring, only finalized buckets should be emitted (ingest path).
-			// Flushing partial buckets every UI tick over-emits points and shrinks
-			// the effective visible time span due to ring buffer eviction.
 			if (status === STATUS.PAUSED) {
 				flushAllBuckets(
 					channelBucketsRef.current,
@@ -310,10 +353,6 @@ const Page = () => {
 		acquisitionStartedRef.current = false;
 	}, []);
 
-
-
-
-	// No BufferManager/StorageSubscriber in renderer; only UI pipeline
 	const initializePipeline = useCallback(
 		(sampleRate: number) => {
 			cleanupPipeline();
@@ -401,11 +440,42 @@ const Page = () => {
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
 		if (!device) return;
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
+		const configuredSignalKinds =
+			typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
+				? (settings.channelSignalKinds as Record<string, string>)
+				: {}
+		const configuredSignalAxes =
+			typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
+				? (settings.channelSignalAxes as Record<string, string>)
+				: {}
+		const deviceChannels = (device.getChannels?.() ?? []).map(String)
+		const channelSignalKinds = Object.fromEntries(
+			Object.entries(configuredSignalKinds).filter(
+				([channel, signalKind]) =>
+					deviceChannels.includes(channel) &&
+					typeof signalKind === "string" &&
+					signalKind.length > 0
+			)
+		)
+		const channelSignalAxes = Object.fromEntries(
+			Object.entries(configuredSignalAxes).filter(
+				([channel, signalAxis]) =>
+					deviceChannels.includes(channel) &&
+					channelSignalKinds[channel] === "acc" &&
+					typeof signalAxis === "string" &&
+					["x", "y", "z"].includes(signalAxis)
+			)
+		)
+		const eegChannels = getOrderedEegChannels(channelSignalKinds, deviceChannels)
 		window.electronAPI?.updateSessionMeta?.({
 			segment: segmentRef.current,
-			channels: device.getChannels?.() ?? [],
+			channels: deviceChannels,
 			sampleRate: device.getSamplingRate?.() || 1000,
 			deviceType: device instanceof Maker ? "maker" : "sense",
+			...(eegChannels.length > 0 ? { eegChannels } : {}),
+			channelSignalKinds,
+			channelSignalAxes,
 			timestamp: Date.now()
 		});
 	}, []);
@@ -470,11 +540,7 @@ const Page = () => {
 			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
-			setFirmwareVersion(
-				deviceRef.current.getFirmwareVersion?.()
-					? deviceRef.current.getFirmwareVersion()?.version ?? null
-					: null
-			)
+			setFirmwareVersion(deviceRef.current.getFirmwareVersion()?.version ?? null)
 
 			// Only set buffer size if valid
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
@@ -541,6 +607,7 @@ const Page = () => {
 		const device = deviceRef.current;
 		if (!device) return;
 		finalizingAfterErrorRef.current = false
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 
 		const startAcqTime = Date.now();
 		try {
@@ -550,17 +617,75 @@ const Page = () => {
 			const startTime = new Date().toISOString();
 			const sessionFolder = await window.electronAPI?.startAcquisition?.(startTime);
 
-			const adcChars = device.getAdcCharacteristics?.() || {};
+			const adcCharacteristics = await device.getAdcCharacteristics?.();
+			const adcChars: Record<string, number> = adcCharacteristics
+				? {
+						adcNum: adcCharacteristics.adcNum,
+						adcAtten: adcCharacteristics.adcAtten,
+						adcBitWidth: adcCharacteristics.adcBitWidth,
+						coeffA: adcCharacteristics.coeffA,
+						coeffB: adcCharacteristics.coeffB,
+						vRef: adcCharacteristics.vRef
+				  }
+				: {};
+			const firmwareVersion = device.getFirmwareVersion?.()?.version ?? undefined;
 
 			const now = Date.now();
+			const configuredSignalKinds =
+				typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
+					? (settings.channelSignalKinds as Record<string, string>)
+					: {}
+			const configuredSignalAxes =
+				typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
+					? (settings.channelSignalAxes as Record<string, string>)
+					: {}
+			const configuredChannelNames =
+				typeof settings.channelNames === "object" && settings.channelNames !== null
+					? (settings.channelNames as Record<string, string>)
+					: {}
+			const sessionChannels = (device.getChannels?.() ?? []).map(String)
+			const channelSignalKinds = Object.fromEntries(
+				Object.entries(configuredSignalKinds).filter(
+					([channel, signalKind]) =>
+						sessionChannels.includes(channel) &&
+						typeof signalKind === "string" &&
+						signalKind.length > 0
+				)
+			)
+			const channelSignalAxes = Object.fromEntries(
+				Object.entries(configuredSignalAxes).filter(
+					([channel, axis]) =>
+						sessionChannels.includes(channel) &&
+						channelSignalKinds[channel] === "acc" &&
+						typeof axis === "string" &&
+						(axis === "x" || axis === "y" || axis === "z")
+				)
+			)
+			const channelNames = Object.fromEntries(
+				Object.entries(configuredChannelNames).filter(
+					([channel, name]) =>
+						sessionChannels.includes(channel) &&
+						typeof name === "string" &&
+						name.length > 0
+				)
+			)
+			setLiveSignalKinds(channelSignalKinds)
+			setLiveSignalAxes(channelSignalAxes)
+			setLiveChannelNames(channelNames)
 			await window.electronAPI?.createSession?.({
 				sessionId: `${now}`,
 				startedAt: now,
-				deviceType: device instanceof Maker ? "maker" : "sense",
 				sampleRate,
-				channels: device.getChannels?.() ?? [],
+				channels: sessionChannels,
+				...(getOrderedEegChannels(channelSignalKinds, sessionChannels).length > 0
+					? { eegChannels: getOrderedEegChannels(channelSignalKinds, sessionChannels) }
+					: {}),
+				channelSignalKinds,
+				channelSignalAxes,
+				channelNames,
 				sessionFolder,
-				adcChars
+				adcChars,
+				firmwareVersion
 			});
 			await window.electronAPI?.registerSegment?.({
 				index: segmentRef.current,
@@ -577,7 +702,6 @@ const Page = () => {
 
 			device.onFrames = data => {
 				if (data == null) return;
-				// Always pass every frame to main process BufferManager via sendFrame
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
 					validFrames.forEach(frame => {
@@ -593,7 +717,6 @@ const Page = () => {
 
 			device.onError = error => {
 				console.error(error);
-				// No BufferManager in renderer; main process handles chunking
 				if (window.electronAPI?.acquisitionError && sessionFolder) {
 					window.electronAPI.acquisitionError(sessionFolder);
 				}
@@ -700,10 +823,6 @@ const Page = () => {
 		return () => {
 			cleanupPipeline();
 			deviceRef.current?.disconnect?.().catch(() => {});
-			// Reset main-process session state when navigating away.
-			// If finalizeSession was already called (normal stop flow), this is a no-op.
-			// If the user left without stopping, this ensures the next acquisition
-			// gets a fresh session folder instead of continuing the abandoned one.
 			window.electronAPI?.resetSession?.();
 		};
 	}, [cleanupPipeline])
@@ -723,11 +842,9 @@ const Page = () => {
 
 	const [showCloseModal, setShowCloseModal] = useState(false);
 
-	// Ref so event handlers always see the latest status without stale closures
 	const statusRef = useRef(status);
 	useEffect(() => { statusRef.current = status; }, [status]);
 
-	// Electron X button: warn if acquiring, else allow close
 	useEffect(() => {
 		if (!window.electronAPI?.onShowCloseWarning) return;
 		const removeCloseListener = window.electronAPI.onShowCloseWarning(() => {
@@ -738,9 +855,8 @@ const Page = () => {
 			}
 		});
 		return removeCloseListener;
-	}, []); // set up once — statusRef always has the latest value
+	}, []); 
 
-	// In-app navigation (home button): block if acquiring or paused
 	useEffect(() => {
 		const handleRouteChange = (url: string) => {
 			if (statusRef.current === STATUS.ACQUIRING || statusRef.current === STATUS.PAUSED) {
@@ -753,6 +869,28 @@ const Page = () => {
 		return () => { router.events.off('routeChangeStart', handleRouteChange); };
 	}, [router.events]);
 
+	const renderIoDots = (ports: string[]) =>
+		ports.map(io => {
+			const on = activeChannels[io] ?? false
+			return (
+				<span
+					key={io}
+					className="flex items-center gap-2 text-sm font-secondary"
+				>
+					{io}
+					<span
+						title={on ? "Receiving" : "Not receiving"}
+						aria-label={on ? "Receiving" : "Not receiving"}
+						className={`h-3 w-3 rounded-full border-2 transition-colors ${
+							on
+								? "border-green-500 bg-green-500"
+								: "border-over-background-highest bg-transparent"
+						}`}
+					/>
+				</span>
+			)
+		})
+
 	return (
 		<SenseLayout
 			className="container flex flex-col items-center justify-start gap-4 p-8"
@@ -763,7 +901,7 @@ const Page = () => {
 			{status === STATUS.CONNECTED && firmwareVersion !== null && (
 				<span>Firmware Version: {firmwareVersion}</span>
 			)}
-			<div className="flex flex-row gap-4">				{(status === STATUS.DISCONNECTED ||
+			<div className="relative flex w-full flex-row items-center justify-center gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
 					(status === STATUS.CONNECTION_LOST &&
@@ -795,6 +933,11 @@ const Page = () => {
 				)}
 				{(status === STATUS.ACQUIRING || status === STATUS.PAUSED) && (
 					<>
+						{status === STATUS.ACQUIRING && (
+							<div className="absolute left-4 flex flex-row gap-6">
+								{renderIoDots(IO_INPUTS)}
+							</div>
+						)}
 						<TextButton
 							size={"base"}
 							onClick={status === STATUS.PAUSED ? resume : pause}
@@ -804,6 +947,11 @@ const Page = () => {
 						<TextButton size={"base"} onClick={stop}>
 							Stop
 						</TextButton>
+						{status === STATUS.ACQUIRING && (
+							<div className="absolute right-4 flex flex-row gap-6">
+								{renderIoDots(IO_OUTPUTS)}
+							</div>
+						)}
 					</>
 				)}
 			</div>
@@ -829,7 +977,7 @@ const Page = () => {
 					initialValues={{
 						channelName: channels.reduce(
 							(acc, channel) => {
-							acc[channel] = channel || "";
+							acc[channel] = liveChannelNames[channel] ?? "";
 							return acc;
 						},
 						{} as Record<string, string>
@@ -837,21 +985,83 @@ const Page = () => {
 					}}
 					onSubmit={async values => {
 						const { channelName } = values;
+						setLiveChannelNames(channelName);
 						window.electronAPI?.setChannelNames?.(channelName);
+						writeLiveSettingsPatch({ channelNames: channelName });
 					}}
 				>
 					<Form className="flex w-full flex-col gap-4">
 						<FormikAutoSubmit delay={100} />
 						{channels.map(channel => {
+							const kind = liveSignalKinds[channel] ?? "";
+							const axis = liveSignalAxes[channel] ?? "";
 							return (
 								<Fragment key={channel}>
-									<div className="flex w-full flex-row">
+									<div className="flex w-full flex-row gap-4">
 										<TextField
 											id={`channelName.${channel}`}
 											name={`channelName.${channel}`}
 											className="mb-0"
 											placeholder={channel}
 										/>
+										<select
+											value={kind}
+											onChange={(event) => {
+												const nextKind = event.target.value;
+												setLiveSignalKinds(prev => {
+													const next = { ...prev };
+													if (!nextKind) delete next[channel]; else next[channel] = nextKind;
+													const nextEegChannels = getOrderedEegChannels(next, channels)
+													window.electronAPI?.updateSessionMeta?.({
+														channelSignalKinds: next,
+														eegChannels: nextEegChannels
+													});
+													writeLiveSettingsPatch({ channelSignalKinds: next, eegChannels: nextEegChannels });
+													return next;
+												});
+												setLiveSignalAxes(prev => {
+													const next = { ...prev };
+													if (nextKind === "acc") {
+														if (!next[channel]) next[channel] = "x";
+													} else {
+														if (!(channel in next)) return prev;
+														delete next[channel];
+													}
+													window.electronAPI?.updateSessionMeta?.({ channelSignalAxes: next });
+													writeLiveSettingsPatch({ channelSignalAxes: next });
+													return next;
+												});
+											}}
+											className="h-12 min-w-[6rem] rounded-md border border-background-accent bg-background px-2 py-0 text-xs text-over-background-highest outline-none"
+										>
+											{LIVE_SIGNAL_TYPE_OPTIONS.map(option => (
+												<option key={`${channel}-kind-${option.value || "empty"}`} value={option.value}>
+													{option.label}
+												</option>
+											))}
+										</select>
+										{kind === "acc" && (
+											<select
+												value={axis}
+												onChange={(event) => {
+													const nextAxis = event.target.value;
+													setLiveSignalAxes(prev => {
+														const next = { ...prev };
+														if (!nextAxis) delete next[channel]; else next[channel] = nextAxis;
+														window.electronAPI?.updateSessionMeta?.({ channelSignalAxes: next });
+														writeLiveSettingsPatch({ channelSignalAxes: next });
+														return next;
+													});
+												}}
+												className="h-12 min-w-[4rem] rounded-md border border-background-accent bg-background px-2 py-0 text-sm text-over-background-highest outline-none"
+											>
+												{LIVE_ACC_AXIS_OPTIONS.map(option => (
+													<option key={`${channel}-axis-${option.value || "empty"}`} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
+										)}
 									</div>
 									<div className="bg-background-accent flex w-full flex-col rounded-md">
 										<div className="w-full p-4">

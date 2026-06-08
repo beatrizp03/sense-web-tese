@@ -191,6 +191,7 @@ package.
 
 -   Node.js v20.20.0 or higher
 -   pnpm v10.30.1 or higher
+-   Python **3.11 or 3.12** (for the post-hoc analysis worker; required only if you want signal processing features such as ECG/EDA/PPG/RSP/PCG/ACC analysis)
 -   Windows, macOS, or Linux (tested on Windows)
 
 ## Setup & Installation
@@ -203,10 +204,21 @@ package.
    pnpm install
    ```
 
-2. **Build the web app (sense-web-v2):**
+2. **Install the Python packages used for signal analysis:**
+
+   The desktop app uses Python to analyze recorded sessions (ECG, EDA, PPG, etc.). Install the required packages with:
+
+   ```bash
+   pip install -r apps/sense-desktop/python/requirements.txt
+   ```
+   Then close and reopen the terminal window. 
+   
+   Make sure you're using Python 3.11 or 3.12. To check, run `python --version`. If you skip this step, analysis won't work and you'll see warnings like `BioSPPy module ... is unavailable`.
+
+3. **Build the web app (sense-web-v2):**
    This step is handled automatically when running the desktop app. No need to run or build `sense-web-v2` manually.
 
-3. **Run the Electron desktop app:**
+4. **Run the Electron desktop app:**
    ```bash
    pnpm dev:desktop
    ```
@@ -218,6 +230,7 @@ package.
 -   You do **not** need to run `sense-web-v2` separately; the desktop app handles everything.
 -   All development and production builds are managed via pnpm scripts.
 -   For production builds, refer to the Electron and Next.js documentation for packaging and distribution.
+-   The Python analysis worker is only invoked when you trigger post-hoc analysis on a recorded session. Acquisition itself does not depend on Python.
 
 # Contributing
 

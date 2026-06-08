@@ -182,7 +182,12 @@ const Page = () => {
 				fileContent.push(
 					"#NSeq," +
 					channels
-						.map(channel => storedChannelNames[channel] ?? channel)
+						.map(channel => {
+							const label = storedChannelNames[channel]
+							return typeof label === "string" && label.trim().length > 0
+								? `${label.trim()} - ${channel}`
+								: channel
+						})
 						.join(",")
 				);
 				// For each chunk file in this segment, load and stream frames

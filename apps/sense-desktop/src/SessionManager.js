@@ -31,11 +31,15 @@ class SessionManager {
         this.manifest = {
             sessionId: meta.sessionId,
             startedAt: meta.startedAt,
+            device: meta.device || meta.port || meta.devicePath || "",
             deviceType: meta.deviceType,
             sampleRate: meta.sampleRate,
             channels: meta.channels,
             channelNames: meta.channelNames || {},
+            channelSignalKinds: meta.channelSignalKinds || {},
+            channelSignalAxes: meta.channelSignalAxes || {},
             adcChars: meta.adcChars || {},
+            firmwareVersion: meta.firmwareVersion || "",
             segments: [],
             chunks: [],
             csvHeader: {
@@ -76,10 +80,23 @@ class SessionManager {
             }
         }
         if (patch.deviceType || patch.device || patch.channels || patch.sampleRate || patch.iso8601 || patch.timestamp || patch.resolutionBits || patch.resolution) {
+            var deviceVal = undefined;
+            if (patch.device && typeof patch.device === 'string' && patch.device.trim()) {
+                deviceVal = patch.device.trim();
+            }
+            else if (this.manifest.device && typeof this.manifest.device === 'string' && this.manifest.device.trim()) {
+                deviceVal = this.manifest.device.trim();
+            }
+            else if (patch.deviceType === 'sense' || this.manifest.deviceType === 'sense') {
+                deviceVal = 'ScientISST Sense';
+            }
+            else {
+                deviceVal = 'Maker';
+            }
             this.manifest.csvHeader = {
                 Device: patch.deviceType === "sense"
                     ? "ScientISST Sense"
-                    : "ScientISST Maker",
+                    : "Maker",
                 Channels: patch.channels || this.manifest.channels || [],
                 "Sampling rate (Hz)": patch.sampleRate || this.manifest.sampleRate || 0,
                 "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (this.manifest.startedAt ? new Date(this.manifest.startedAt).toISOString() : '')),

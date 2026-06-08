@@ -20,6 +20,11 @@ const Page = () => {
 						Live
 					</TextButton>
 				</Link>
+				<Link href="/analysis" legacyBehavior>
+					<TextButton size="lg" className="flex-grow">
+						Analysis
+					</TextButton>
+				</Link>
 				<Link href="/settings" legacyBehavior>
 					<TextButton size="lg" className="flex-grow">
 						Settings

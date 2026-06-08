@@ -31,11 +31,17 @@ declare global {
       readChunkFile?: (filePath: string) => Promise<any>;
       loadAllChunks?: () => Promise<{ meta: any }>;
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
+      selectAnalysisSessionFolder?: () => Promise<string | null>;
       openSerialPort?: (path: string, options?: any) => Promise<void>;
       readSerialPort?: (path: string, bytes: number, timeout: number) => Promise<Uint8Array>;
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
+      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy"> }) => Promise<any>;
+      cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
+      onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
+      readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
+      openExternalPath?: (path: string) => Promise<void>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
       confirmClose?: (shouldClose: boolean) => void;
@@ -45,6 +51,7 @@ declare global {
       loadSessionSettingsHistory?: () => Promise<SessionSettingsSnapshot[]>;
       saveSessionSettingsSnapshot?: (snapshot: SessionSettingsSnapshot) => Promise<SessionSettingsSnapshot[]>;
       clearSessionSettingsHistory?: () => Promise<void>;
+      setBusy?: (reason: string | null) => void;
     };
   }
 }

@@ -1,5 +1,21 @@
-// BufferManager: central frame ingestion and chunking logic
-// Replaces UISubscriber, StorageSubscriber, ProcessingSubscriber, parts of live.tsx, ChunkedDataWriter
+// BufferManager: central frame ingestion, buffering, and chunking publisher.
+//
+// Implements the publisher side of a publisher-subscriber model. 
+// Consumers register via subscribeStorage() and
+// subscribeProcessing().
+//
+// Subscribers
+// -----------
+//   storage:    finalized chunks are forwarded to disk writers
+//               (StorageSubscriber). Currently wired and active.
+//   processing: rolling windows are forwarded to live signal processors
+//               (ProcessingSubscriber). Scaffolded extension point;
+//               no live consumers implemented in current scope.
+//
+// Post-hoc analysis is NOT a subscriber here. It runs as a separate stage
+// (AnalysisManager + Python worker) operating on persisted session files
+// after acquisition completes. The on-disk session is the boundary between
+// the live acquisition path and the post-hoc analysis path.
 
 
 // Payload type for storage chunk
@@ -21,37 +37,31 @@ export class BufferManager {
   private finalChunkPromise: Promise<void> | null = null;
   private finalChunkResolver: (() => void) | null = null;
   private finalChunkPending: boolean = false;
-    // Add method to update chunk threshold after disk write
-    updateChunkThreshold(saveTime: number) {
-      const sampleRate = this.sessionMeta?.sampleRate || 1000;
-      this.storageChunkThreshold = Math.max(
-        sampleRate * 5,
-        Math.min(
-          sampleRate * (saveTime / 1000 / 0.005),
-          sampleRate * 10
-        )
-      );
-      if (process.env.BUFFER_MANAGER_LOGS === '1') {
-        console.log(`[BufferManager] Updated chunk threshold: ${this.storageChunkThreshold} (saveTime: ${saveTime}ms)`);
-      }
-    }
+  
   // Config/state
-  // Removed: uiRingBufferLimit
   private processingBufferLimit: number;
   private storageChunkThreshold: number;
   private chunkIndex = 0;
   private sessionMeta: SessionMeta | null = null;
   private frameSequence = 0;
 
+  /**
+   * @param options Optional configuration for the BufferManager
+   * @param options.uiWindowSize @deprecated UI ring buffer was removed; this option is ignored.
+   * @param options.processingWindowSize Maximum frames retained in the rolling
+   * processing buffer for live processing subscribers. Has no effect when no
+   * consumers are subscribed. Default: 10,000 frames (~10 seconds at 1 kHz).
+   * @param options.chunkSize Number of frames per storage chunk before flushing
+   * to disk subscribers. Default: 10,000 frames.
+   */
   constructor(options?: {
+    /** @deprecated UI ring buffer was removed; this option is ignored. */
     uiWindowSize?: number;
     processingWindowSize?: number;
     chunkSize?: number;
   }) {
-    // Removed: uiRingBufferLimit
     this.processingBufferLimit = options?.processingWindowSize ?? 10000;
     this.storageChunkThreshold = options?.chunkSize ?? 10000;
-    // Removed: uiRingBuffer
     this.processingBuffer = [];
     this.storageChunkBuffer = [];
   }
@@ -61,17 +71,30 @@ export class BufferManager {
   private storageChunkBuffer: any[];
 
   // Subscribers
-  // Removed: uiSubscribers
   private processingSubscribers: BufferManagerSubscriber<any[]>[] = [];
   private storageSubscribers: BufferManagerSubscriber<BufferManagerChunkPayload>[] = [];
 
-  // Removed: setUIWindowSize
   setProcessingWindowSize(size: number) {
     this.processingBufferLimit = size;
     this.processingBuffer = [];
   }
   setChunkSize(size: number) {
     this.storageChunkThreshold = size;
+  }
+
+  // Add method to update chunk threshold after disk write
+  updateChunkThreshold(saveTime: number) {
+    const sampleRate = this.sessionMeta?.sampleRate || 1000;
+    this.storageChunkThreshold = Math.max(
+      sampleRate * 5,
+      Math.min(
+        sampleRate * (saveTime / 1000 / 0.005),
+        sampleRate * 10
+      )
+    );
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[BufferManager] Updated chunk threshold: ${this.storageChunkThreshold} (saveTime: ${saveTime}ms)`);
+    }
   }
 
   startSession(meta?: SessionMeta) {
@@ -88,25 +111,27 @@ export class BufferManager {
     }
   }
 
-  // Removed: _pushRingBuffer and _getOrderedBuffer
-
   private _ingestFrame(frame: any) {
     // Stamp frame with monotonic sequence for x-axis
     const managedFrame = {
       ...frame,
       __seq: this.frameSequence++
     };
-    // Removed: UI ring buffer logic
-    // Processing buffer: bounded accumulator
-    this.processingBuffer.push(managedFrame);
-    if (this.processingBuffer.length > this.processingBufferLimit) {
-      this.processingBuffer.shift();
-    }
-    // Storage chunk buffer: linear accumulator
+
+    // Storage chunk buffer: linear accumulator (always active).
     this.storageChunkBuffer.push(managedFrame);
-    // Removed: UI notification
-    // Notify processing
-    this.processingSubscribers.forEach(cb => cb([...this.processingBuffer]));
+
+    // Processing buffer: bounded rolling window for live processing consumers.
+    // Skip maintenance entirely when no consumers are subscribed — the
+    // extension point has zero runtime cost while unused.
+    if (this.processingSubscribers.length > 0) {
+      this.processingBuffer.push(managedFrame);
+      if (this.processingBuffer.length > this.processingBufferLimit) {
+        this.processingBuffer.shift();
+      }
+      this.processingSubscribers.forEach(cb => cb([...this.processingBuffer]));
+    }
+
     // Chunking logic
     if (this.storageChunkBuffer.length >= this.storageChunkThreshold) {
       this.flushChunk(false);
@@ -135,7 +160,7 @@ export class BufferManager {
   }
 
   reset() {
-    // Removed: uiRingBuffer reset
+    
     this.processingBuffer = [];
     this.storageChunkBuffer = [];
     this.chunkIndex = 0;
@@ -185,7 +210,6 @@ export class BufferManager {
   }
 
   // Subscription methods
-  // Removed: subscribeUI
 
   subscribeProcessing(cb: BufferManagerSubscriber<any[]>) {
     this.processingSubscribers.push(cb);

@@ -3,28 +3,33 @@ import { ScientISSTFrame } from "@scientisst/sense/future"
 
 export class SessionManager {
   // Disk-backed session manifest path (set on create/load)
-  static manifestPath = null;
-  static manifest = null;
+  static manifestPath: string | null = null;
+  static manifest: any = null;
 
   // --- Manifest Management ---
-  static createSession(meta) {
+  static createSession(meta: any) {
     // meta: { sessionId, startedAt, deviceType, sampleRate, channels, sessionFolder, ... }
     const sessionFolder = meta.sessionFolder;
     this.manifestPath = `${sessionFolder}/session.json`;
     
     const resolutionBits = [];
     for (let j = 0; j < meta.channels.length; j++) {
-      resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[meta.channels[j]]);
+      resolutionBits.push((ScientISSTFrame as any).CHANNEL_SIZES[meta.channels[j]]);
     }
     
     this.manifest = {
       sessionId: meta.sessionId,
       startedAt: meta.startedAt,
+      device: meta.device || meta.port || meta.devicePath || "",
       deviceType: meta.deviceType,
       sampleRate: meta.sampleRate,
       channels: meta.channels,
       channelNames: meta.channelNames || {},
+      ...(Array.isArray(meta.eegChannels) && meta.eegChannels.length > 0 ? { eegChannels: meta.eegChannels } : {}),
+      channelSignalKinds: meta.channelSignalKinds || {},
+      channelSignalAxes: meta.channelSignalAxes || {},
       adcChars: meta.adcChars || {},
+      firmwareVersion: meta.firmwareVersion || "",
       segments: [],
       chunks: [],
       // CSV-style header for graph/data reconstruction
@@ -44,61 +49,76 @@ export class SessionManager {
     // Removed localStorage logic for TESTING flag; persistence is now only via chunk files.
   }
 
-  static updateSessionMeta(patch) {
+  static updateSessionMeta(patch: any) {
     if (!this.manifest) return;
-    Object.assign(this.manifest, patch);
+    const manifest = this.manifest as any;
+    Object.assign(manifest, patch);
+    if (Array.isArray(manifest.eegChannels) && manifest.eegChannels.length === 0) {
+      delete manifest.eegChannels;
+    }
     const resolutionBits = [];
-    for (let j = 0; j < this.manifest.channels.length; j++) {
-      resolutionBits.push(ScientISSTFrame.CHANNEL_SIZES[this.manifest.channels[j]]);
+    for (let j = 0; j < manifest.channels.length; j++) {
+      resolutionBits.push((ScientISSTFrame as any).CHANNEL_SIZES[manifest.channels[j]]);
     }
     
     // If patch contains any csvHeader-relevant fields, update csvHeader as well
     if (patch.deviceType || patch.device || patch.channels || patch.sampleRate || patch.iso8601 || patch.timestamp || patch.resolutionBits || patch.resolution) {
-      this.manifest.csvHeader = {
+      // prefer explicit device name (e.g. serial/bluetooth port) when available
+      let deviceVal: string | undefined = undefined;
+      if (patch.device && typeof patch.device === "string" && patch.device.trim()) {
+        deviceVal = patch.device.trim();
+      } else if (manifest.device && typeof manifest.device === "string" && manifest.device.trim()) {
+        deviceVal = manifest.device.trim();
+      } else if (patch.deviceType === "sense" || manifest.deviceType === "sense") {
+        deviceVal = "ScientISST Sense";
+      } else {
+        deviceVal = "ScientISST Maker";
+      }
+      manifest.csvHeader = {
         Device: patch.deviceType === "sense"
 						? "ScientISST Sense"
-						: "ScientISST Maker",
-        Channels: patch.channels || this.manifest.channels || [],
-        "Sampling rate (Hz)": patch.sampleRate || this.manifest.sampleRate || 0,
-        "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (this.manifest.startedAt ? new Date(this.manifest.startedAt).toISOString() : '')),
-        Timestamp: patch.timestamp || patch.startedAt || this.manifest.timestamp || this.manifest.startedAt || 0,
-        "Resolution (bits)": this.manifest.deviceType === "sense" ? resolutionBits : undefined
+						: "Maker",
+        Channels: patch.channels || manifest.channels || [],
+        "Sampling rate (Hz)": patch.sampleRate || manifest.sampleRate || 0,
+        "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (manifest.startedAt ? new Date(manifest.startedAt).toISOString() : '')),
+        Timestamp: patch.timestamp || patch.startedAt || manifest.timestamp || manifest.startedAt || 0,
+        "Resolution (bits)": manifest.deviceType === "sense" ? resolutionBits : undefined
       };
     }
     this._persistManifest();
     // Removed localStorage logic for TESTING flag; persistence is now only via chunk files.
   }
 
-  static registerSegment(segmentInfo) {
+  static registerSegment(segmentInfo: any) {
     // segmentInfo: { index, startedAt, endedAt }
     if (!this.manifest) return;
     this.manifest.segments.push(segmentInfo);
     this._persistManifest();
   }
 
-  static appendChunkRecord(file, segment, final) {
+  static appendChunkRecord(file: any, segment: any, final: any) {
     if (!this.manifest) return;
     this.manifest.chunks.push({ file, segment, final });
     this._persistManifest();
   }
 
-  static setChannelNames(names) {
+  static setChannelNames(names: any) {
     if (!this.manifest) return;
     this.manifest.channelNames = names;
     this._persistManifest();
   }
 
-  static finalizeSession(endedAt) {
+  static finalizeSession(endedAt: any) {
     if (!this.manifest) return;
     this.manifest.endedAt = endedAt;
     this._persistManifest();
   }
 
-  static loadSession(sessionPath) {
+  static loadSession(sessionPath: any) {
     this.manifestPath = sessionPath;
-    if (window?.electronAPI?.readSessionManifest) {
-      return window.electronAPI.readSessionManifest(sessionPath)
-        .then((manifest) => {
+    if ((window as any)?.electronAPI?.readSessionManifest) {
+      return (window as any).electronAPI.readSessionManifest(sessionPath)
+        .then((manifest: any) => {
           this.manifest = manifest;
           return manifest;
         });
@@ -113,9 +133,9 @@ export class SessionManager {
     }
   }
 
-  static updateSegmentEndedAt(index, endedAt) {
+  static updateSegmentEndedAt(index: any, endedAt: any) {
     if (!this.manifest || !Array.isArray(this.manifest.segments)) return;
-    const seg = this.manifest.segments.find(s => s.index === index);
+    const seg = this.manifest.segments.find((s: any) => s.index === index);
     if (seg) {
       seg.endedAt = endedAt;
       this._persistManifest();
@@ -124,8 +144,8 @@ export class SessionManager {
 
   // --- Internal ---
   static _persistManifest() {
-    if (window?.electronAPI?.updateSessionManifest && this.manifest) {
-      window.electronAPI.updateSessionManifest(this.manifest);
+    if ((window as any)?.electronAPI?.updateSessionManifest && this.manifest) {
+      (window as any).electronAPI.updateSessionManifest(this.manifest);
     }
   }
 }

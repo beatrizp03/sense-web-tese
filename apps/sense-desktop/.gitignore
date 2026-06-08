@@ -1,0 +1,6 @@
+python/build/
+python/dist/
+python/__pycache__/
+release/
+
+data/*/

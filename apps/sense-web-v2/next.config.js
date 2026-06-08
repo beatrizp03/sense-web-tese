@@ -9,7 +9,10 @@ const nextConfig = {
 		"@scientisst/sense",
 		"@scientisst/chakra-ui",
 		"esptool-js"
-	]
+	],
+	logging: {
+		incomingRequests: false
+	}
 }
 
 module.exports = nextConfig

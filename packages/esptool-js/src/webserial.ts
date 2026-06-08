@@ -1,6 +1,6 @@
 class Transport {
 	public slip_reader_enabled = false
-	public left_over = new Uint8Array(0)
+	public left_over: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
 	public baudrate = 0
 
 	constructor(public device: SerialPort) {}
@@ -59,7 +59,7 @@ class Transport {
 		}
 	}
 
-	_appendBuffer(buffer1: ArrayBuffer, buffer2: ArrayBuffer) {
+	_appendBuffer(buffer1: ArrayBufferLike, buffer2: ArrayBufferLike) {
 		const tmp = new Uint8Array(buffer1.byteLength + buffer2.byteLength)
 		tmp.set(new Uint8Array(buffer1), 0)
 		tmp.set(new Uint8Array(buffer2), buffer1.byteLength)
@@ -193,7 +193,6 @@ class Transport {
 
 	_DTR_state = false
 	async setRTS(state: boolean) {
-		// @ts-expect-error
 		await this.device.setSignals({ requestToSend: state })
 		// # Work-around for adapters on Windows using the usbser.sys driver:
 		// # generate a dummy change to DTR so that the set-control-line-state
@@ -204,7 +203,6 @@ class Transport {
 
 	async setDTR(state: boolean) {
 		this._DTR_state = state
-		// @ts-expect-error
 		await this.device.setSignals({ dataTerminalReady: state })
 	}
 

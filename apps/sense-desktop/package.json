@@ -8,10 +8,57 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "start:no-warnings": "set ELECTRON_DISABLE_SECURITY_WARNINGS=1 && electron ."
+    "start:no-warnings": "set ELECTRON_DISABLE_SECURITY_WARNINGS=1 && electron .",
+    "build:worker": "python python/build_worker.py",
+    "dist": "pnpm run build:worker && electron-builder",
+    "dist:nobuild": "electron-builder"
   },
   "dependencies": {
     "electron": "^40.6.1",
     "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.1.0"
+  },
+  "build": {
+    "appId": "com.scientisst.sense-desktop",
+    "productName": "SENSE Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "dist/**/*",
+      "src/**/*",
+      "!python/__pycache__/**",
+      "!python/build/**",
+      "!python/dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "python/dist/",
+        "to": "python/",
+        "filter": [
+          "analysis_worker",
+          "analysis_worker.exe"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
   }
 }

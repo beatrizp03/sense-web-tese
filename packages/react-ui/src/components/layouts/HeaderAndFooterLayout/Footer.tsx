@@ -52,6 +52,8 @@ const Footer: React.FC<FooterProps> = ({
 											key={index}
 											href={href}
 											ariaLabel={ariaLabel}
+											target="_blank"
+											rel="noopener noreferrer"
 										>
 											<FontAwesomeIcon
 												icon={icon}
@@ -98,6 +100,8 @@ const Footer: React.FC<FooterProps> = ({
 										key={index}
 										href={href}
 										ariaLabel={ariaLabel}
+										target="_blank"
+										rel="noopener noreferrer"
 									>
 										{img}
 									</ImageAnchor>

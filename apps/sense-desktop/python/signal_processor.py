@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Unified BioSPPy signal wrapper for post-hoc analysis.
+
+This module provides a stable API around biosppy.signals.* handlers so callers
+can process multiple signal kinds using one function and receive a consistent
+payload shape.
+"""
+
+from __future__ import annotations
+
+import importlib
+import math
+from statistics import mean, pstdev
+from typing import Any, Dict, List, Optional, Sequence
+
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - runtime dependency in production
+    np = None
+
+BIOSPPY_SIGNAL_MAP = {
+    "ecg": ("ecg", "ecg"),
+    "eda": ("eda", "eda"),
+    "ppg": ("ppg", "ppg"),
+    "emg": ("emg", "emg"),
+    # BioSPPy exposes respiration under resp.resp; rsp is accepted as an alias.
+    "rsp": ("resp", "resp"),
+    "eeg": ("eeg", "eeg"),
+    "pcg": ("pcg", "pcg"),
+    "acc": ("acc", "acc")
+}
+
+SUPPORTED_SIGNAL_KINDS = set(BIOSPPY_SIGNAL_MAP.keys())
+
+_biosppy_modules: Dict[str, Optional[Any]] = {}
+for module_name, _ in set(BIOSPPY_SIGNAL_MAP.values()):
+    try:
+        _biosppy_modules[module_name] = importlib.import_module(f"biosppy.signals.{module_name}")
+    except Exception:
+        _biosppy_modules[module_name] = None
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        converted = float(value)
+        if math.isnan(converted) or math.isinf(converted):
+            return None
+        return converted
+    except Exception:
+        return None
+
+
+def _numeric_stats(values: Sequence[float]) -> Dict[str, Any]:
+    if not values:
+        return {"count": 0, "mean": None, "std": None, "min": None, "max": None}
+    if len(values) == 1:
+        return {
+            "count": 1,
+            "mean": values[0],
+            "std": 0.0,
+            "min": values[0],
+            "max": values[0],
+        }
+    return {
+        "count": len(values),
+        "mean": mean(values),
+        "std": pstdev(values),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def _to_serializable(value: Any) -> Any:
+    if value is None:
+        return None
+    if np is not None and hasattr(value, "tolist"):
+        try:
+            return value.tolist()
+        except Exception:
+            return str(value)
+    if isinstance(value, dict):
+        return {key: _to_serializable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_serializable(item) for item in value]
+    if isinstance(value, (int, float, str, bool)):
+        return value
+    return str(value)
+
+
+def _result_to_mapping(result: Any) -> Dict[str, Any]:
+    if isinstance(result, dict):
+        return result
+
+    for converter_name in ("as_dict", "_asdict"):
+        converter = getattr(result, converter_name, None)
+        if callable(converter):
+            try:
+                converted = converter()
+                if isinstance(converted, dict):
+                    return converted
+            except Exception:
+                pass
+
+    try:
+        converted = dict(result)
+        if isinstance(converted, dict):
+            return converted
+    except Exception:
+        pass
+
+    keys_attr = getattr(result, "keys", None)
+    if callable(keys_attr):
+        try:
+            keys = list(keys_attr())
+            converted = {key: result[key] for key in keys}
+            if isinstance(converted, dict):
+                return converted
+        except Exception:
+            pass
+
+    return {}
+
+
+def _normalize_peak_indices(value: Any) -> List[int]:
+    if value is None:
+        return []
+    if np is not None and hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except Exception:
+            value = str(value)
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    normalized: List[int] = []
+    seen = set()
+    for item in value:
+        candidate = _safe_float(item)
+        if candidate is None:
+            continue
+        peak_index = int(round(candidate))
+        if peak_index < 0 or peak_index in seen:
+            continue
+        seen.add(peak_index)
+        normalized.append(peak_index)
+    return normalized
+
+
+def _correct_ecg_peak_outliers(signal: Any, result_mapping: Dict[str, Any], sample_rate: float) -> None:
+    peaks = _normalize_peak_indices(result_mapping.get("rpeaks"))
+    if len(peaks) < 3:
+        result_mapping.setdefault("warnings", []).append(
+            "BioSPPy ECG peak correction skipped: fewer than 3 peaks present"
+        )
+        return
+
+    try:
+        from biosppy.signals import ecg as biosppy_ecg
+    except Exception:
+        return
+
+    try:
+        corrected = biosppy_ecg.correct_rpeaks(
+            signal=signal,
+            rpeaks=peaks,
+            sampling_rate=float(sample_rate),
+        )
+    except Exception:
+        return
+
+    corrected_peaks = _normalize_peak_indices(getattr(corrected, "rpeaks", None))
+    if corrected_peaks:
+        result_mapping["rpeaks"] = corrected_peaks
+
+
+def _flatten_numeric(value: Any) -> List[float]:
+    """Recursively collect finite numbers from a (possibly multi-dimensional)
+    sequence. Some BioSPPy outputs are 2-D — e.g. EEG band powers are
+    (windows x channels) and ECG/PPG templates are (beats x samples). Without
+    flattening, only 1-D arrays (the time axes) yield stats, so the meaningful
+    features are silently dropped."""
+    result: List[float] = []
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            result.extend(_flatten_numeric(item))
+        return result
+    numeric = _safe_float(value)
+    if numeric is not None:
+        result.append(numeric)
+    return result
+
+
+def _extract_features(result_mapping: Dict[str, Any]) -> Dict[str, Any]:
+    features: Dict[str, Any] = {}
+    for key, raw_value in result_mapping.items():
+        value = _to_serializable(raw_value)
+
+        if isinstance(value, (int, float)):
+            features[key] = value
+            continue
+
+        if isinstance(value, list):
+            numeric_values = _flatten_numeric(value)
+
+            if numeric_values:
+                stats = _numeric_stats(numeric_values)
+                features[f"{key}_count"] = stats["count"]
+                features[f"{key}_mean"] = stats["mean"]
+                features[f"{key}_std"] = stats["std"]
+                features[f"{key}_min"] = stats["min"]
+                features[f"{key}_max"] = stats["max"]
+            continue
+
+        if isinstance(value, dict):
+            # Keep nested maps as JSON in the analysis result, but exclude them
+            # from scalar CSV features unless caller flattens further.
+            continue
+
+    return features
+
+
+def process_signal(signal_kind: str, values: Sequence[float], sample_rate: float) -> Dict[str, Any]:
+    normalized_kind = str(signal_kind or "").strip().lower()
+    if normalized_kind not in SUPPORTED_SIGNAL_KINDS:
+        return {
+            "signalKind": normalized_kind or "unknown",
+            "library": "biosppy",
+            "available": False,
+            "features": {},
+            "output": None,
+            "warnings": [f"Unsupported BioSPPy signal kind: {signal_kind!r}"],
+        }
+
+    module_name, function_name = BIOSPPY_SIGNAL_MAP[normalized_kind]
+    module = _biosppy_modules.get(module_name)
+    if module is None:
+        return {
+            "signalKind": normalized_kind,
+            "library": "biosppy",
+            "available": False,
+            "features": {},
+            "output": None,
+            "warnings": [f"BioSPPy module biosppy.signals.{module_name} is unavailable"],
+        }
+
+    handler = getattr(module, function_name, None)
+    if not callable(handler):
+        return {
+            "signalKind": normalized_kind,
+            "library": "biosppy",
+            "available": False,
+            "features": {},
+            "output": None,
+            "warnings": [f"BioSPPy function {function_name} is unavailable in module {module_name}"],
+        }
+
+    signal = np.asarray(values, dtype=float) if np is not None else list(values)
+
+    try:
+        result = handler(signal=signal, sampling_rate=float(sample_rate), show=False)
+        result_mapping = _result_to_mapping(result)
+        if normalized_kind == "ecg":
+            _correct_ecg_peak_outliers(signal, result_mapping, sample_rate)
+        serializable = (
+            _to_serializable(result_mapping)
+            if result_mapping
+            else {"result": _to_serializable(result)}
+        )
+        features = _extract_features(result_mapping)
+
+        return {
+            "signalKind": normalized_kind,
+            "library": "biosppy",
+            "available": True,
+            "features": features,
+            "output": serializable,
+            "warnings": [],
+        }
+    except Exception as exc:
+        return {
+            "signalKind": normalized_kind,
+            "library": "biosppy",
+            "available": True,
+            "features": {},
+            "output": None,
+            "warnings": [f"BioSPPy {normalized_kind.upper()} processing failed: {exc}"],
+        }

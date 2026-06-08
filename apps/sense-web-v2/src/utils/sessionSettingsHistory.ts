@@ -4,6 +4,9 @@ export type SessionSettings = {
 	baudRate?: number
 	samplingRate?: number
 	channels?: string[]
+	eegChannels?: string[]
+	channelSignalKinds?: Record<string, string>
+	channelSignalAxes?: Record<string, string>
 	[key: string]: unknown
 }
 
@@ -46,12 +49,34 @@ function getSettingsLabel(settings: SessionSettings): string {
 		return `Maker - ${settings.baudRate ?? 9600} baud`
 	}
 
-	const channelsLabel = Array.isArray(settings.channels) && settings.channels.length > 0
-		? settings.channels.map(String).join(", ")
-		: "No channels"
+	const channels = Array.isArray(settings.channels)
+		? settings.channels.map(String)
+		: []
+	const channelsLabel = channels.length > 0 ? channels.join(", ") : "No channels"
+	const signalKinds =
+		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
+			? settings.channelSignalKinds
+			:  {}
+	const signalAxes =
+		settings.channelSignalAxes && typeof settings.channelSignalAxes === "object"
+			? settings.channelSignalAxes
+			: {}
+	const signalTypesLabel =
+		channels.length > 0
+			? channels
+					.map(channel => {
+						const kind = signalKinds[channel]
+						const axis = signalAxes[channel]
+						if (kind === "acc" && typeof axis === "string" && axis.length > 0) {
+							return `${channel}:${kind.toUpperCase()}(${axis.toUpperCase()})`
+						}
+						return `${channel}:${typeof kind === "string" && kind.length > 0 ? kind.toUpperCase() : "--"}`
+					})
+					.join(", ")
+			: "No channels"
 	const rate = settings.samplingRate ?? 1000
 	const mode = settings.communication === 0 ? "WiFi" : "Bluetooth"
-	return `Sense - ${channelsLabel} - ${rate} Hz - ${mode}`
+	return `Sense | ${signalTypesLabel} | ${rate} Hz | ${mode}`
 }
 
 function normalizeSnapshotLabels(snapshots: SessionSettingsSnapshot[]): SessionSettingsSnapshot[] {
@@ -65,19 +90,52 @@ function getSettingsFingerprint(settings: SessionSettings): string {
 	const channels = Array.isArray(settings.channels)
 		? [...settings.channels].map(String).sort()
 		: []
+	const eegChannels = Array.isArray(settings.eegChannels)
+		? settings.eegChannels.map(String).filter(channel => channel.length > 0)
+		: []
+	const channelSignalKinds =
+		settings.channelSignalKinds && typeof settings.channelSignalKinds === "object"
+			? Object.entries(settings.channelSignalKinds)
+					.filter(
+						([channel, kind]) =>
+							channels.includes(String(channel)) &&
+							typeof kind === "string" &&
+							kind.length > 0
+					)
+					.sort(([a], [b]) => String(a).localeCompare(String(b)))
+			: []
+	const channelSignalAxes =
+		settings.channelSignalAxes && typeof settings.channelSignalAxes === "object"
+			? Object.entries(settings.channelSignalAxes)
+					.filter(
+						([channel, axis]) =>
+							channels.includes(String(channel)) &&
+							typeof axis === "string" &&
+							axis.length > 0
+					)
+					.sort(([a], [b]) => String(a).localeCompare(String(b)))
+			: []
 
 	return JSON.stringify({
 		deviceType: settings.deviceType ?? null,
 		communication: settings.communication ?? null,
 		baudRate: settings.baudRate ?? null,
 		samplingRate: settings.samplingRate ?? null,
-		channels
+		channels,
+		eegChannels,
+		channelSignalKinds,
+		channelSignalAxes
 	})
 }
 
 export function getCurrentSettings(): SessionSettings {
 	if (!hasLocalStorage()) return {}
 	return safeParse<SessionSettings>(window.localStorage.getItem(CURRENT_SETTINGS_KEY), {})
+}
+
+export function saveCurrentSettings(settings: SessionSettings): void {
+	if (!hasLocalStorage()) return
+	window.localStorage.setItem(CURRENT_SETTINGS_KEY, JSON.stringify(settings))
 }
 
 export function loadLastSessionSettings(): SessionSettingsSnapshot[] {

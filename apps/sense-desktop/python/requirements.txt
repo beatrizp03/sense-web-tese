@@ -1,0 +1,37 @@
+# Signal-processing libraries
+biosppy==2.2.4
+neurokit2==0.2.13
+
+# Required by biosppy.signals.ecg but NOT declared in biosppy's own metadata,
+# so pin explicitly to avoid `ModuleNotFoundError: No module named 'peakutils'`.
+peakutils>=1.3.4
+
+# Core scientific stack (declared by biosppy and neurokit2 but pinned here for
+# reproducibility and to keep installs working even if upstream metadata drifts).
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+matplotlib>=3.7
+scikit-learn>=1.3
+
+# biosppy transitive deps
+h5py>=3.9
+joblib>=1.3
+six>=1.16
+bidict>=0.22
+shortuuid>=1.0
+opencv-python>=4.8
+pywavelets>=1.4
+mock>=5.0
+
+# neurokit2 transitive deps (pywavelets already listed above)
+requests>=2.31
+setuptools>=68
+
+# Required by neurokit2's EOG processing (nk.eog_process -> signal_filter via MNE)
+# but not declared as a hard dep, so pin it explicitly to avoid runtime failure
+# with "the 'mne' module is required for this method to run".
+mne>=1.6
+
+# Used to build the standalone analysis worker binary in packaged builds
+pyinstaller>=6.0
