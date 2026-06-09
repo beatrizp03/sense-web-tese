@@ -915,6 +915,98 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   }
 });
 
+// Build a whole-session min/max envelope for each channel, streamed chunk by
+// chunk so the full raw signal is never held in memory. Returns ~targetPoints
+// points per channel (two per bucket) for a lightweight minimap overview.
+ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoints) => {
+  const target = Number(targetPoints) > 0 ? Number(targetPoints) : 2000;
+  const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
+  if (!folder) return { sampleRate: 0, totalSamples: 0, series: {} };
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'session.json'), 'utf-8'));
+  const sampleRate = Number(manifest.sampleRate) || 1000;
+  const channels = Array.isArray(manifest.channels) ? manifest.channels.map(String) : [];
+
+  const chunks = (Array.isArray(manifest.chunks) ? [...manifest.chunks] : []).sort((a, b) => {
+    const sa = Number(a?.segment) || 0;
+    const sb = Number(b?.segment) || 0;
+    if (sa !== sb) return sa - sb;
+    const ia = Number(String(a?.file).match(/chunk(\d+)/)?.[1] ?? 0);
+    const ib = Number(String(b?.file).match(/chunk(\d+)/)?.[1] ?? 0);
+    return ia - ib;
+  });
+
+  // Estimate the total sample count from segment timing to size the buckets in
+  // a single pass. Falls back to ~1s buckets when timing is unavailable.
+  let estTotal = 0;
+  for (const seg of Array.isArray(manifest.segments) ? manifest.segments : []) {
+    const st = Number(seg?.startedAt);
+    const en = Number(seg?.endedAt);
+    if (Number.isFinite(st) && Number.isFinite(en) && en > st) {
+      estTotal += Math.round(((en - st) / 1000) * sampleRate);
+    }
+  }
+  const buckets = Math.max(1, Math.floor(target / 2));
+  const bucketSamples = estTotal > 0 ? Math.max(1, Math.floor(estTotal / buckets)) : Math.max(1, sampleRate);
+
+  const series = {};
+  const state = {};
+  for (const ch of channels) {
+    series[ch] = [];
+    state[ch] = { has: false, min: 0, max: 0, minIdx: 0, maxIdx: 0 };
+  }
+
+  const flush = ch => {
+    const st = state[ch];
+    if (!st.has) return;
+    if (st.minIdx <= st.maxIdx) {
+      series[ch].push([st.minIdx, st.min], [st.maxIdx, st.max]);
+    } else {
+      series[ch].push([st.maxIdx, st.max], [st.minIdx, st.min]);
+    }
+    st.has = false;
+  };
+
+  let globalIdx = 0;
+  let currentBucket = 0;
+  for (const chunk of chunks) {
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(
+        path.isAbsolute(chunk.file) ? chunk.file : path.join(folder, chunk.file),
+        'utf-8'
+      ));
+    } catch (e) {
+      console.error('[decimate-session] Failed to read chunk', chunk.file, e);
+      continue;
+    }
+    const frames = Array.isArray(data?.frames) ? data.frames : Array.isArray(data) ? data : [];
+    for (const frame of frames) {
+      const bucket = Math.floor(globalIdx / bucketSamples);
+      if (bucket !== currentBucket) {
+        for (const ch of channels) flush(ch);
+        currentBucket = bucket;
+      }
+      for (const ch of channels) {
+        const v = Number(frame?.channels?.[ch]);
+        if (!Number.isFinite(v)) continue;
+        const st = state[ch];
+        if (!st.has) {
+          st.has = true;
+          st.min = v; st.max = v; st.minIdx = globalIdx; st.maxIdx = globalIdx;
+        } else {
+          if (v < st.min) { st.min = v; st.minIdx = globalIdx; }
+          if (v > st.max) { st.max = v; st.maxIdx = globalIdx; }
+        }
+      }
+      globalIdx++;
+    }
+  }
+  for (const ch of channels) flush(ch);
+
+  return { sampleRate, totalSamples: globalIdx, series };
+});
+
 ipcMain.handle('run-posthoc-analysis', async (_event, payload = {}) => {
   const sessionFolderPath = payload.sessionFolder || sessionFolder || lastSessionFolder;
   if (!sessionFolderPath) {

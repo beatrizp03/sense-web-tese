@@ -31,6 +31,14 @@ declare global {
       readChunkFile?: (filePath: string) => Promise<any>;
       loadAllChunks?: () => Promise<{ meta: any }>;
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
+      decimateSession?: (
+        sessionFolder: string,
+        targetPoints?: number
+      ) => Promise<{
+        sampleRate: number;
+        totalSamples: number;
+        series: Record<string, [number, number][]>;
+      }>;
       selectAnalysisSessionFolder?: () => Promise<string | null>;
       openSerialPort?: (path: string, options?: any) => Promise<void>;
       readSerialPort?: (path: string, bytes: number, timeout: number) => Promise<Uint8Array>;

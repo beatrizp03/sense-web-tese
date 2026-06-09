@@ -325,6 +325,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadPreviewFrames: async (sampleNum, frameCount) => {
     return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
   },
+  decimateSession: async (sessionFolder, targetPoints) => {
+    return await ipcRenderer.invoke('decimate-session', sessionFolder, targetPoints);
+  },
   openSerialPort,
   readSerialPort,
   closeSerialPort,

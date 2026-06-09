@@ -4,7 +4,6 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
 import { AnalysisProgressPanel } from "../components/analysis/AnalysisProgressPanel"
-import SessionChart from "../components/processing/SessionChart"
 import { useBusyGuard } from "../hooks/useBusyGuard"
 
 type AnalysisTab = "import" | "results"
@@ -172,7 +171,6 @@ const Page = () => {
 			? (manifest.channelNames as Record<string, string>)
 			: {}
 	}, [manifest])
-
 
 	const appliedSignalKinds = useMemo(() => {
 		const existing = toRecord(manifest?.analysis?.signalKinds ?? manifest?.channelSignalKinds)
@@ -555,43 +553,397 @@ const Page = () => {
 	const analysisSegmentCount = Array.isArray(currentAnalysis?.segments)
 		? currentAnalysis.segments.length
 		: 0
-	// A session is loaded once we have channels and chunk data to plot.
-	const hasSession = channels.length > 0 && chunkCount > 0
 
 	return (
 		<SenseLayout
-			title="Processing"
-			shortTitle="Processing"
+			title="Signal Analysis"
+			shortTitle="Analysis"
 			returnHref="/"
-			className="container flex flex-col items-center justify-start gap-6 p-8"
+			className="container flex flex-col items-center justify-start gap-6 py-8"
 		>
-			<div className="w-full max-w-5xl space-y-6">
+			<div className="w-full max-w-4xl space-y-6">
 				<div className="rounded-xl border border-background-accent bg-background-accent p-6 shadow-sm">
 					<div className="flex flex-col gap-4">
 						<div className="space-y-0">
 							<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Post-processing</p>
-							<h1 className="font-secondary text-3xl text-over-background-highest">Analysis and Annotation</h1>
+							<h1 className="font-secondary text-3xl text-over-background-highest">Analysis</h1>
 							<p className="max-w-2xl text-sm text-over-background-medium">
-								Import a session folder, map the channels you want, and run the batch analysis or annotate.
+								Import a session folder, map the channels you want, and run the batch analysis.
 							</p>
 						</div>
 						<div className="flex flex-wrap gap-3">
 							<TextButton size="base" onClick={importSessionFolder} disabled={loading}>
 								Import Session Folder
 							</TextButton>
+							<TextButton size="base" onClick={runAnalysis} disabled={loading || !sessionFolder}>
+								Run Analysis
+							</TextButton>
+						</div>
+
+						<div className="mt-3 flex items-center gap-4">
+							<label className="flex items-center gap-2 text-sm">
+								<input
+									type="checkbox"
+									checked={outlierRemovalEnabled}
+									onChange={e => setOutlierRemovalEnabled(e.target.checked)}
+								/>
+								<span>Enable Outlier Removal (library-provided)</span>
+							</label>
+
+							<label className="text-sm flex items-center gap-2">
+								<span>Library used:</span>
+								<select value={edaMethodSelection} onChange={e => setEdaMethodSelection(e.target.value as any)} className="rounded-full border bg-background px-3 py-1 text-sm">
+									<option value="auto">Auto</option>
+									<option value="neurokit">NeuroKit2</option>
+									<option value="biosppy">BioSPPy</option>
+								</select>
+							</label>
 						</div>
 					</div>
 				</div>
 
-				{hasSession && (
-					<SessionChart
-						channels={channels}
-						manifest={manifest}
-						sessionFolder={sessionFolder}
-						channelNames={channelNames}
-						signalKinds={appliedSignalKinds}
-					/>
-				)}
+				<section className="rounded-xl border border-background-accent bg-background-accent p-6 shadow-sm">
+					<div className="flex flex-wrap gap-2 border-b border-background-accent pb-4">
+						{(["import", "results"] as AnalysisTab[]).map(tab => (
+							<button
+								key={tab}
+								type="button"
+								onClick={() => setActiveTab(tab)}
+								className={`rounded-full px-4 py-2 text-sm font-medium transition ${activeTab === tab ? "bg-primary text-white" : "bg-background-accent text-over-background-medium"}`}
+							>
+								{tab === "import" ? "Import" : "Results"}
+							</button>
+						))}
+					</div>
+
+					{activeTab === "import" ? (
+						<div className="-mt-3 space-y-0">
+							<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+								<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+									<div>
+										<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Imported session</p>
+										<p className="font-medium text-over-background-highest">{sessionFolder || "No session imported yet"}</p>
+									</div>
+									<div className="text-sm text-over-background-medium">
+										{chunkCount > 0 ? `${chunkCount} chunk files` : "Awaiting chunk files"}
+									</div>
+								</div>
+								<div className="mt-3 flex flex-wrap gap-3 text-xs text-over-background-medium">
+									<span>Channels: {channels.length || 0}</span>
+									<span>Segments: {segmentCount}</span>
+								</div>
+							</div>
+
+							<div className="grid items-start gap-6 lg:grid-cols-5">
+								<div className="space-y-0 lg:col-span-3">
+									<p className="flex min-h-[4.5rem] items-center p-4 text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to exclude it from library analysis.</p>
+									{channels.length > 0 ? (
+										channels.map(channel => {
+											const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""
+													const selectedAxis = signalAxes[channel] ?? toAxisRecord(manifest?.channelSignalAxes)[channel] ?? ""
+											const isExcluded = Boolean(excludedChannels[channel])
+											return (
+												<div key={channel} className={`flex min-h-[4rem] flex-col rounded-xl border border-background-accent bg-background-accent-light p-3 sm:flex-row sm:items-center sm:justify-between dark:bg-background-accent-dark ${isExcluded ? "opacity-60" : ""}`}>
+													<div className="flex items-center justify-between gap-3">
+														<label className="flex items-center gap-3" title={isExcluded ? "Excluded — raw series only" : "Included in analysis"}>
+															<input
+																type="checkbox"
+																checked={!isExcluded}
+																onChange={event => {
+																	const include = event.target.checked
+																	setExcludedChannels(current => {
+																		const next = { ...current }
+																		if (include) {
+																			delete next[channel]
+																		} else {
+																			next[channel] = true
+																		}
+																		return next
+																	})
+																}}
+															/>
+															<div>
+																<div className="text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{channelNames[channel] ?? channel}</div>
+																<div className="text-sm text-over-background-low-light dark:text-over-background-low-dark">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
+															</div>
+														</label>
+														<select
+															value={selectedValue}
+															onChange={event => {
+																const nextValue = event.target.value
+																setSignalKinds(current => {
+																	const next = { ...current }
+																	if (!nextValue) {
+																		delete next[channel]
+																	} else {
+																		next[channel] = nextValue
+																	}
+																	return next
+																})
+																		setSignalAxes(current => {
+																			const next = { ...current }
+																			if (nextValue === "acc") {
+																				next[channel] = next[channel] || "x"
+																			} else {
+																				delete next[channel]
+																			}
+																			return next
+																		})
+															}}
+															className="min-w-[7rem] rounded-full border border-background-accent bg-background px-3 py-2 text-sm text-over-background-highest outline-none"
+														>
+															{SIGNAL_TYPE_OPTIONS.map(option => (
+																<option key={`${channel}-${option.value || "empty"}`} value={option.value}>
+																	{option.label}
+																</option>
+															))}
+														</select>
+																{selectedValue === "acc" ? (
+																	<select
+																		value={selectedAxis}
+																		onChange={event => {
+																			const nextAxis = event.target.value
+																			setSignalAxes(current => ({
+																				...current,
+																				[channel]: nextAxis
+																			}))
+																		}}
+																		className="min-w-[5rem] rounded-full border border-background-accent bg-background px-3 py-2 text-sm text-over-background-highest outline-none"
+																	>
+																		{ACC_AXIS_OPTIONS.map(option => (
+																			<option key={`${channel}-axis-${option.value || "empty"}`} value={option.value}>
+																				{option.label}
+																			</option>
+																		))}
+																	</select>
+																) : null}
+													</div>
+												</div>
+										)
+										})
+									) : (
+										<div className="rounded-xl border border-dashed border-background-accent p-6 text-sm text-over-background-medium">
+											Import a session folder to load its channels and start analysis.
+										</div>
+									)}
+								</div>
+
+								{allAssignedKinds.length > 0 ? (
+									<div className="space-y-0 lg:col-span-2">
+										<p className="flex min-h-[4.5rem] items-center p-4 text-xs text-over-background-medium">Override the analysis library per signal type. &quot;Default&quot; follows the global &quot;Library used&quot;.</p>
+										{allAssignedKinds.map(kind => {
+											const kindActive = assignedKinds.includes(kind)
+											return (
+												<div key={`lib-${kind}`} className={`flex min-h-[4rem] items-center gap-3 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${kindActive ? "" : "opacity-60"}`}>
+													<span className="min-w-[3rem] text-sm font-medium uppercase text-over-background-highest-light dark:text-over-background-highest-dark">{kind}</span>
+													<select
+														value={signalKindLibraries[kind] ?? ""}
+														disabled={!kindActive}
+														title={kindActive ? undefined : "All channels of this signal type are excluded from analysis"}
+														onChange={event => {
+															const nextValue = event.target.value
+															setSignalKindLibraries(current => {
+																const next = { ...current }
+																if (nextValue === "neurokit" || nextValue === "biosppy") {
+																	next[kind] = nextValue
+																} else {
+																	delete next[kind]
+																}
+																return next
+															})
+														}}
+														className="min-w-[7rem] rounded-full border border-background-accent bg-background px-3 py-2 text-sm text-over-background-highest outline-none disabled:cursor-not-allowed"
+													>
+														<option value="">Default</option>
+														<option value="neurokit">NeuroKit2</option>
+														<option value="biosppy">BioSPPy</option>
+													</select>
+												</div>
+											)
+										})}
+									</div>
+								) : null}
+							</div>
+						</div>
+					) : (
+						<div className="-mt-3 space-y-0">
+							<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+								<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Analysis status</p>
+								<p className="mt-2 text-sm text-over-background-highest">{status}</p>
+								{error && <p className="mt-2 text-sm text-primary">{error}</p>}
+							</div>
+
+							<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+								<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary</p>
+								<div className="mt-3 grid gap-3 text-sm text-over-background-medium sm:grid-cols-3">
+									<div>
+										<div className="text-over-background-highest">{segmentCount}</div>
+										<div>Session segments</div>
+									</div>
+									<div>
+										<div className="text-over-background-highest">{analysisSegmentCount}</div>
+										<div>Analyzed segments</div>
+									</div>
+									<div>
+										<div className="text-over-background-highest">{Object.keys(appliedSignalKinds).length}</div>
+										<div>Mapped channels</div>
+									</div>
+								</div>
+								{!currentAnalysis && (
+									<p className="mt-4 text-sm text-over-background-medium">
+										Import a session and run analysis to see the stored result here.
+									</p>
+								)}
+							</div>
+
+							{currentAnalysis && (
+								<div className="space-y-0">
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Library policy</p>
+											<button
+												type="button"
+												onClick={() => setShowLibraryPolicyLegend(true)}
+												className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
+												aria-label={showLibraryPolicyLegend ? "Hide library policy help" : "Show library policy help"}
+												aria-expanded={showLibraryPolicyLegend}
+												title="Show library policy help"
+											>
+												?
+											</button>
+										</div>
+										<p className="p-2 text-sm text-over-background-highest-light dark:text-over-background-highest-dark">
+											{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}
+										</p>
+										<div className="grid gap-3 sm:grid-cols-2">
+											<div className="rounded-lg border border-background-accent-high px-3 py-2">
+												<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary library</div>
+												<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+											</div>
+											<div className="rounded-lg border border-background-accent-high px-3 py-2">
+												<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary library</div>
+												<div className="mt-1 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+											</div>
+										</div>
+									</div>
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary statistics</p>
+										</div>
+										<div className="mt-3 rounded-lg border border-background-accent-high p-3">
+											<div className="overflow-x-auto">
+												<table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-xs text-over-background-highest-light dark:text-over-background-highest-dark">
+													<thead>
+														<tr>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Segment</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Signal kind</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Mean</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Median</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Std</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Min</th>
+															<th className="border-b border-background-accent-high px-3 py-2 font-medium">Max</th>
+														</tr>
+													</thead>
+													<tbody>
+														{summaryRows.length > 0 ? summaryRows.map((row: any) => (
+															<tr key={`${row.segment}-${row.channel}`} className="align-top">
+																<td className="border-b border-background-accent-high px-3 py-3">{row.segment ?? "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3 font-medium">{row.label || row.channel || "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{row.kind || "--"}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.mean)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.median)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.std)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.min)}</td>
+																<td className="border-b border-background-accent-high px-3 py-3">{formatNumber(row.summary?.max)}</td>
+															</tr>
+														)) : (
+															<tr>
+																<td className="px-3 py-3 text-over-background-medium" colSpan={8}>No summary statistics available.</td>
+															</tr>
+														)}
+													</tbody>
+												</table>
+											</div>
+										</div>	
+									</div>
+									<div className="rounded-xl border border-background-accent bg-background-accent p-4">
+										<div className="flex items-center gap-2">
+											<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Outlier Removal & Preprocessing</p>
+											<button
+												type="button"
+												onClick={() => setShowOutlierRemovalLegend(true)}
+												className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background-accent-high text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent-high"
+												aria-label={showOutlierRemovalLegend ? "Hide outlier removal legend" : "Show outlier removal legend"}
+												aria-expanded={showOutlierRemovalLegend}
+												title="Show outlier removal legend"
+											>
+												?
+											</button>
+										</div>
+										{segmentAnalysisRows.length > 0 ? (
+											<div className="mt-3 space-y-4 text-sm">
+												{(Array.from(new Set(segmentAnalysisRows.map((row: any) => String(row.segment)))) as string[]).map(segmentId => {
+													const rows = segmentAnalysisRows.filter((row: any) => String(row.segment) === segmentId)
+													return (
+														<div key={segmentId} className="rounded-lg border border-background-accent-high p-3">
+															<div className="mb-3 text-sm font-semibold">Segment {segmentId}</div>
+															<div className="overflow-x-auto">
+																<table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-xs text-over-background-highest-light dark:text-over-background-highest-dark">
+																	<thead>
+																		<tr>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Channel</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Kind</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Peaks in the Session</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Peaks kept</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rejected</th>
+																			<th className="border-b border-background-accent-high px-3 py-2 font-medium">Rate</th>
+																		</tr>
+																	</thead>
+																	<tbody>
+																		{rows.map((entry: any) => {
+																			const rowKey = `${entry.segment}-${entry.channel}`
+																			const detailLines = getDetailLines(entry)
+																			return (
+																				<tr key={rowKey} className="align-top">
+																					<td className="border-b border-background-accent-high px-3 py-3 font-medium">{entry.label || entry.channel}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{entry.kind || "--"}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.inputCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.keptCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">{formatTableCount(entry.rejectedCount)}</td>
+																					<td className="border-b border-background-accent-high px-3 py-3">
+																						<div className="flex items-center justify-between gap-3">
+																							<div>{formatTablePercent(entry.rate)}</div>
+																							{detailLines.length > 0 && (
+																								<button
+																									type="button"
+																									onClick={() => { setSelectedDetailEntry(entry); setShowDetailModal(true) }}
+																									className="ml-3 rounded px-2 py-1 text-xs text-over-background-low bg-background-accent-high hover:opacity-90"
+																								>
+																									Details
+																								</button>
+																							)}
+																						</div>
+																					</td>
+																				</tr>
+																		)
+																		})}
+																	</tbody>
+																</table>
+															</div>
+														</div>
+												)
+											})}
+										</div>
+									) : (
+										<p className="mt-3 text-sm text-over-background-medium">No preprocessing or outlier removal metadata was recorded for this analysis.</p>
+									)}
+								</div>
+							</div>
+							)}
+						</div>
+					)}
+				</section>
 			</div>
 
 			<AnalysisProgressPanel
