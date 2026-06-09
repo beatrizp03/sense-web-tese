@@ -9,10 +9,9 @@ import CanvasChart from "../charts/CanvasChart"
 const fullConfig = resolveConfig(tailwindConfig)
 const lineColorLight = (fullConfig.theme as any).colors["primary-light"]
 const lineColorDark = (fullConfig.theme as any).colors["primary-dark"]
-const outlineColorLight =
-	(fullConfig.theme as any).colors["over-background-highest-light"]
-const outlineColorDark =
-	(fullConfig.theme as any).colors["over-background-highest-dark"]
+// Axes use the opposite background tone: dark gray on light mode, white on dark mode.
+const outlineColorLight = (fullConfig.theme as any).colors["background-accent-dark"]
+const outlineColorDark = (fullConfig.theme as any).colors["background-accent-light"]
 
 type Point = [number, number | null]
 
@@ -270,9 +269,14 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					</span>
 				)}
 				<span className="ml-auto text-xs text-over-background-low">
-					{winLoading ? "Loading… " : ""}
-					{formatTime(windowStartSec)} – {formatTime(winEndSec)} /{" "}
-					{formatTime(rangeSeconds)}
+					{winLoading ? (
+						"Loading…"
+					) : (
+						<>
+							{formatTime(windowStartSec)} – {formatTime(winEndSec)} /{" "}
+							{formatTime(rangeSeconds)}
+						</>
+					)}
 				</span>
 			</div>
 
@@ -337,7 +341,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					</div>
 				)}
 				<div
-					className="absolute top-0 h-full cursor-grab touch-none rounded-sm border-2 border-primary bg-primary/25 active:cursor-grabbing"
+					className="absolute top-0 h-full cursor-grab touch-none rounded-sm border-2 border-background-accent-dark bg-primary/25 active:cursor-grabbing dark:border-background-accent-light"
 					style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
 					onPointerDown={startDrag("move")}
 				>

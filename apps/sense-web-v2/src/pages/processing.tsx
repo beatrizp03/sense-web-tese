@@ -5,6 +5,7 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 import SenseLayout from "../components/layout/SenseLayout"
 import { AnalysisProgressPanel } from "../components/analysis/AnalysisProgressPanel"
 import SessionChart from "../components/processing/SessionChart"
+import ProcessingSidePanel from "../components/processing/ProcessingSidePanel"
 import { useBusyGuard } from "../hooks/useBusyGuard"
 
 type AnalysisTab = "import" | "results"
@@ -415,6 +416,15 @@ const Page = () => {
 				throw new Error("The selected folder does not contain a readable session.json file.")
 			}
 
+			const manifestChannels = Array.isArray(sessionManifest.channels) ? sessionManifest.channels : []
+			const manifestChunks = Array.isArray(sessionManifest.chunks) ? sessionManifest.chunks : []
+			if (manifestChannels.length === 0) {
+				throw new Error("This session has no channels to draw. Select a folder from a finalized acquisition.")
+			}
+			if (manifestChunks.length === 0) {
+				throw new Error("This session contains no recorded data chunks to draw. Select a folder with acquired signal data.")
+			}
+
 			setSessionFolder(folder)
 			setManifest(sessionManifest)
 			setSignalKinds(toRecord(sessionManifest.analysis?.signalKinds ?? sessionManifest.channelSignalKinds))
@@ -566,31 +576,62 @@ const Page = () => {
 			className="container flex flex-col items-center justify-start gap-6 p-8"
 		>
 			<div className="w-full max-w-5xl space-y-6">
-				<div className="rounded-xl border border-background-accent bg-background-accent p-6 shadow-sm">
-					<div className="flex flex-col gap-4">
-						<div className="space-y-0">
-							<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Post-processing</p>
-							<h1 className="font-secondary text-3xl text-over-background-highest">Analysis and Annotation</h1>
-							<p className="max-w-2xl text-sm text-over-background-medium">
-								Import a session folder, map the channels you want, and run the batch analysis or annotate.
-							</p>
+				{hasSession ? (
+					<div className="grid grid-cols-5 gap-4">
+						<div className="col-span-4 space-y-6">
+							<div className="grid grid-cols-5 gap-2 items-stretch">
+								<div className="col-span-4 flex items-center rounded-xl border border-background-accent bg-background-accent px-6 py-3 shadow-sm">
+									<div className="min-w-0 space-y-0">
+										<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Imported session</p>
+										<p className="break-all text-sm text-over-background-highest">{sessionFolder}</p>
+									</div>
+								</div>
+								<div className="col-span-1 flex items-center py-1.5">
+									<TextButton size="base" className="text-sm !h-full w-full" onClick={importSessionFolder} disabled={loading}>
+										Import New Folder
+									</TextButton>
+								</div>
+							</div>
+							<SessionChart
+								channels={channels}
+								manifest={manifest}
+								sessionFolder={sessionFolder}
+								channelNames={channelNames}
+								signalKinds={appliedSignalKinds}
+							/>
 						</div>
-						<div className="flex flex-wrap gap-3">
-							<TextButton size="base" onClick={importSessionFolder} disabled={loading}>
-								Import Session Folder
-							</TextButton>
+						<div className="col-span-1">
+							<ProcessingSidePanel />
 						</div>
 					</div>
-				</div>
+				) : (
+					<div className="rounded-xl border border-background-accent bg-background-accent p-6 shadow-sm">
+						<div className="flex flex-col gap-4">
+							<div className="space-y-0">
+								<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Post-processing</p>
+								<h1 className="font-secondary text-3xl text-over-background-highest">Analysis and Annotation</h1>
+								<p className="max-w-2xl text-sm text-over-background-medium">
+									Import a session folder, map the channels you want, and run the batch analysis or annotate.
+								</p>
+							</div>
+							<div className="flex flex-wrap gap-3">
+								<TextButton size="base" onClick={importSessionFolder} disabled={loading}>
+									Import Session Folder
+								</TextButton>
+							</div>
 
-				{hasSession && (
-					<SessionChart
-						channels={channels}
-						manifest={manifest}
-						sessionFolder={sessionFolder}
-						channelNames={channelNames}
-						signalKinds={appliedSignalKinds}
-					/>
+							{error && (
+								<div
+									role="alert"
+									className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-400"
+								>
+									<p className="text-sm font-medium">This folder could not be imported</p>
+									<p className="mt-1 text-xs text-red-600/90 dark:text-red-400/90">{error}</p>
+									<p className="mt-2 text-xs text-red-600/80 dark:text-red-400/80">Please select another folder.</p>
+								</div>
+							)}
+						</div>
+					</div>
 				)}
 			</div>
 
