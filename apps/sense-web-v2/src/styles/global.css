@@ -10,3 +10,23 @@
 * {
 	font-family: "Lexend", sans-serif;
 }
+
+/* Table scrollbars blend with the table background (background-accent) instead
+   of the harsh default Electron/Chromium track, in both light and dark mode. */
+.table-scroll::-webkit-scrollbar {
+	height: 8px;
+	width: 8px;
+}
+.table-scroll::-webkit-scrollbar-track {
+	background: #f2f2f7; /* background-accent-light */
+}
+.table-scroll::-webkit-scrollbar-thumb {
+	background: #d1d1d6;
+	border-radius: 9999px;
+}
+.dark .table-scroll::-webkit-scrollbar-track {
+	background: #2c2c2e; /* background-accent-dark */
+}
+.dark .table-scroll::-webkit-scrollbar-thumb {
+	background: #48484a;
+}

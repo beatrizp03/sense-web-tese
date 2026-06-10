@@ -96,6 +96,13 @@ SIGNAL_AXIS_OVERRIDES: Dict[str, str] = {}
 EXCLUDED_CHANNELS: set = set()
 
 ANALYSIS_WINDOW_SECONDS: Optional[Tuple[float, Optional[float]]] = None
+ANALYSIS_SEGMENT: Optional[int] = None
+
+def segment_artifact_folder(output_folder: Path, segment_index: int) -> Path:
+    if ANALYSIS_SEGMENT is not None:
+        return output_folder
+    return output_folder / f"segment-{segment_index}"
+
 
 def _normalize_library_pref(value: Any) -> Optional[str]:
     """Normalize a free-form library token to "neurokit", "biosppy", or Default."""
@@ -325,6 +332,14 @@ def normalize_analysis_range(value: Any) -> Optional[Tuple[float, Optional[float
     return (float(start), float(end))
 
 
+def normalize_analysis_segment(value: Any) -> Optional[int]:
+    parsed = safe_float(value)
+    if parsed is None:
+        return None
+    segment = int(parsed)
+    return segment if segment >= 1 else None
+
+
 def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
     config_path = getattr(args, "config", None)
     if config_path:
@@ -342,6 +357,7 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
             "signalAxes": normalize_signal_axis_map(raw.get("channelSignalAxes")),
             "excludedChannels": normalize_excluded_channels(raw.get("excludedChannels")),
             "range": normalize_analysis_range(raw.get("range")),
+            "segment": normalize_analysis_segment(raw.get("segment")),
         }
 
     return {
@@ -352,6 +368,7 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
         "signalAxes": load_signal_axis_overrides(),
         "excludedChannels": [],
         "range": None,
+        "segment": None,
     }
 
 
@@ -1921,7 +1938,7 @@ def process_segment(
                 values=values,
                 sample_rate=sample_rate,
                 indices=indices,
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
             )
@@ -2008,7 +2025,7 @@ def process_segment(
             values=values,
             sample_rate=sample_rate,
             indices=indices,
-            output_folder=output_folder / f"segment-{segment_index}",
+            output_folder=segment_artifact_folder(output_folder, segment_index),
             eda_method=eda_method,
             progress=progress,
         )
@@ -2052,7 +2069,7 @@ def process_segment(
                 values=eeg_entry["values"],
                 sample_rate=sample_rate,
                 indices=eeg_entry["indices"],
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
                 analysis_override=eeg_analysis,
@@ -2100,7 +2117,7 @@ def process_segment(
                 values=entry["values"],
                 sample_rate=sample_rate,
                 indices=entry["indices"],
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
                 analysis_override=acc_analysis,
@@ -2177,6 +2194,11 @@ def build_result(
     library_policy = build_library_policy_manifest()
 
     grouped_entries = group_entries_by_segment(chunk_entries)
+    
+    if ANALYSIS_SEGMENT is not None:
+        grouped_entries = {
+            ANALYSIS_SEGMENT: grouped_entries.get(ANALYSIS_SEGMENT, [])
+        }
     segment_results: List[Dict[str, Any]] = []
     total_frames = 0
     total_chunks = 0
@@ -2624,7 +2646,7 @@ def write_channel_series_csvs(output_folder: Path, result: Dict[str, Any]) -> No
     sample_rate = result.get("sampleRate") or 0
     for segment in result.get("segments", []):
         segment_index = segment.get("segment") if isinstance(segment, dict) else None
-        segment_folder = output_folder / f"segment-{segment_index}"
+        segment_folder = segment_artifact_folder(output_folder, segment_index)
         segment_folder.mkdir(parents=True, exist_ok=True)
 
         for channel in segment.get("channels", []) if isinstance(segment, dict) else []:
@@ -2712,6 +2734,9 @@ def write_signal_csvs(
     if not chunk_entries:
         return []
     grouped = group_entries_by_segment(chunk_entries)
+    
+    if ANALYSIS_SEGMENT is not None:
+        grouped = {ANALYSIS_SEGMENT: grouped.get(ANALYSIS_SEGMENT, [])}
 
     sample_rate: Any = manifest.get("sampleRate")
     if sample_rate is None:
@@ -2817,7 +2842,7 @@ def write_signal_csvs(
         }
         metadata = {key: metadata[key] for key in sorted(metadata)}
 
-        segment_folder = output_folder / f"segment-{segment_index}"
+        segment_folder = segment_artifact_folder(output_folder, segment_index)
         segment_folder.mkdir(parents=True, exist_ok=True)
         csv_path = segment_folder / "signal.csv"
 
@@ -2874,6 +2899,7 @@ def main() -> int:
     config = load_run_config(args)
     global DISABLE_OUTLIER_REMOVAL, SELECTED_LIBRARY_PREFERENCE, SIGNAL_KIND_LIBRARY_PREFERENCES
     global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS, ANALYSIS_WINDOW_SECONDS
+    global ANALYSIS_SEGMENT
     DISABLE_OUTLIER_REMOVAL = bool(config.get("disableOutlierRemoval", False))
     SELECTED_LIBRARY_PREFERENCE = config.get("libraryPreference")
     SIGNAL_KIND_LIBRARY_PREFERENCES = dict(config.get("signalKindLibraries", {}))
@@ -2881,6 +2907,7 @@ def main() -> int:
     SIGNAL_AXIS_OVERRIDES = dict(config.get("signalAxes", {}))
     EXCLUDED_CHANNELS = set(config.get("excludedChannels", []))
     ANALYSIS_WINDOW_SECONDS = config.get("range")
+    ANALYSIS_SEGMENT = config.get("segment")
 
     eda_method = SELECTED_LIBRARY_PREFERENCE or "auto"
     session_name = session_folder.name

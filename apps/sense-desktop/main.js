@@ -115,9 +115,17 @@ function normalizeAnalysisRange(range) {
   return { startSec: start, endSec };
 }
 
+function normalizeAnalysisSegment(value) {
+  const segment = Number(value);
+  if (!Number.isFinite(segment)) return undefined;
+  const index = Math.trunc(segment);
+  return index >= 1 ? index : undefined;
+}
+
 function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
   const opts = options || {};
   const range = normalizeAnalysisRange(opts.range);
+  const segment = range ? normalizeAnalysisSegment(opts.segment) : undefined;
   return {
     version: 1,
     libraryPreference: normalizeLibraryPreference(opts.edaMethod ?? opts.libraryPreference),
@@ -126,7 +134,8 @@ function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
     channelSignalKinds: signalKinds,
     channelSignalAxes: signalAxes,
     excludedChannels: normalizeExcludedChannels(opts.excludedChannels),
-    ...(range ? { range } : {})
+    ...(range ? { range } : {}),
+    ...(segment ? { segment } : {})
   };
 }
 
@@ -1058,6 +1067,33 @@ ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath,
   const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
   if (!folder) return null;
   return readPersistedAnalysisResult(folder, subdir);
+});
+
+ipcMain.handle('select-analysis-result-folder', async () => {
+  const dialogResult = await dialog.showOpenDialog({
+    title: 'Select an analysis result folder',
+    properties: ['openDirectory', 'dontAddToRecent']
+  });
+
+  if (dialogResult.canceled || !Array.isArray(dialogResult.filePaths) || dialogResult.filePaths.length === 0) {
+    return null;
+  }
+
+  const folderPath = dialogResult.filePaths[0];
+  const folderName = path.basename(folderPath);
+  const resultPath = path.join(folderPath, 'analysis.json');
+
+  if (!fs.existsSync(resultPath)) {
+    return { folderPath, folderName, result: null };
+  }
+
+  try {
+    const result = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
+    return { folderPath, folderName, result };
+  } catch (error) {
+    console.error('[main] Failed to read selected analysis result:', error);
+    return { folderPath, folderName, result: null, error: error.message };
+  }
 });
 
 ipcMain.handle('cancel-posthoc-analysis', (_event, payload = {}) => {

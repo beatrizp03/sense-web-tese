@@ -47,8 +47,10 @@ function formatSignalList(value: unknown): string {
 	return value.map(item => String(item).toUpperCase()).join(", ")
 }
 
-function windowFolderName(range: AnalysisRange): string {
-	return `analysis-${Math.round(range.startSec)}-${Math.round(range.endSec)}`
+const FULL_SESSION_FOLDER = "full-session-analysis"
+
+function windowFolderName(range: AnalysisRange, segment: number): string {
+	return `seg${segment}-analysis-window-${Math.round(range.startSec)}-${Math.round(range.endSec)}`
 }
 
 const ANALYSIS_SETTINGS_STORAGE_KEY = "processing:analysisSettings"
@@ -64,9 +66,8 @@ interface AnalysisPanelProps {
 	setSignalAxes: React.Dispatch<React.SetStateAction<Record<string, string>>>
 	appliedSignalKinds: Record<string, string>
 	appliedSignalAxes: Record<string, string>
-	/** The chart's currently visible window, used by "Analyse Window". */
 	windowRange: AnalysisRange | null
-	/** Reports whether an analysis run is in progress so the page can block reloads. */
+	selectedSegment: number
 	onBusyChange?: (busy: boolean) => void
 }
 
@@ -87,6 +88,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	appliedSignalKinds,
 	appliedSignalAxes,
 	windowRange,
+	selectedSegment,
 	onBusyChange
 }) => {
 	const [activeTab, setActiveTab] = useState<AnalysisTab>("import")
@@ -105,7 +107,9 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
 	const [selectedDetailEntry, setSelectedDetailEntry] = useState<any>(null)
 	const [showDetailModal, setShowDetailModal] = useState(false)
+	const [zoomedTable, setZoomedTable] = useState<"summary" | "outlier" | null>(null)
 	const [hydrated, setHydrated] = useState(false)
+	const [loadedFolder, setLoadedFolder] = useState<string>(FULL_SESSION_FOLDER)
 	const analysisInProgressRef = useRef(false)
 	const pendingRangeRef = useRef<AnalysisRange | null>(null)
 
@@ -151,9 +155,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		}
 		void (async () => {
 			try {
-				const existing = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder)
+				const existing = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder, FULL_SESSION_FOLDER)
 				if (cancelled) return
 				setAnalysisResult(existing || null)
+				setLoadedFolder(FULL_SESSION_FOLDER)
 				setStatus(existing ? "Loaded session and existing analysis result." : "Loaded session and ready to analyze.")
 				setError("")
 				setActiveTab("import")
@@ -237,6 +242,15 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		window.addEventListener("keydown", onKeyDown)
 		return () => window.removeEventListener("keydown", onKeyDown)
 	}, [showLibraryPolicyLegend])
+
+	useEffect(() => {
+		if (!zoomedTable) return
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setZoomedTable(null)
+		}
+		window.addEventListener("keydown", onKeyDown)
+		return () => window.removeEventListener("keydown", onKeyDown)
+	}, [zoomedTable])
 
 	const getOutlierRemovalReason = useCallback((outlierRemoval: any) => {
 		if (!outlierRemoval) return ""
@@ -389,7 +403,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		setAnalysisStartTime(now)
 		setShowProgressPanel(true)
 		setStatus(range ? "Running analysis over the selected window..." : "Running batch analysis over the imported session...")
-		const subdir = range ? windowFolderName(range) : undefined
+		const subdir = range ? windowFolderName(range, selectedSegment) : FULL_SESSION_FOLDER
 		try {
 			const result = await window.electronAPI?.runPostHocAnalysis?.({
 				sessionFolder,
@@ -399,7 +413,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				edaMethod: edaMethodSelection === "auto" ? undefined : edaMethodSelection,
 				excludedChannels: appliedExcludedChannels,
 				signalKindLibraries: appliedSignalKindLibraries,
-				...(range ? { range: { startSec: range.startSec, endSec: range.endSec }, outputSubdir: subdir } : {}),
+				outputSubdir: subdir,
+				...(range ? { range: { startSec: range.startSec, endSec: range.endSec }, segment: selectedSegment } : {}),
 			})
 
 			if (result?.cancelled === true) {
@@ -411,7 +426,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
 			const refreshed = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder, subdir)
 			setAnalysisResult(refreshed || result || null)
-			setStatus(range ? "Window analysis completed and stored in the session folder." : "Analysis completed and stored in the session folder.")
+			setLoadedFolder(subdir)
+			setStatus(`${range ? "Window" : "Full session"} analysis completed and stored as /${subdir}.`)
 			setActiveTab("results")
 			window.dispatchEvent(new CustomEvent("analysis-complete", { detail: { resultPath: result?.resultPath } }))
 		} catch (runError) {
@@ -432,11 +448,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 			setLoading(false)
 			analysisInProgressRef.current = false
 		}
-	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder, outlierRemovalEnabled, edaMethodSelection, appliedExcludedChannels, appliedSignalKindLibraries])
+	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder, outlierRemovalEnabled, edaMethodSelection, appliedExcludedChannels, appliedSignalKindLibraries, selectedSegment])
 
 	const runAnalysis = useCallback(async (range?: AnalysisRange | null) => {
 		pendingRangeRef.current = range ?? null
-		const subdir = range ? windowFolderName(range) : undefined
+		const subdir = range ? windowFolderName(range, selectedSegment) : FULL_SESSION_FOLDER
 		let existing: any = null
 		try {
 			existing = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder, subdir)
@@ -448,11 +464,154 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		} else {
 			proceedWithAnalysis(range ?? null)
 		}
-	}, [proceedWithAnalysis, sessionFolder])
+	}, [proceedWithAnalysis, sessionFolder, selectedSegment])
+
+	const selectAnalysisFolder = useCallback(async () => {
+		try {
+			const picked = await window.electronAPI?.selectAnalysisResultFolder?.()
+			if (!picked) return
+			if (picked.result) {
+				setAnalysisResult(picked.result)
+				setLoadedFolder(picked.folderName)
+				setStatus(`Showing analysis result from the folder /${picked.folderName}.`)
+				setError("")
+				setActiveTab("results")
+			} else {
+				setError(picked.error || `No analysis.json was found in ${picked.folderName}.`)
+			}
+		} catch (loadError) {
+			setError(loadError instanceof Error ? loadError.message : String(loadError))
+		}
+	}, [])
 
 	const currentAnalysis = analysisResult ?? manifest?.analysis ?? null
 	const segmentCount = Array.isArray(manifest?.segments) ? manifest.segments.length : 0
 	const analysisSegmentCount = Array.isArray(currentAnalysis?.segments) ? currentAnalysis.segments.length : 0
+
+	// Zoom out button used to pop a result table out into a full-width modal.
+	const zoomButton = (table: "summary" | "outlier", label: string) => (
+		<button
+			type="button"
+			onClick={() => setZoomedTable(table)}
+			className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-background-accent text-[11px] transition-colors hover:bg-background-accent"
+			aria-label={label}
+			title={label}
+		>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden="true">
+				<polyline points="15 3 21 3 21 9" />
+				<polyline points="9 21 3 21 3 15" />
+				<line x1="21" y1="3" x2="14" y2="10" />
+				<line x1="3" y1="21" x2="10" y2="14" />
+			</svg>
+		</button>
+	)
+
+	const outlierLegendButton = (
+		<button
+			type="button"
+			onClick={() => { setZoomedTable(null); setShowOutlierRemovalLegend(true) }}
+			className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent"
+			aria-label="Show outlier removal legend"
+			title="Show outlier removal legend"
+		>
+			?
+		</button>
+	)
+
+	const renderSummaryTable = () => (
+		<table className="w-full min-w-[640px] border-separate border-spacing-0 text-left text-xs">
+			<thead>
+				<tr>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Segment</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Channel</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Kind</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Mean</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Median</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Std</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Min</th>
+					<th className="border-b border-over-background-low px-1 py-1 text-xs">Max</th>
+				</tr>
+			</thead>
+			<tbody>
+				{summaryRows.length > 0 ? summaryRows.map((row: any) => (
+					<tr key={`${row.segment}-${row.channel}`} className="align-top">
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.segment ?? "--"}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.label || row.channel || "--"}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.kind || "--"}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.mean)}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.median)}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.std)}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.min)}</td>
+						<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.max)}</td>
+					</tr>
+				)) : (
+					<tr>
+						<td className="px-1 py-1 text-over-background-medium-dark text-xs dark:text-over-background-medium-light" colSpan={8}>No summary statistics available.</td>
+					</tr>
+				)}
+			</tbody>
+		</table>
+	)
+
+	const renderOutlierTables = () => (
+		segmentAnalysisRows.length > 0 ? (
+			<div className="space-y-3 text-sm">
+				{(Array.from(new Set(segmentAnalysisRows.map((row: any) => String(row.segment)))) as string[]).map(segmentId => {
+					const rows = segmentAnalysisRows.filter((row: any) => String(row.segment) === segmentId)
+					return (
+						<div key={segmentId} className="rounded-lg p-0">
+							<div className="mb-3 text-xs font-semibold">Segment {segmentId}</div>
+							<div className="table-scroll overflow-x-auto">
+								<table className="w-full min-w-[560px] border-separate border-spacing-0 text-left text-xs">
+									<thead>
+										<tr>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Channel</th>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Kind</th>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Peaks</th>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Kept</th>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Rejected</th>
+											<th className="border-b border-over-background-low px-1 py-1 text-xs">Rate</th>
+										</tr>
+									</thead>
+									<tbody>
+										{rows.map((entry: any) => {
+											const rowKey = `${entry.segment}-${entry.channel}`
+											const detailLines = getDetailLines(entry)
+											return (
+												<tr key={rowKey} className="align-top">
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{entry.label || entry.channel}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{entry.kind || "--"}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.inputCount)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.keptCount)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.rejectedCount)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">
+														<div className="flex items-center justify-between gap-2">
+															<div>{formatTablePercent(entry.rate)}</div>
+															{detailLines.length > 0 && (
+																<button
+																	type="button"
+																	onClick={() => { setZoomedTable(null); setSelectedDetailEntry(entry); setShowDetailModal(true) }}
+																	className="ml-2 px-1 py-1 text-xs text-over-background-medium-light underline-offset-2 hover:underline dark:text-over-background-medium-dark"
+																>
+																	Details
+																</button>
+															)}
+														</div>
+													</td>
+												</tr>
+											)
+										})}
+									</tbody>
+								</table>
+							</div>
+						</div>
+					)
+				})}
+			</div>
+		) : (
+			<p className="mt-3 text-xs text-over-background-medium-darkdark:text-over-background-medium-light">No preprocessing or outlier removal metadata was recorded for this analysis.</p>
+		)
+	)
 
 	return (
 		<div className="space-y-4 pr-1 text-over-background-highest">
@@ -463,7 +622,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 						key={tab}
 						type="button"
 						onClick={() => setActiveTab(tab)}
-						className={`rounded-full px-3 py-1 text-xs font-medium uppercase tracking-wide transition ${activeTab === tab ? "bg-over-primary-medium-light text-over-background-highest-light" : "bg-background-accent-light text-over-background-medium dark:bg-background-accent-dark"}`}
+						className={`rounded-full px-3 py-1 text-xs font-medium uppercase tracking-wide transition ${activeTab === tab ? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light" : "bg-background-accent-light text-over-background-medium dark:bg-background-accent-dark"}`}
 					>
 						{tab === "import" ? "Settings" : "Results"}
 					</button>
@@ -615,8 +774,19 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				<div className="space-y-3 text-sm">
 					<div className="rounded-xl border border-background-accent bg-background-accent p-3">
 						<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Analysis status</p>
-						<p className="mt-2 text-xs text-over-background-highest">{status}</p>
-						{error && <p className="mt-2 text-xs text-primary">{error}</p>}
+						{error
+							? <p className="mt-2 text-xs text-primary">{error}</p>
+							: <p className="mt-2 text-xs text-over-background-highest">{status}</p>}
+					</div>
+
+					<div className="px-5">
+						<button
+							type="button"
+							onClick={selectAnalysisFolder}
+							className="w-full uppercase rounded-lg bg-over-background-low-light px-1 py-1 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
+						>
+							Import another analysis' results
+						</button>
 					</div>
 
 					<div className="rounded-xl border border-background-accent bg-background-accent p-3">
@@ -669,32 +839,35 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							</div>
 
 							<div className="rounded-xl border border-background-accent bg-background-accent p-3">
-								<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary statistics</p>
-								<div className="mt-3 overflow-x-auto rounded-lg border border-background-accent">
+								<div className="flex items-center justify-between gap-2">
+									<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary statistics</p>
+									{zoomButton("summary", "Expand summary statistics table")}
+								</div>
+								<div className="table-scroll mt-3 overflow-x-auto rounded-lg border border-background-accent">
 									<table className="w-full min-w-[640px] border-separate border-spacing-0 text-left text-xs">
 										<thead>
 											<tr>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Segment</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Channel</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Kind</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Mean</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Median</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Std</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Min</th>
-												<th className="border-b border-background-accent px-1 py-1 text-xs">Max</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Segment</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Channel</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Kind</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Mean</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Median</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Std</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Min</th>
+												<th className="border-b border-over-background-low px-1 py-1 text-xs">Max</th>
 											</tr>
 										</thead>
 										<tbody>
 											{summaryRows.length > 0 ? summaryRows.map((row: any) => (
 												<tr key={`${row.segment}-${row.channel}`} className="align-top">
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{row.segment ?? "--"}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{row.label || row.channel || "--"}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{row.kind || "--"}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{formatNumber(row.summary?.mean)}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{formatNumber(row.summary?.median)}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{formatNumber(row.summary?.std)}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{formatNumber(row.summary?.min)}</td>
-													<td className="border-b border-background-accent px-1 py-1 text-xs">{formatNumber(row.summary?.max)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.segment ?? "--"}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.label || row.channel || "--"}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{row.kind || "--"}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.mean)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.median)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.std)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.min)}</td>
+													<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatNumber(row.summary?.max)}</td>
 											</tr>
 											)) : (
 												<tr>
@@ -707,35 +880,30 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							</div>
 
 							<div className="rounded-xl border border-background-accent bg-background-accent p-3">
-								<div className="flex items-center gap-2">
+								<div className="flex items-center justify-between gap-2">
+									<div className="flex items-center gap-2">
 									<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Outlier Removal &amp; Preprocessing</p>
-									<button
-										type="button"
-										onClick={() => setShowOutlierRemovalLegend(true)}
-										className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent"
-										aria-label="Show outlier removal legend"
-										title="Show outlier removal legend"
-									>
-										?
-									</button>
+									{segmentAnalysisRows.length === 0 && outlierLegendButton}
 								</div>
+								{segmentAnalysisRows.length > 0 && zoomButton("outlier", "Expand outlier removal & preprocessing tables")}
+							</div>
 								{segmentAnalysisRows.length > 0 ? (
 									<div className="mt-3 space-y-3 text-sm">
 										{(Array.from(new Set(segmentAnalysisRows.map((row: any) => String(row.segment)))) as string[]).map(segmentId => {
 											const rows = segmentAnalysisRows.filter((row: any) => String(row.segment) === segmentId)
 											return (
-												<div key={segmentId} className="rounded-lg border border-background-accent p-0">
+												<div key={segmentId} className="rounded-lg p-0">
 													<div className="mb-3 text-xs font-semibold">Segment {segmentId}</div>
-													<div className="overflow-x-auto">
+													<div className="table-scroll overflow-x-auto">
 														<table className="w-full min-w-[560px] border-separate border-spacing-0 text-left text-xs">
 															<thead>
 																<tr>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Channel</th>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Kind</th>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Peaks</th>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Kept</th>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Rejected</th>
-																	<th className="border-b border-background-accent px-1 py-1 text-xs">Rate</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Channel</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Kind</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Peaks</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Kept</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Rejected</th>
+																	<th className="border-b border-over-background-low px-1 py-1 text-xs">Rate</th>
 																</tr>
 															</thead>
 															<tbody>
@@ -744,19 +912,19 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 																	const detailLines = getDetailLines(entry)
 																	return (
 																		<tr key={rowKey} className="align-top">
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">{entry.label || entry.channel}</td>
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">{entry.kind || "--"}</td>
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">{formatTableCount(entry.inputCount)}</td>
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">{formatTableCount(entry.keptCount)}</td>
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">{formatTableCount(entry.rejectedCount)}</td>
-																			<td className="border-b border-background-accent px-1 py-1 text-xs">
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">{entry.label || entry.channel}</td>
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">{entry.kind || "--"}</td>
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.inputCount)}</td>
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.keptCount)}</td>
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">{formatTableCount(entry.rejectedCount)}</td>
+																			<td className="border-b border-over-background-low px-1 py-1 text-xs">
 																				<div className="flex items-center justify-between gap-2">
 																					<div>{formatTablePercent(entry.rate)}</div>
 																					{detailLines.length > 0 && (
 																						<button
 																							type="button"
-																							onClick={() => { setSelectedDetailEntry(entry); setShowDetailModal(true) }}
-																							className="ml-2 rounded bg-background-accent px-1 py-1 text-xs text-over-background-low hover:opacity-95"
+																							onClick={() => { setZoomedTable(null); setSelectedDetailEntry(entry); setShowDetailModal(true) }}
+																							className="ml-2 px-1 py-1 text-xs text-over-background-medium-light underline-offset-2 hover:underline dark:text-over-background-medium-dark"
 																						>
 																							Details
 																						</button>
@@ -986,6 +1154,44 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 								</div>
 							)}
 						</div>
+					</div>
+				</div>
+			)}
+
+			{zoomedTable && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+					onClick={() => setZoomedTable(null)}
+					role="presentation"
+				>
+					<div
+						className="max-h-[85vh] w-full max-w-5xl overflow-auto rounded-xl bg-background-accent p-5 shadow-2xl text-over-background-highest"
+						onClick={event => event.stopPropagation()}
+						role="dialog"
+						aria-modal="true"
+					>
+						<div className="flex items-start justify-between gap-4">
+							<div className="flex items-center gap-2">
+								<h2 className="text-base font-semibold text-over-background-highest">
+									{zoomedTable === "summary" ? "Summary statistics" : "Outlier Removal & Preprocessing"}
+								</h2>
+								{zoomedTable === "outlier" && outlierLegendButton}
+							</div>
+							<button
+								type="button"
+								onClick={() => setZoomedTable(null)}
+								className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-white transition-colors hover:opacity-90"
+								aria-label="Close table view"
+							>
+								Close
+							</button>
+						</div>
+						<div className="table-scroll mt-4 overflow-x-auto text-over-background-highest">
+							{zoomedTable === "summary" ? renderSummaryTable() : renderOutlierTables()}
+						</div>
+						<p className="mt-4 text-[11px] text-over-background-medium">
+							Press <span className="font-semibold">Esc</span> or click outside to close.
+						</p>
 					</div>
 				</div>
 			)}

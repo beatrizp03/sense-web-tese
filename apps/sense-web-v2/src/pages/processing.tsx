@@ -149,6 +149,7 @@ const Page = () => {
 			appliedSignalKinds={appliedSignalKinds}
 			appliedSignalAxes={appliedSignalAxes}
 			windowRange={windowRange}
+			selectedSegment={selectedSegment}
 			onBusyChange={setAnalysisBusy}
 		/>
 	)
@@ -187,7 +188,7 @@ const Page = () => {
 												key={seg}
 												type="button"
 												onClick={() => setSelectedSegment(seg)}
-												className={`rounded-full px-3 py-1 text-xs font-medium transition ${selectedSegment === seg ? "bg-over-primary-medium-light text-over-background-highest-light" : "bg-background-accent text-over-background-medium hover:opacity-80"}`}
+												className={`rounded-full px-3 py-1 text-xs font-medium transition ${selectedSegment === seg ? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light" : "bg-background-accent text-over-background-medium hover:opacity-80"}`}
 											>
 												Segment {seg}
 											</button>
