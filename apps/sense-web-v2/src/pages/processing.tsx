@@ -6,6 +6,7 @@ import SenseLayout from "../components/layout/SenseLayout"
 import SessionChart from "../components/processing/SessionChart"
 import ProcessingSidePanel from "../components/processing/ProcessingSidePanel"
 import AnalysisPanel from "../components/processing/AnalysisPanel"
+import AnnotationsPanel from "../components/processing/AnnotationsPanel"
 import { toRecord, toAxisRecord } from "../components/processing/analysisShared"
 import { useBusyGuard } from "../hooks/useBusyGuard"
 
@@ -208,7 +209,7 @@ const Page = () => {
 							/>
 						</div>
 						<div className="col-span-1">
-							<ProcessingSidePanel analysisContent={analysisPanel} />
+							<ProcessingSidePanel analysisContent={analysisPanel} annotationsContent={<AnnotationsPanel />} />
 						</div>
 					</div>
 				) : (
