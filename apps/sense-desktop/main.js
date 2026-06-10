@@ -105,8 +105,19 @@ function normalizeExcludedChannels(list) {
   return seen;
 }
 
+function normalizeAnalysisRange(range) {
+  if (!range || typeof range !== 'object') return undefined;
+  const startSec = Number(range.startSec);
+  const endSec = Number(range.endSec);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return undefined;
+  const start = Math.max(0, startSec);
+  if (endSec <= start) return undefined;
+  return { startSec: start, endSec };
+}
+
 function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
   const opts = options || {};
+  const range = normalizeAnalysisRange(opts.range);
   return {
     version: 1,
     libraryPreference: normalizeLibraryPreference(opts.edaMethod ?? opts.libraryPreference),
@@ -114,7 +125,8 @@ function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
     disableOutlierRemoval: opts.outlierRemoval === false,
     channelSignalKinds: signalKinds,
     channelSignalAxes: signalAxes,
-    excludedChannels: normalizeExcludedChannels(opts.excludedChannels)
+    excludedChannels: normalizeExcludedChannels(opts.excludedChannels),
+    ...(range ? { range } : {})
   };
 }
 
@@ -271,7 +283,9 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       return;
     }
 
-    const outputDir = options.outputDir || getAnalysisOutputDir(sessionFolderPath);
+    const outputDir = options.outputSubdir
+      ? path.join(sessionFolderPath, options.outputSubdir)
+      : (options.outputDir || getAnalysisOutputDir(sessionFolderPath));
     fs.mkdirSync(outputDir, { recursive: true });
 
     const selectedSignalKinds = normalizeSignalKindsPayload(options.signalKinds);
@@ -392,7 +406,8 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
         }
 
         const parsed = JSON.parse(fs.readFileSync(workerResultPath, 'utf-8'));
-        const resultPath = persistAnalysisResult(sessionFolderPath, parsed);
+        const isCustomOutput = path.resolve(outputDir) !== path.resolve(getAnalysisOutputDir(sessionFolderPath));
+        const resultPath = isCustomOutput ? workerResultPath : persistAnalysisResult(sessionFolderPath, parsed);
         resolve({
           ...parsed,
           outputDir,
@@ -405,9 +420,10 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
   });
 }
 
-function readPersistedAnalysisResult(sessionFolderPath) {
+function readPersistedAnalysisResult(sessionFolderPath, subdir) {
   if (!sessionFolderPath) return null;
-  const resultPath = path.join(sessionFolderPath, 'analysis', 'analysis.json');
+  const folderName = (typeof subdir === 'string' && subdir.trim()) ? subdir.trim() : 'analysis';
+  const resultPath = path.join(sessionFolderPath, folderName, 'analysis.json');
   if (!fs.existsSync(resultPath)) return null;
   try {
     return JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
@@ -918,7 +934,7 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
 // Build a whole-session min/max envelope for each channel, streamed chunk by
 // chunk so the full raw signal is never held in memory. Returns ~targetPoints
 // points per channel (two per bucket) for a lightweight minimap overview.
-ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoints) => {
+ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoints, segment) => {
   const target = Number(targetPoints) > 0 ? Number(targetPoints) : 2000;
   const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
   if (!folder) return { sampleRate: 0, totalSamples: 0, series: {} };
@@ -927,19 +943,29 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
   const sampleRate = Number(manifest.sampleRate) || 1000;
   const channels = Array.isArray(manifest.channels) ? manifest.channels.map(String) : [];
 
-  const chunks = (Array.isArray(manifest.chunks) ? [...manifest.chunks] : []).sort((a, b) => {
-    const sa = Number(a?.segment) || 0;
-    const sb = Number(b?.segment) || 0;
-    if (sa !== sb) return sa - sb;
-    const ia = Number(String(a?.file).match(/chunk(\d+)/)?.[1] ?? 0);
-    const ib = Number(String(b?.file).match(/chunk(\d+)/)?.[1] ?? 0);
-    return ia - ib;
-  });
+  // Optional 1-based segment filter: when set, only that segment's chunks /
+  // timing are decimated (chunks without a segment field default to 1).
+  const selectedSegment = Number(segment) > 0 ? Number(segment) : null;
+
+  const chunks = (Array.isArray(manifest.chunks) ? [...manifest.chunks] : [])
+    .filter(c => selectedSegment === null || (Number(c?.segment) || 1) === selectedSegment)
+    .sort((a, b) => {
+      const sa = Number(a?.segment) || 0;
+      const sb = Number(b?.segment) || 0;
+      if (sa !== sb) return sa - sb;
+      const ia = Number(String(a?.file).match(/chunk(\d+)/)?.[1] ?? 0);
+      const ib = Number(String(b?.file).match(/chunk(\d+)/)?.[1] ?? 0);
+      return ia - ib;
+    });
 
   // Estimate the total sample count from segment timing to size the buckets in
   // a single pass. Falls back to ~1s buckets when timing is unavailable.
   let estTotal = 0;
-  for (const seg of Array.isArray(manifest.segments) ? manifest.segments : []) {
+  const segList = Array.isArray(manifest.segments) ? manifest.segments : [];
+  const segForEstimate = selectedSegment === null
+    ? segList
+    : (segList[selectedSegment - 1] ? [segList[selectedSegment - 1]] : []);
+  for (const seg of segForEstimate) {
     const st = Number(seg?.startedAt);
     const en = Number(seg?.endedAt);
     if (Number.isFinite(st) && Number.isFinite(en) && en > st) {
@@ -1028,10 +1054,10 @@ ipcMain.handle('run-posthoc-analysis', async (_event, payload = {}) => {
   }
 });
 
-ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath) => {
+ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath, subdir) => {
   const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
   if (!folder) return null;
-  return readPersistedAnalysisResult(folder);
+  return readPersistedAnalysisResult(folder, subdir);
 });
 
 ipcMain.handle('cancel-posthoc-analysis', (_event, payload = {}) => {

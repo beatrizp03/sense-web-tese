@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { ReactNode, useState } from "react"
 
 type SidePanelTab = "analysis" | "annotations"
 
@@ -7,23 +7,30 @@ const TABS: { id: SidePanelTab; label: string }[] = [
 	{ id: "annotations", label: "Annotations" }
 ]
 
+interface ProcessingSidePanelProps {
+	analysisContent?: ReactNode
+	annotationsContent?: ReactNode
+}
+
 /**
- * Right-hand panel beside the session charts. For now it only renders the
- * vertical separator and the "Analysis" / "Annotations" tab titles; the tab
- * bodies are placeholders to be filled in later.
+ * Right-hand panel beside the session charts: a vertical separator, the
+ * "Analysis" / "Annotations" tab titles, and the active tab's body.
  */
-const ProcessingSidePanel: React.FC = () => {
+const ProcessingSidePanel: React.FC<ProcessingSidePanelProps> = ({
+	analysisContent,
+	annotationsContent
+}) => {
 	const [activeTab, setActiveTab] = useState<SidePanelTab>("analysis")
 
 	return (
 		<div className="flex h-full flex-col gap-4 border-l border-background-accent pl-4">
-			<div className="flex items-center gap-4">
+			<div className="flex items-center justify-center gap-4">
 				{TABS.map(tab => (
 					<button
 						key={tab.id}
 						type="button"
 						onClick={() => setActiveTab(tab.id)}
-						className={`pb-1 text-sm uppercase tracking-[0.18em] transition-colors ${
+						className={`whitespace-nowrap pb-1 text-xs uppercase tracking-[0.18em] transition-colors ${
 							activeTab === tab.id
 								? "border-b-2 border-primary font-semibold text-over-background-highest"
 								: "text-over-background-medium hover:text-over-background-highest"
@@ -32,6 +39,10 @@ const ProcessingSidePanel: React.FC = () => {
 						{tab.label}
 					</button>
 				))}
+			</div>
+
+			<div className="min-h-0 flex-1 overflow-y-auto">
+				{activeTab === "analysis" ? analysisContent : annotationsContent}
 			</div>
 		</div>
 	)

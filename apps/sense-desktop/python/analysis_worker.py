@@ -95,6 +95,8 @@ SIGNAL_KIND_OVERRIDES: Dict[str, str] = {}
 SIGNAL_AXIS_OVERRIDES: Dict[str, str] = {}
 EXCLUDED_CHANNELS: set = set()
 
+ANALYSIS_WINDOW_SECONDS: Optional[Tuple[float, Optional[float]]] = None
+
 def _normalize_library_pref(value: Any) -> Optional[str]:
     """Normalize a free-form library token to "neurokit", "biosppy", or Default."""
     text = str(value or "").strip().lower()
@@ -307,6 +309,22 @@ def normalize_excluded_channels(value: Any) -> List[str]:
     return result
 
 
+def normalize_analysis_range(value: Any) -> Optional[Tuple[float, Optional[float]]]:
+    """Parse an optional analysis window {startSec, endSec} into a (start, end)
+    tuple of seconds. Returns None (analyze whole session) when absent or invalid."""
+    if not isinstance(value, dict):
+        return None
+    start = safe_float(value.get("startSec"))
+    end = safe_float(value.get("endSec"))
+    if start is None or start < 0:
+        start = 0.0
+    if end is None:
+        return (float(start), None)
+    if end <= start:
+        return None
+    return (float(start), float(end))
+
+
 def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
     config_path = getattr(args, "config", None)
     if config_path:
@@ -323,6 +341,7 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
             "signalKinds": normalize_signal_kind_map(raw.get("channelSignalKinds")),
             "signalAxes": normalize_signal_axis_map(raw.get("channelSignalAxes")),
             "excludedChannels": normalize_excluded_channels(raw.get("excludedChannels")),
+            "range": normalize_analysis_range(raw.get("range")),
         }
 
     return {
@@ -332,6 +351,7 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
         "signalKinds": load_signal_kind_overrides(),
         "signalAxes": load_signal_axis_overrides(),
         "excludedChannels": [],
+        "range": None,
     }
 
 
@@ -1831,6 +1851,8 @@ def process_segment(
     eda_method: Optional[str],
     progress: Optional[AnalysisProgressTracker] = None,
     logger: Optional[AnalysisLogger] = None,
+    session_frame_offset: int = 0,
+    window_frames: Optional[Tuple[int, Optional[int]]] = None,
 ) -> Dict[str, Any]:
     if logger is not None:
         logger.log_message(
@@ -1844,6 +1866,15 @@ def process_segment(
     for chunk_file in chunk_files:
         frames.extend(load_chunk_frames(chunk_file))
 
+    # Total # frames (before window restriction)
+    raw_frame_count = len(frames)
+    
+    if window_frames is not None:
+        abs_start, abs_end = window_frames
+        local_start = max(0, abs_start - session_frame_offset)
+        local_end = raw_frame_count if abs_end is None else min(raw_frame_count, abs_end - session_frame_offset)
+        frames = frames[local_start:local_end] if local_start < local_end else []
+
     frame_count = len(frames)
 
     if frame_count == 0:
@@ -1851,6 +1882,7 @@ def process_segment(
             "segment": segment_index,
             "chunkFiles": [str(path) for path in chunk_files],
             "frameCount": 0,
+            "rawFrameCount": raw_frame_count,
             "channels": [],
             "warnings": ["Segment contains no frames to process"],
         }
@@ -2086,6 +2118,7 @@ def process_segment(
         "segment": segment_index,
         "sampleRate": sample_rate,
         "frameCount": frame_count,
+        "rawFrameCount": raw_frame_count,
         "chunkFiles": [str(path) for path in chunk_files],
         "channels": result_channels,
         "warnings": [],
@@ -2153,7 +2186,14 @@ def build_result(
     progress.mark_data_prepared()
 
     signal_kind_counts: Dict[str, int] = {}
+    window_frames: Optional[Tuple[int, Optional[int]]] = None
+    if ANALYSIS_WINDOW_SECONDS is not None and sample_rate:
+        start_sec, end_sec = ANALYSIS_WINDOW_SECONDS
+        abs_start = max(0, int(math.floor(float(start_sec) * sample_rate)))
+        abs_end = None if end_sec is None else int(math.ceil(float(end_sec) * sample_rate))
+        window_frames = (abs_start, abs_end)
 
+    session_frame_offset = 0
     for segment_index, segment_files in grouped_entries.items():
         segment_result = process_segment(
             segment_index,
@@ -2164,6 +2204,8 @@ def build_result(
             eda_method,
             progress=progress,
             logger=logger,
+            session_frame_offset=session_frame_offset,
+            window_frames=window_frames,
         )
 
         for channel in segment_result.get("channels", []):
@@ -2173,6 +2215,7 @@ def build_result(
 
         segment_results.append(segment_result)
         total_frames += int(segment_result.get("frameCount", 0) or 0)
+        session_frame_offset += int(segment_result.get("rawFrameCount", segment_result.get("frameCount", 0)) or 0)
         total_chunks += len(segment_files)
 
     biosppy_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"]
@@ -2206,6 +2249,11 @@ def build_result(
             "libraryPreference": SELECTED_LIBRARY_PREFERENCE or "auto",
             "signalKindLibraries": dict(SIGNAL_KIND_LIBRARY_PREFERENCES),
             "edaMethod": eda_method or "neurokit2-default",
+            **(
+                {"analysisWindow": {"startSec": ANALYSIS_WINDOW_SECONDS[0], "endSec": ANALYSIS_WINDOW_SECONDS[1]}}
+                if ANALYSIS_WINDOW_SECONDS is not None
+                else {}
+            ),
         },
         "segments": segment_results,
         "warnings": [],
@@ -2825,13 +2873,14 @@ def main() -> int:
     startup_started = time.perf_counter()
     config = load_run_config(args)
     global DISABLE_OUTLIER_REMOVAL, SELECTED_LIBRARY_PREFERENCE, SIGNAL_KIND_LIBRARY_PREFERENCES
-    global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS
+    global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS, ANALYSIS_WINDOW_SECONDS
     DISABLE_OUTLIER_REMOVAL = bool(config.get("disableOutlierRemoval", False))
     SELECTED_LIBRARY_PREFERENCE = config.get("libraryPreference")
     SIGNAL_KIND_LIBRARY_PREFERENCES = dict(config.get("signalKindLibraries", {}))
     SIGNAL_KIND_OVERRIDES = dict(config.get("signalKinds", {}))
     SIGNAL_AXIS_OVERRIDES = dict(config.get("signalAxes", {}))
     EXCLUDED_CHANNELS = set(config.get("excludedChannels", []))
+    ANALYSIS_WINDOW_SECONDS = config.get("range")
 
     eda_method = SELECTED_LIBRARY_PREFERENCE or "auto"
     session_name = session_folder.name

@@ -1,9 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { SerialPort } = require('serialport');
 
-// Keep track of open ports by path so we can operate on them later
 const openPorts = new Map();
-// Only expose secure bridge APIs, no buffering or business logic
+
 const serialBuffers = {};
 const serialDataHandlers = new Map();
 const serialCloseHandlers = new Map();
@@ -325,8 +324,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadPreviewFrames: async (sampleNum, frameCount) => {
     return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
   },
-  decimateSession: async (sessionFolder, targetPoints) => {
-    return await ipcRenderer.invoke('decimate-session', sessionFolder, targetPoints);
+  decimateSession: async (sessionFolder, targetPoints, segment) => {
+    return await ipcRenderer.invoke('decimate-session', sessionFolder, targetPoints, segment);
   },
   openSerialPort,
   readSerialPort,
@@ -348,8 +347,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('analysis-progress', (_event, data) => callback(data));
     return () => ipcRenderer.removeAllListeners('analysis-progress');
   },
-  readPostHocAnalysisResult: async (sessionFolderPath) => {
-    return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath);
+  readPostHocAnalysisResult: async (sessionFolderPath, subdir) => {
+    return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath, subdir);
   },
   acquisitionError: async (sessionPath) => {
     return await ipcRenderer.invoke('acquisition-error', sessionPath);

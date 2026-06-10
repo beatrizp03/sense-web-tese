@@ -33,7 +33,8 @@ declare global {
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
       decimateSession?: (
         sessionFolder: string,
-        targetPoints?: number
+        targetPoints?: number,
+        segment?: number
       ) => Promise<{
         sampleRate: number;
         totalSamples: number;
@@ -45,10 +46,10 @@ declare global {
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
-      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy"> }) => Promise<any>;
+      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; outputSubdir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy">; range?: { startSec: number; endSec: number } }) => Promise<any>;
       cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
-      readPostHocAnalysisResult?: (sessionFolderPath: string) => Promise<any>;
+      readPostHocAnalysisResult?: (sessionFolderPath: string, subdir?: string) => Promise<any>;
       openExternalPath?: (path: string) => Promise<void>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;

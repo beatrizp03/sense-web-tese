@@ -132,6 +132,7 @@ interface ChunkCache {
 interface ChannelRowProps {
 	label: string
 	signalKind?: string
+	signalAxis?: string
 	windowData: Point[]
 	overviewSeries: [number, number][]
 	overviewLoading: boolean
@@ -148,6 +149,7 @@ interface ChannelRowProps {
 const ChannelRow: React.FC<ChannelRowProps> = ({
 	label,
 	signalKind,
+	signalAxis,
 	windowData,
 	overviewSeries,
 	overviewLoading,
@@ -266,9 +268,12 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 				{signalKind && (
 					<span className="text-sm font-medium uppercase text-over-background-medium">
 						{signalKind}
+						{signalKind.toLowerCase() === "acc" && signalAxis && (
+							<span className="normal-case"> - {signalAxis.toUpperCase()} axis</span>
+						)}
 					</span>
 				)}
-				<span className="ml-auto text-xs text-over-background-low">
+				<span className="ml-auto text-sm text-over-background-low">
 					{winLoading ? (
 						"Loading…"
 					) : (
@@ -280,23 +285,31 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 				</span>
 			</div>
 
-			<CanvasChart
-				data={windowData}
-				xMin={windowStartSec}
-				xMax={winEndSec}
-				className="h-48 w-full"
-				fontFamily="Lexend"
-				lineColor={lineColor}
-				outlineColor={outlineColor}
-				xTicks={6}
-				yTicks={5}
-				xTickFormat={formatTime}
-			/>
+			{winLoading ? (
+				<div className="flex h-48 w-full items-center justify-center gap-2">
+					<span className="h-2.5 w-2.5 animate-pulse rounded-full bg-background-accent-dark dark:bg-background-accent-light [animation-delay:0ms]" />
+					<span className="h-2.5 w-2.5 animate-pulse rounded-full bg-background-accent-dark dark:bg-background-accent-light [animation-delay:200ms]" />
+					<span className="h-2.5 w-2.5 animate-pulse rounded-full bg-background-accent-dark dark:bg-background-accent-light [animation-delay:400ms]" />
+				</div>
+			) : (
+				<CanvasChart
+					data={windowData}
+					xMin={windowStartSec}
+					xMax={winEndSec}
+					className="h-48 w-full"
+					fontFamily="Lexend"
+					lineColor={lineColor}
+					outlineColor={outlineColor}
+					xTicks={6}
+					yTicks={5}
+					xTickFormat={formatTime}
+				/>
+			)}
 
 			{/* Window navigator: move / drag edges; updates every row at once */}
 			<div className="flex items-center justify-between">
-				<span className="text-xs uppercase tracking-[0.2em] text-over-background-low">
-					Window ({Math.round(windowSec)}s)
+				<span className="text-xs tracking-[0.2em] text-over-background-low">
+					WINDOW SIZE ({Math.round(windowSec)}s)
 				</span>
 				<div className="flex gap-2">
 					<button
@@ -370,6 +383,9 @@ interface SessionChartProps {
 	sessionFolder: string
 	channelNames?: Record<string, string>
 	signalKinds?: Record<string, string>
+	signalAxes?: Record<string, string>
+	selectedSegment?: number
+	onWindowRangeChange?: (range: { startSec: number; endSec: number }) => void
 }
 
 const SessionChart: React.FC<SessionChartProps> = ({
@@ -377,21 +393,32 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	manifest,
 	sessionFolder,
 	channelNames = {},
-	signalKinds = {}
+	signalKinds = {},
+	signalAxes = {},
+	selectedSegment = 1,
+	onWindowRangeChange
 }) => {
 	const isDark = useDarkTheme()
 	const lineColor = isDark ? lineColorDark : lineColorLight
 	const outlineColor = isDark ? outlineColorDark : outlineColorLight
 
 	const sampleRate = Number(manifest?.sampleRate) || 1000
-	const chunks = useMemo(
-		() => (Array.isArray(manifest?.chunks) ? sortChunks(manifest.chunks) : []),
-		[manifest]
-	)
-	const totalSecondsEstimate = useMemo(
-		() => computeTotalSeconds(manifest, sampleRate),
-		[manifest, sampleRate]
-	)
+
+	const chunks = useMemo(() => {
+		const all = Array.isArray(manifest?.chunks) ? sortChunks(manifest.chunks) : []
+		return all.filter(chunk => (Number(chunk?.segment) || 1) === selectedSegment)
+	}, [manifest, selectedSegment])
+
+	const totalSecondsEstimate = useMemo(() => {
+		const segs = Array.isArray(manifest?.segments) ? manifest.segments : []
+		const seg = segs[selectedSegment - 1]
+		const start = Number(seg?.startedAt)
+		const end = Number(seg?.endedAt)
+		if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+			return (end - start) / 1000
+		}
+		return computeTotalSeconds(manifest, sampleRate)
+	}, [manifest, sampleRate, selectedSegment])
 
 	const cacheRef = useRef<ChunkCache>({
 		key: sessionFolder,
@@ -416,10 +443,9 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	} | null>(null)
 	const [overviewLoading, setOverviewLoading] = useState(false)
 
-	// Reset cache + window when the imported session changes.
 	useEffect(() => {
 		cacheRef.current = {
-			key: sessionFolder,
+			key: `${sessionFolder}#${selectedSegment}`,
 			vals: [],
 			lens: [],
 			loaded: 0,
@@ -429,9 +455,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		setWindowSec(DEFAULT_WINDOW_SECONDS)
 		setWindowByChannel({})
 		setLoadError(null)
-	}, [sessionFolder])
+	}, [sessionFolder, selectedSegment])
 
-	// Build the whole-session minimap envelope once per imported session.
 	useEffect(() => {
 		let cancelled = false
 		if (
@@ -447,7 +472,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			try {
 				const result = await window.electronAPI!.decimateSession!(
 					sessionFolder,
-					2000
+					2000,
+					selectedSegment
 				)
 				if (!cancelled) setOverview(result ?? null)
 			} catch {
@@ -459,7 +485,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		return () => {
 			cancelled = true
 		}
-	}, [sessionFolder, chunks])
+	}, [sessionFolder, chunks, selectedSegment])
 
 	const totalSamples = overview?.totalSamples ?? 0
 	const overviewSeconds =
@@ -478,8 +504,10 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		setWindowSec(secLen)
 	}, [])
 
-	// Load the current window for all channels (each chunk read once), then
-	// prefetch the next window in the background.
+	useEffect(() => {
+		onWindowRangeChange?.({ startSec: windowStartSec, endSec: windowStartSec + windowSec })
+	}, [onWindowRangeChange, windowStartSec, windowSec])
+
 	useEffect(() => {
 		if (channels.length === 0 || chunks.length === 0) {
 			setWindowByChannel({})
@@ -595,6 +623,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 					key={ch}
 					label={channelNames[ch] ? `${channelNames[ch]} (${ch})` : ch}
 					signalKind={signalKinds[ch]}
+					signalAxis={signalAxes[ch]}
 					windowData={windowByChannel[ch] ?? []}
 					overviewSeries={overview?.series?.[ch] ?? []}
 					overviewLoading={overviewLoading}
