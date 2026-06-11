@@ -1,19 +1,10 @@
 import { useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-//Default annotation label set
-export const ANNOTATION_LABELS = [
-	{ id: 1, name: "noise", category: "quality", description: "Corrupted data", color: "#6E6E6E", appliesTo: "channel" },
-	{ id: 2, name: "disturbance", category: "quality", description: "Protocol deviation", color: "#E0A52E", appliesTo: "channel" },
-	{ id: 3, name: "stimulus", category: "event", description: "External cue", color: "#1F77B4", appliesTo: "channel" },
-	{ id: 4, name: "onset", category: "event", description: "Event start", color: "#2BA84A", appliesTo: "channel" },
-	{ id: 5, name: "offset", category: "event", description: "Event end", color: "#0F5A2C", appliesTo: "channel" },
-	{ id: 6, name: "peak", category: "feature", description: "Local maximum", color: "#B83BCB", appliesTo: "channel" },
-	{ id: 7, name: "baseline", category: "state", description: "Resting period", color: "#BFB89E", appliesTo: "channel" },
-	{ id: 8, name: "movement", category: "quality", description: "Motion artifact", color: "#E84545", appliesTo: "channel" },
-	{ id: 20, name: "healthy", category: "class", description: "Control subject", color: "#3FA66A", appliesTo: "segment" },
-	{ id: 21, name: "sick", category: "class", description: "Clinical condition", color: "#C0392B", appliesTo: "segment" }
-] as const
+import { AnnotationLabel, useAnnotationLabels } from "../../utils/annotationLabels"
+import AnnotationLabelsEditor from "./AnnotationLabelsEditor"
+
+export { DEFAULT_ANNOTATION_LABELS as ANNOTATION_LABELS } from "../../utils/annotationLabels"
 
 /** Keyboard shortcuts for placing / editing annotations on the chart. */
 const ANNOTATION_SHORTCUTS = [
@@ -24,10 +15,7 @@ const ANNOTATION_SHORTCUTS = [
 	{ key: "Esc", action: "Cancel" }
 ] as const
 
-const channelLabels = ANNOTATION_LABELS.filter(label => label.appliesTo === "channel")
-const segmentLabels = ANNOTATION_LABELS.filter(label => label.appliesTo === "segment")
-
-const LabelRow: React.FC<{ shortcut?: number; label: (typeof ANNOTATION_LABELS)[number] }> = ({ shortcut, label }) => {
+const LabelRow: React.FC<{ shortcut?: number; label: AnnotationLabel }> = ({ shortcut, label }) => {
 	const markerRef = useRef<HTMLSpanElement>(null)
 	const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null)
 
@@ -72,6 +60,12 @@ const LabelRow: React.FC<{ shortcut?: number; label: (typeof ANNOTATION_LABELS)[
  * legend (channel + segment labels with their colors and number shortcuts).
  */
 const AnnotationsPanel: React.FC = () => {
+	const { labels } = useAnnotationLabels()
+	const [editing, setEditing] = useState(false)
+
+	const channelLabels = labels.filter(label => label.appliesTo === "channel")
+	const segmentLabels = labels.filter(label => label.appliesTo === "segment")
+
 	return (
 		<div className="space-y-4 pr-1 text-over-background-highest">
 			<div className="rounded-xl border border-background-accent bg-background-accent p-3">
@@ -86,6 +80,17 @@ const AnnotationsPanel: React.FC = () => {
 						</div>
 					))}
 				</div>
+			</div>
+
+			<div className="flex items-center justify-between">
+				<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Labels</p>
+				<button
+					type="button"
+					onClick={() => setEditing(true)}
+					className="rounded-md border border-background-accent px-2 py-1 text-[11px] text-over-background-medium transition-colors hover:border-primary hover:text-primary"
+				>
+					Edit labels
+				</button>
 			</div>
 
 			<div className="rounded-xl border border-background-accent bg-background-accent p-3">
@@ -105,6 +110,8 @@ const AnnotationsPanel: React.FC = () => {
 					))}
 				</div>
 			</div>
+
+			<AnnotationLabelsEditor open={editing} onClose={() => setEditing(false)} />
 		</div>
 	)
 }

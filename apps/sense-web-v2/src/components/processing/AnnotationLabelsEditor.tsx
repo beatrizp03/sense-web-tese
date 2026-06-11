@@ -1,0 +1,257 @@
+import { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
+
+import {
+	AnnotationAppliesTo,
+	AnnotationLabel,
+	DEFAULT_ANNOTATION_LABELS,
+	getAnnotationLabels,
+	setAnnotationLabels
+} from "../../utils/annotationLabels"
+
+interface AnnotationLabelsEditorProps {
+	open: boolean
+	onClose: () => void
+}
+
+const APPLIES_TO_OPTIONS: { value: AnnotationAppliesTo; label: string }[] = [
+	{ value: "channel", label: "Channel" },
+	{ value: "segment", label: "Segment" }
+]
+
+const fieldClasses =
+	"h-[1.875rem] min-w-0 rounded-md border border-background-accent bg-background px-2 text-xs text-over-background-highest outline-none focus:border-primary"
+
+const fieldLabelClasses = "text-[10px] font-medium uppercase tracking-wide text-over-background-low"
+
+/** Per-field guidance shown in the "?" help panel so users know what to enter. */
+const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
+	{ field: "Color", help: "The marker color shown on the chart for this label.", example: "e.g. red for artifacts, green for events" },
+	{ field: "Label", help: "Short name you'll pick while annotating.", example: "e.g. noise, onset, peak" },
+	{ field: "Applies to", help: "Whether the label marks a point/interval on a channel, or a whole segment.", example: "e.g. Channel for a noisy stretch, Segment for \"healthy\"" },
+	{ field: "Category", help: "A group the label belongs to, for organisation.", example: "e.g. quality, event, feature, state, class" },
+	{ field: "Description", help: "A longer explanation, shown as a tooltip in the legend.", example: "e.g. \"Motion artifact\", \"Event start\"" }
+]
+
+/**
+ * Pop-up editor for annotation labels (add / rename / recolor / delete).
+ */
+const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose }) => {
+	const [draft, setDraft] = useState<AnnotationLabel[]>([])
+	const [showHelp, setShowHelp] = useState(false)
+
+	useEffect(() => {
+		if (open) setDraft(getAnnotationLabels().map(label => ({ ...label })))
+	}, [open])
+
+	useEffect(() => {
+		if (!open) return
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") onClose()
+		}
+		window.addEventListener("keydown", onKeyDown)
+		return () => window.removeEventListener("keydown", onKeyDown)
+	}, [open, onClose])
+
+	if (!open || typeof document === "undefined") return null
+
+	const updateDraft = (id: number, patch: Partial<AnnotationLabel>) =>
+		setDraft(current => current.map(label => (label.id === id ? { ...label, ...patch } : label)))
+
+	const removeDraft = (id: number) => setDraft(current => current.filter(label => label.id !== id))
+
+	const addDraft = () =>
+		setDraft(current => {
+			const nextId = current.reduce((max, label) => Math.max(max, label.id), 0) + 1
+			return [
+				...current,
+				{ id: nextId, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel" }
+			]
+		})
+
+	const resetDraft = () => setDraft(DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label })))
+
+	const save = () => {
+		setAnnotationLabels(draft)
+		onClose()
+	}
+
+	return createPortal(
+		<div
+			className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+			onClick={onClose}
+			role="presentation"
+		>
+			<div
+				className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl bg-background p-5 text-over-background-highest shadow-2xl"
+				onClick={event => event.stopPropagation()}
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="annotation-labels-editor-title"
+			>
+				<div className="flex items-start justify-between gap-4">
+					<div>
+						<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Annotations</p>
+						<div className="mt-1 flex items-center gap-2">
+							<h2 id="annotation-labels-editor-title" className="text-base font-semibold">
+								Edit annotation labels
+							</h2>
+							<div
+								className="relative"
+								onMouseEnter={() => setShowHelp(true)}
+								onMouseLeave={() => setShowHelp(false)}
+								onFocus={() => setShowHelp(true)}
+								onBlur={() => setShowHelp(false)}
+							>
+								<span
+									tabIndex={0}
+									role="button"
+									className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold transition-colors hover:bg-background-accent ${showHelp ? "bg-background-accent text-over-background-highest" : "text-over-background-medium"}`}
+									aria-label="What goes in each field?"
+								>
+									?
+								</span>
+								{showHelp && (
+									<div className="absolute left-0 top-full z-10 mt-2 w-[28rem] max-w-[80vw] rounded-xl border border-background-accent bg-background-accent p-3 shadow-2xl">
+										<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">What goes in each field ?</p>
+										<dl className="mt-2 flex flex-col gap-2">
+											{FIELD_GUIDE.map(entry => (
+												<div key={entry.field} className="grid grid-cols-[5.5rem_1fr] gap-2 text-xs">
+													<dt className="text-xs font-semibold text-over-background-highest">{entry.field}</dt>
+													<dd className="text-xs text-over-background-medium">
+														{entry.help} <span className="text-xs italic text-over-background-low">{entry.example}</span>
+													</dd>
+												</div>
+											))}
+										</dl>
+									</div>
+								)}
+							</div>
+						</div>
+					</div>
+					<button
+						type="button"
+						onClick={resetDraft}
+						className="rounded-md border border-background-accent px-3 py-1 text-xs text-over-background-medium transition-colors hover:text-over-background-highest"
+						title="Restore the default label set"
+					>
+						Reset to defaults
+					</button>
+				</div>
+
+				<div className="mt-4 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+					{draft.map(label => (
+						<div
+							key={label.id}
+							className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-2.5 dark:bg-background-accent-dark"
+						>
+							<div className="flex items-end gap-2">
+								<div className="flex flex-col gap-1">
+									<span className={fieldLabelClasses}>Color</span>
+									<input
+										type="color"
+										value={label.color}
+										onChange={event => updateDraft(label.id, { color: event.target.value })}
+										className="h-[1.875rem] w-8 shrink-0 cursor-pointer rounded border border-background-accent bg-transparent p-0"
+										aria-label={`Color for ${label.name || "label"}`}
+										title="Pick label color"
+									/>
+								</div>
+								<label className="flex flex-1 flex-col gap-1">
+									<span className={fieldLabelClasses}>Label</span>
+									<input
+										type="text"
+										value={label.name}
+										onChange={event => updateDraft(label.id, { name: event.target.value })}
+										placeholder="Label name"
+										className={`font-medium ${fieldClasses}`}
+									/>
+								</label>
+								<label className="flex flex-col gap-1">
+									<span className={fieldLabelClasses}>Applies to</span>
+									<select
+										value={label.appliesTo}
+										onChange={event => updateDraft(label.id, { appliesTo: event.target.value as AnnotationAppliesTo })}
+										className={fieldClasses}
+										title="What this label can be attached to"
+									>
+										{APPLIES_TO_OPTIONS.map(option => (
+											<option key={option.value} value={option.value}>
+												{option.label}
+											</option>
+										))}
+									</select>
+								</label>
+								<button
+									type="button"
+									onClick={() => removeDraft(label.id)}
+									className="h-[1.875rem] shrink-0 rounded-md border border-background-accent px-2 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
+									aria-label={`Delete ${label.name || "label"}`}
+									title="Delete label"
+								>
+									✕
+								</button>
+							</div>
+							<div className="flex flex-wrap items-end gap-2">
+								<label className="flex w-28 flex-col gap-1">
+									<span className={fieldLabelClasses}>Category</span>
+									<input
+										type="text"
+										value={label.category}
+										onChange={event => updateDraft(label.id, { category: event.target.value })}
+										placeholder="Category"
+										className={fieldClasses}
+									/>
+								</label>
+								<label className="flex flex-1 flex-col gap-1">
+									<span className={fieldLabelClasses}>Description</span>
+									<input
+										type="text"
+										value={label.description}
+										onChange={event => updateDraft(label.id, { description: event.target.value })}
+										placeholder="Description"
+										className={fieldClasses}
+									/>
+								</label>
+							</div>
+						</div>
+					))}
+					{draft.length === 0 && (
+						<p className="rounded-xl border border-dashed border-background-accent p-3 text-xs text-over-background-medium">
+							No labels yet. Add one to start annotating.
+						</p>
+					)}
+				</div>
+
+				<div className="mt-4 flex items-center justify-between gap-2 border-t border-background-accent pt-4">
+					<button
+						type="button"
+						onClick={addDraft}
+						className="rounded-md border border-background-accent px-3 py-1.5 text-xs font-medium text-over-background-highest transition-colors hover:border-primary hover:text-primary"
+					>
+						+ Add label
+					</button>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={onClose}
+							className="rounded-md border border-background-accent px-3 py-1.5 text-xs text-over-background-medium transition-colors hover:text-over-background-highest"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							onClick={save}
+							className="rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-95"
+						>
+							Save
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>,
+		document.body
+	)
+}
+
+export default AnnotationLabelsEditor
