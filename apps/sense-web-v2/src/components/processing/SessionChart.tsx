@@ -237,6 +237,28 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 		)
 	}
 
+	// Editable window-size field
+	const [sizeDraft, setSizeDraft] = useState(String(Math.round(windowSec)))
+	useEffect(() => {
+		setSizeDraft(String(Math.round(windowSec)))
+	}, [windowSec])
+
+	const commitSize = (raw: string) => {
+		const parsed = Number(raw)
+		if (!Number.isFinite(parsed)) {
+			setSizeDraft(String(Math.round(windowSec)))
+			return
+		}
+		const clamped = Math.min(
+			MAX_WINDOW_SECONDS,
+			Math.max(MIN_WINDOW_SECONDS, parsed)
+		)
+
+		const start = Math.min(windowStartSec, Math.max(0, rangeSeconds - clamped))
+		onWindowChange(start, clamped)
+		setSizeDraft(String(Math.round(clamped)))
+	}
+
 	const minimapPoints = useMemo(() => {
 		if (overviewSeries.length === 0 || totalSamples <= 0) return ""
 		let yMin = Infinity
@@ -306,11 +328,28 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 				/>
 			)}
 
-			{/* Window navigator: move / drag edges; updates every row at once */}
+			{/* Window navigator: move / drag edges + input field; updates every row at once */}
 			<div className="flex items-center justify-between">
-				<span className="text-xs tracking-[0.2em] text-over-background-low">
-					WINDOW SIZE ({Math.round(windowSec)}s)
-				</span>
+				<label className="flex items-center gap-1.5 text-xs tracking-[0.2em] text-over-background-low">
+					WINDOW SIZE
+					<input
+						type="number"
+						min={MIN_WINDOW_SECONDS}
+						max={MAX_WINDOW_SECONDS}
+						value={sizeDraft}
+						onChange={event => setSizeDraft(event.target.value)}
+						onBlur={event => commitSize(event.target.value)}
+						onKeyDown={event => {
+							if (event.key === "Enter") {
+								event.preventDefault()
+								commitSize((event.target as HTMLInputElement).value)
+							}
+						}}
+						className="w-14 rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-xs tabular-nums tracking-normal text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
+						aria-label="Window size in seconds"
+					/>
+					s
+				</label>
 				<div className="flex gap-2">
 					<button
 						type="button"

@@ -664,7 +664,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 								const selectedAxis = signalAxes[channel] ?? toAxisRecord(manifest?.channelSignalAxes)[channel] ?? ""
 								const isExcluded = Boolean(excludedChannels[channel])
 								return (
-									<div key={channel} className={`flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${isExcluded ? "opacity-60" : ""}`}>
+									<div key={channel} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${isExcluded ? "opacity-60" : ""}`}>
 										<label className="flex items-center gap-2">
 											<input
 												type="checkbox"
@@ -681,10 +681,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 											/>
 											<div>
 												<div className="text-xs font-medium">{channelNames[channel] ?? channel}</div>
-												<div className="text-xs text-over-background-low">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
+												<div className="text-sm text-over-background-low">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
 											</div>
 										</label>
-										<div className="flex flex-wrap items-center gap-2">
+										<div className="flex flex-wrap items-center justify-end gap-2">
 											<select
 												value={selectedValue}
 												onChange={event => {
@@ -702,7 +702,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 														return next
 													})
 												}}
-												className="min-w-[6rem] flex-1 rounded-full border border-background-accent bg-background px-3 py-2 text-xs outline-none"
+												className="w-auto min-w-[6rem] max-w-[10rem] rounded-full border border-background-accent bg-background px-3 py-2 text-xs outline-none"
 											>
 												{SIGNAL_TYPE_OPTIONS.map(option => (
 													<option key={`${channel}-${option.value || "empty"}`} value={option.value}>
