@@ -4,6 +4,7 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import { AnalysisProgressPanel } from "../analysis/AnalysisProgressPanel"
 import { SIGNAL_TYPE_OPTIONS, ACC_AXIS_OPTIONS, toRecord, toAxisRecord } from "./analysisShared"
+import HelpHint from "./HelpHint"
 
 type AnalysisTab = "import" | "results"
 
@@ -98,8 +99,6 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [error, setError] = useState("")
 	const [showProgressPanel, setShowProgressPanel] = useState(false)
 	const [outlierRemovalEnabled, setOutlierRemovalEnabled] = useState(true)
-	const [showOutlierRemovalLegend, setShowOutlierRemovalLegend] = useState(false)
-	const [showLibraryPolicyLegend, setShowLibraryPolicyLegend] = useState(false)
 	const [edaMethodSelection, setEdaMethodSelection] = useState<"neurokit" | "biosppy" | "auto">("auto")
 	const [excludedChannels, setExcludedChannels] = useState<Record<string, boolean>>({})
 	const [signalKindLibraries, setSignalKindLibraries] = useState<Record<string, "neurokit" | "biosppy">>({})
@@ -224,24 +223,6 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 			outlierRemoval: channel?.outlierRemoval ?? analysis?.outlierRemoval ?? null
 		}
 	}, [])
-
-	useEffect(() => {
-		if (!showOutlierRemovalLegend) return
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setShowOutlierRemovalLegend(false)
-		}
-		window.addEventListener("keydown", onKeyDown)
-		return () => window.removeEventListener("keydown", onKeyDown)
-	}, [showOutlierRemovalLegend])
-
-	useEffect(() => {
-		if (!showLibraryPolicyLegend) return
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setShowLibraryPolicyLegend(false)
-		}
-		window.addEventListener("keydown", onKeyDown)
-		return () => window.removeEventListener("keydown", onKeyDown)
-	}, [showLibraryPolicyLegend])
 
 	useEffect(() => {
 		if (!zoomedTable) return
@@ -507,15 +488,30 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	)
 
 	const outlierLegendButton = (
-		<button
-			type="button"
-			onClick={() => { setZoomedTable(null); setShowOutlierRemovalLegend(true) }}
-			className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent"
-			aria-label="Show outlier removal legend"
-			title="Show outlier removal legend"
-		>
-			?
-		</button>
+		<HelpHint label="Outlier removal support by library" width="w-[30rem]">
+			<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Help</p>
+			<h3 className="mt-1 text-sm font-semibold">Outlier removal support by library</h3>
+			<div className="mt-3 overflow-x-auto">
+				<table className="w-full border-separate border-spacing-0 text-left text-[11px]">
+					<thead>
+						<tr>
+							<th className="px-2 py-1 text-xs">Library</th>
+							<th className="px-2 py-1 text-xs">Signals</th>
+							<th className="px-2 py-1 text-xs">Method</th>
+						</tr>
+					</thead>
+					<tbody>
+						{OUTLIER_REMOVAL_LIBRARY_SUPPORT.map(entry => (
+							<tr key={entry.library} className="align-top">
+								<td className="px-2 py-1 text-xs text-over-background-medium">{entry.library}</td>
+								<td className="px-2 py-1 text-xs text-over-background-medium">{entry.signals.join(", ")}</td>
+								<td className="px-2 py-1 text-xs text-over-background-medium">{entry.method}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</div>
+		</HelpHint>
 	)
 
 	const renderSummaryTable = () => (
@@ -815,15 +811,19 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							<div className="rounded-xl border border-background-accent bg-background-accent p-3">
 								<div className="flex items-center gap-2">
 									<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Library policy</p>
-									<button
-										type="button"
-										onClick={() => setShowLibraryPolicyLegend(true)}
-										className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold text-over-background-highest transition-colors hover:bg-background-accent"
-										aria-label="Show library policy help"
-										title="Show library policy help"
-									>
-										?
-									</button>
+									<HelpHint label="Library policy summary" width="w-[26rem]">
+										<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Help</p>
+										<h3 className="mt-1 text-xs font-semibold">Library policy summary</h3>
+										<div className="mt-3 space-y-3 text-xs text-over-background-medium">
+											<div className="grid gap-2 sm:grid-cols-2">
+												<div className="text-xs">BioSPPy primary signals: ECG, EDA, PPG, EMG, RSP, EEG, PCG, ACC</div>
+												<div className="text-xs">NeuroKit2 secondary signals: ECG, EDA, PPG, EMG, RSP, EEG</div>
+												<div className="text-xs">NeuroKit2-only signals: EOG, HRV</div>
+												<div className="text-xs">Stored policy coverage: {formatSignalList(Object.keys(analysisPolicy?.signalPolicies ?? {}))}</div>
+											</div>
+											<p className="text-xs">HRV is derived from ECG.</p>
+										</div>
+									</HelpHint>
 								</div>
 								<p className="py-2 text-xs text-over-background-highest">{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}</p>
 								<div className="flex flex-col gap-2">
@@ -961,106 +961,6 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				}}
 				resultPath={analysisResult?.resultPath}
 			/>
-
-			{showOutlierRemovalLegend && (
-				<div
-					className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
-					onClick={() => setShowOutlierRemovalLegend(false)}
-					role="presentation"
-				>
-					<div
-						className="w-full max-w-3xl rounded-xl bg-background-accent-dark p-5 shadow-2xl dark:bg-background-accent-light"
-						onClick={event => event.stopPropagation()}
-						role="dialog"
-						aria-modal="true"
-						aria-labelledby="outlier-removal-legend-title"
-					>
-						<div className="flex items-start justify-between gap-4">
-							<div>
-								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-highest-dark dark:text-over-background-highest-light">Help</p>
-								<h2 id="outlier-removal-legend-title" className="mt-1 text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">
-									Outlier removal support by library
-								</h2>
-							</div>
-							<button
-								type="button"
-								onClick={() => setShowOutlierRemovalLegend(false)}
-								className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-white transition-colors hover:opacity-95"
-								aria-label="Close outlier removal help"
-							>
-								Close
-							</button>
-						</div>
-						<div className="mt-4 overflow-x-auto text-[11px] text-over-background-medium">
-							<table className="w-full min-w-[720px] text-[11px] border-separate border-spacing-0 text-left text-over-background-highest-dark dark:text-over-background-highest-light">
-								<thead>
-									<tr>
-										<th className="px-3 py-2 text-xs">Library</th>
-										<th className="px-3 py-2 text-xs">Signals</th>
-										<th className="px-3 py-2 text-xs">Method</th>
-									</tr>
-								</thead>
-								<tbody>
-									{OUTLIER_REMOVAL_LIBRARY_SUPPORT.map(entry => (
-										<tr key={entry.library} className="align-top">
-											<td className="px-3 py-2 text-xs text-over-background-medium-dark dark:text-over-background-medium-light">{entry.library}</td>
-											<td className="px-3 py-2 text-xs text-over-background-medium-dark dark:text-over-background-medium-light">{entry.signals.join(", ")}</td>
-											<td className="px-3 py-2 text-xs text-over-background-medium-dark dark:text-over-background-medium-light">{entry.method}</td>
-										</tr>
-									))}
-								</tbody>
-							</table>
-						</div>
-						<p className="mt-4 text-[11px] text-over-background-medium-dark dark:text-over-background-medium-light">
-							Press <span className="font-semibold text-[11px]">Esc</span> or click outside the popup to close it.
-						</p>
-					</div>
-				</div>
-			)}
-
-			{showLibraryPolicyLegend && (
-				<div
-					className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
-					onClick={() => setShowLibraryPolicyLegend(false)}
-					role="presentation"
-				>
-					<div
-						className="w-full max-w-3xl rounded-xl bg-background-accent-dark p-5 shadow-2xl dark:bg-background-accent-light"
-						onClick={event => event.stopPropagation()}
-						role="dialog"
-						aria-modal="true"
-						aria-labelledby="library-policy-legend-title"
-					>
-						<div className="flex items-start justify-between gap-4">
-							<div>
-								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-highest-dark dark:text-over-background-highest-light">Help</p>
-								<h2 id="library-policy-legend-title" className="mt-1 text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">
-									Library policy summary
-								</h2>
-							</div>
-							<button
-								type="button"
-								onClick={() => setShowLibraryPolicyLegend(false)}
-								className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-white transition-colors hover:opacity-95"
-								aria-label="Close library policy help"
-							>
-								Close
-							</button>
-						</div>
-						<div className="mt-4 space-y-4 text-[11px] text-over-background-medium dark:text-over-background-medium-light">
-							<div className="grid gap-2 sm:grid-cols-2">
-								<div>BioSPPy primary signals: ECG, EDA, PPG, EMG, RSP, EEG, PCG, ACC</div>
-								<div>NeuroKit2 secondary signals: ECG, EDA, PPG, EMG, RSP, EEG</div>
-								<div>NeuroKit2-only signals: EOG, HRV</div>
-								<div>Stored policy coverage: {formatSignalList(Object.keys(analysisPolicy?.signalPolicies ?? {}))}</div>
-							</div>
-							<p className="text-[11px] text-over-background-medium-dark dark:text-over-background-medium-light">
-								HRV is derived from ECG.
-							</p>
-						</div>
-					</div>
-				</div>
-			)}
 
 			{showDetailModal && selectedDetailEntry && (
 				<div

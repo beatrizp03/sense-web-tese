@@ -8,6 +8,7 @@ import {
 	getAnnotationLabels,
 	setAnnotationLabels
 } from "../../utils/annotationLabels"
+import HelpHint from "./HelpHint"
 
 interface AnnotationLabelsEditorProps {
 	open: boolean
@@ -38,7 +39,6 @@ const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
  */
 const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose }) => {
 	const [draft, setDraft] = useState<AnnotationLabel[]>([])
-	const [showHelp, setShowHelp] = useState(false)
 
 	useEffect(() => {
 		if (open) setDraft(getAnnotationLabels().map(label => ({ ...label })))
@@ -96,37 +96,19 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 							<h2 id="annotation-labels-editor-title" className="text-base font-semibold">
 								Edit annotation labels
 							</h2>
-							<div
-								className="relative"
-								onMouseEnter={() => setShowHelp(true)}
-								onMouseLeave={() => setShowHelp(false)}
-								onFocus={() => setShowHelp(true)}
-								onBlur={() => setShowHelp(false)}
-							>
-								<span
-									tabIndex={0}
-									role="button"
-									className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-background-accent text-[11px] font-semibold transition-colors hover:bg-background-accent ${showHelp ? "bg-background-accent text-over-background-highest" : "text-over-background-medium"}`}
-									aria-label="What goes in each field?"
-								>
-									?
-								</span>
-								{showHelp && (
-									<div className="absolute left-0 top-full z-10 mt-2 w-[28rem] max-w-[80vw] rounded-xl border border-background-accent bg-background-accent p-3 shadow-2xl">
-										<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">What goes in each field ?</p>
-										<dl className="mt-2 flex flex-col gap-2">
-											{FIELD_GUIDE.map(entry => (
-												<div key={entry.field} className="grid grid-cols-[5.5rem_1fr] gap-2 text-xs">
-													<dt className="text-xs font-semibold text-over-background-highest">{entry.field}</dt>
-													<dd className="text-xs text-over-background-medium">
-														{entry.help} <span className="text-xs italic text-over-background-low">{entry.example}</span>
-													</dd>
-												</div>
-											))}
-										</dl>
-									</div>
-								)}
-							</div>
+							<HelpHint label="What goes in each field?" width="w-[28rem]">
+								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">What goes in each field</p>
+								<dl className="mt-2 flex flex-col gap-2">
+									{FIELD_GUIDE.map(entry => (
+										<div key={entry.field} className="grid grid-cols-[5.5rem_1fr] gap-2 text-xs">
+											<dt className="text-xs font-semibold text-over-background-highest">{entry.field}</dt>
+											<dd className="text-xs text-over-background-medium">
+												{entry.help} <span className="text-xs italic text-over-background-low">{entry.example}</span>
+											</dd>
+										</div>
+									))}
+								</dl>
+							</HelpHint>
 						</div>
 					</div>
 					<button

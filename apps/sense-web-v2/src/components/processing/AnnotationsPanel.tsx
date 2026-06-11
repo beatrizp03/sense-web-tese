@@ -1,8 +1,8 @@
-import { useRef, useState } from "react"
-import { createPortal } from "react-dom"
+import { useState } from "react"
 
 import { AnnotationLabel, useAnnotationLabels } from "../../utils/annotationLabels"
 import AnnotationLabelsEditor from "./AnnotationLabelsEditor"
+import HelpHint from "./HelpHint"
 
 export { DEFAULT_ANNOTATION_LABELS as ANNOTATION_LABELS } from "../../utils/annotationLabels"
 
@@ -15,45 +15,20 @@ const ANNOTATION_SHORTCUTS = [
 	{ key: "Esc", action: "Cancel" }
 ] as const
 
-const LabelRow: React.FC<{ shortcut?: number; label: AnnotationLabel }> = ({ shortcut, label }) => {
-	const markerRef = useRef<HTMLSpanElement>(null)
-	const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null)
-
-	const showTooltip = () => {
-		const rect = markerRef.current?.getBoundingClientRect()
-		if (rect) setTooltipPos({ left: rect.right + 8, top: rect.top + rect.height / 2 })
-	}
-	const hideTooltip = () => setTooltipPos(null)
-
-	return (
-		<div className="flex items-center gap-2 text-[11px]">
-			{shortcut != null && (
-				<span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-[10px] font-semibold text-over-background-medium">
-					{shortcut}
-				</span>
-			)}
-			<span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: label.color }} />
-			<span className="text-xs font-medium text-over-background-highest">{label.name}</span>
-			<span
-				ref={markerRef}
-				onMouseEnter={showTooltip}
-				onMouseLeave={hideTooltip}
-				className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-background-accent text-[10px] font-semibold text-over-background-medium"
-			>
-				?
+const LabelRow: React.FC<{ shortcut?: number; label: AnnotationLabel }> = ({ shortcut, label }) => (
+	<div className="flex items-center gap-2 text-[11px]">
+		{shortcut != null && (
+			<span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-[10px] font-semibold text-over-background-medium">
+				{shortcut}
 			</span>
-			{tooltipPos && typeof document !== "undefined" && createPortal(
-				<span
-					style={{ position: "fixed", left: tooltipPos.left, top: tooltipPos.top, transform: "translateY(-50%)" }}
-					className="pointer-events-none z-[9999] whitespace-nowrap rounded-md border border-background-accent bg-background px-2 py-1 text-[11px] text-over-background-highest shadow-lg"
-				>
-					{label.description}
-				</span>,
-				document.body
-			)}
-		</div>
-	)
-}
+		)}
+		<span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: label.color }} />
+		<span className="text-xs font-medium text-over-background-highest">{label.name}</span>
+		<HelpHint label={`About ${label.name}`} width="w-[14rem]">
+			<span className="text-xs text-over-background-highest">{label.description}</span>
+		</HelpHint>
+	</div>
+)
 
 /**
  * Annotations tab body: the interaction "key" (keyboard shortcuts) and the label
