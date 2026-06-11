@@ -7,6 +7,7 @@ import SessionChart from "../components/processing/SessionChart"
 import ProcessingSidePanel from "../components/processing/ProcessingSidePanel"
 import AnalysisPanel from "../components/processing/AnalysisPanel"
 import AnnotationsPanel from "../components/processing/AnnotationsPanel"
+import SessionExportBar from "../components/processing/SessionExportBar"
 import { toRecord, toAxisRecord } from "../components/processing/analysisShared"
 import { useBusyGuard } from "../hooks/useBusyGuard"
 
@@ -164,17 +165,17 @@ const Page = () => {
 		>
 			<div className="w-full max-w-5xl space-y-6">
 				{hasSession ? (
-					<div className="grid grid-cols-4 gap-4">
-						<div className="col-span-3 space-y-6">
-							<div className="grid grid-cols-12 gap-2 items-stretch">
-								<div className="col-span-9 flex items-center rounded-xl border border-background-accent bg-background-accent px-6 py-3 shadow-sm">
+					<div className="grid grid-cols-3 gap-4">
+						<div className="col-span-2 space-y-6">
+							<div className="grid grid-cols-5 gap-2 items-stretch">
+								<div className="col-span-4 flex items-center rounded-xl border border-background-accent bg-background-accent px-6 py-3 shadow-sm">
 									<div className="min-w-0 space-y-0">
 										<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Imported session</p>
 										<p className="break-all text-sm text-over-background-highest">{sessionFolder}</p>
 									</div>
 								</div>
-								<div className="col-span-3 flex items-center py-1.5 rounded-xl">
-									<TextButton size="base" className="text-sm !h-full w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={importSessionFolder} disabled={loading || analysisBusy}>
+								<div className="col-span-1 flex items-center py-1 rounded-l">
+									<TextButton size="base" className="text-xs !h-full w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={importSessionFolder} disabled={loading || analysisBusy}>
 										Import New Folder
 									</TextButton>
 								</div>
@@ -209,7 +210,7 @@ const Page = () => {
 							/>
 						</div>
 						<div className="col-span-1">
-							<ProcessingSidePanel analysisContent={analysisPanel} annotationsContent={<AnnotationsPanel />} />
+							<ProcessingSidePanel analysisContent={analysisPanel} annotationsContent={<AnnotationsPanel />} exportContent={<SessionExportBar manifest={manifest} withDescriptions />} />
 						</div>
 					</div>
 				) : (

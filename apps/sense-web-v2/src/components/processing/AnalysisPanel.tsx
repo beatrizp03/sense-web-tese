@@ -614,7 +614,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	)
 
 	return (
-		<div className="space-y-4 pr-1 text-over-background-highest">
+		<div className="space-y-4 pr-0.5 text-over-background-highest">
 			{/* Settings / Results sub-tabs */}
 			<div className="flex items-center justify-center gap-2">
 				{(["import", "results"] as AnalysisTab[]).map(tab => (
@@ -783,7 +783,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 						<button
 							type="button"
 							onClick={selectAnalysisFolder}
-							className="w-full uppercase rounded-lg bg-over-background-low-light px-1 py-1 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
+							className="w-full uppercase rounded-lg bg-over-background-low-light p-1.5 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
 						>
 							Import another analysis' results
 						</button>
@@ -841,7 +841,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							<div className="rounded-xl border border-background-accent bg-background-accent p-3">
 								<div className="flex items-center justify-between gap-2">
 									<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Summary statistics</p>
-									{zoomButton("summary", "Expand summary statistics table")}
+									{summaryRows.length > 0 && zoomButton("summary", "Expand summary statistics table")}
 								</div>
 								<div className="table-scroll mt-3 overflow-x-auto rounded-lg border border-background-accent">
 									<table className="w-full min-w-[640px] border-separate border-spacing-0 text-left text-xs">
