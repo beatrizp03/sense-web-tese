@@ -334,6 +334,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readSessionManifest: async (sessionPath) => {
     return await ipcRenderer.invoke('read-session-manifest', sessionPath);
   },
+  readSessionAnnotations: async (sessionFolder) => {
+    return await ipcRenderer.invoke('read-session-annotations', sessionFolder);
+  },
+  writeSessionAnnotations: async (sessionFolder, data) => {
+    return await ipcRenderer.invoke('write-session-annotations', sessionFolder, data);
+  },
   selectAnalysisSessionFolder: async () => {
     return await ipcRenderer.invoke('select-analysis-session-folder');
   },

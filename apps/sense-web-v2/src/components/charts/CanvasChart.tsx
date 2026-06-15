@@ -1,7 +1,26 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import clsx from "clsx"
 import * as d3 from "d3"
+
+export interface CanvasAnnotation {
+	id: string
+	type: "point" | "interval"
+	startSec: number
+	endSec: number
+	color: string
+	selected?: boolean
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+	const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+	if (!match) return hex
+	const int = parseInt(match[1], 16)
+	const r = (int >> 16) & 255
+	const g = (int >> 8) & 255
+	const b = int & 255
+	return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
 
 export interface CanvasChartProps {
 	className?: string
@@ -24,6 +43,10 @@ export interface CanvasChartProps {
 	fontWeight?: number
 	lineColor?: string
 	outlineColor?: string
+	annotations?: CanvasAnnotation[]
+	draftIntervalStart?: number | null
+	draftColor?: string
+	onDataClick?: (x: number, y: number, hitId: string | null) => void
 }
 
 const CanvasChart: React.FC<CanvasChartProps> = ({
@@ -46,7 +69,11 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	fontFamily,
 	fontWeight,
 	lineColor,
-	outlineColor
+	outlineColor,
+	annotations,
+	draftIntervalStart,
+	draftColor,
+	onDataClick
 }) => {
 	const [parentElement, setParentElement] = useState<HTMLDivElement | null>(
 		null
@@ -57,6 +84,16 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	const [width, setWidth] = useState(0)
 	const [height, setHeight] = useState(0)
 	const [pixelRatio, setPixelRatio] = useState(1)
+
+	const geomRef = useRef<{
+		xScale: d3.ScaleLinear<number, number>
+		yScale: d3.ScaleLinear<number, number>
+		plotWidth: number
+		plotHeight: number
+		leftMargin: number
+		topMargin: number
+		annotations: CanvasAnnotation[]
+	} | null>(null)
 
 	useEffect(() => {
 		if (parentElement) {
@@ -233,6 +270,76 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 					plotHeight + lineWidth + 8 * pixelRatio
 				)
 			}
+
+			if ((annotations && annotations.length > 0) || draftIntervalStart != null) {
+				const overhang = 15 * pixelRatio
+				// The selected annotation rises higher so it stands out from the rest.
+				const selectedOverhang = overhang + 12 * pixelRatio
+				context.save()
+				context.beginPath()
+				context.rect(0, -selectedOverhang, plotWidth, plotHeight + selectedOverhang)
+				context.clip()
+
+				for (const ann of annotations ?? []) {
+					const x0 = xScale(ann.startSec)
+					const o = ann.selected ? selectedOverhang : overhang
+					if (ann.type === "interval") {
+						const x1 = xScale(ann.endSec)
+						const left = Math.min(x0, x1)
+						const w = Math.abs(x1 - x0)
+						context.fillStyle = hexToRgba(ann.color, ann.selected ? 0.3 : 0.16)
+						context.fillRect(left, -o, w, plotHeight + o)
+						context.strokeStyle = ann.color
+						context.lineWidth = (ann.selected ? 2.5 : 1.5) * pixelRatio
+						context.beginPath()
+						context.moveTo(left, -o)
+						context.lineTo(left, plotHeight)
+						context.moveTo(left + w, -o)
+						context.lineTo(left + w, plotHeight)
+						context.stroke()
+					} else {
+						context.strokeStyle = ann.color
+						context.lineWidth = (ann.selected ? 3 : 2) * pixelRatio
+						context.beginPath()
+						context.moveTo(x0, -o)
+						context.lineTo(x0, plotHeight)
+						context.stroke()
+
+						const m = (ann.selected ? 8 : 6) * pixelRatio
+						context.fillStyle = ann.color
+						context.beginPath()
+						context.moveTo(x0 - m, -o)
+						context.lineTo(x0 + m, -o)
+						context.lineTo(x0, -o + m * 1.5)
+						context.closePath()
+						context.fill()
+					}
+				}
+
+				if (draftIntervalStart != null) {
+					const dx = xScale(draftIntervalStart)
+					context.strokeStyle = draftColor ?? "#9CA3AF"
+					context.lineWidth = 1.5 * pixelRatio
+					context.setLineDash([4 * pixelRatio, 4 * pixelRatio])
+					context.beginPath()
+					context.moveTo(dx, -overhang)
+					context.lineTo(dx, plotHeight)
+					context.stroke()
+					context.setLineDash([])
+				}
+
+				context.restore()
+			}
+
+			geomRef.current = {
+				xScale,
+				yScale,
+				plotWidth,
+				plotHeight,
+				leftMargin: scaledLeftMargin,
+				topMargin: scaledTopMargin,
+				annotations: annotations ?? []
+			}
 		}
 	}, [
 		data,
@@ -256,8 +363,54 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		fontWeight,
 		fontFamily,
 		lineColor,
-		outlineColor
+		outlineColor,
+		annotations,
+		draftIntervalStart,
+		draftColor
 	])
+
+	const handleClick = useCallback(
+		(event: React.MouseEvent<HTMLCanvasElement>) => {
+			if (!onDataClick) return
+			const canvas = event.currentTarget
+			const geom = geomRef.current
+			if (!geom) return
+
+			const rect = canvas.getBoundingClientRect()
+			if (rect.width <= 0) return
+			const scaleX = canvas.width / rect.width
+			const scaleY = canvas.height / rect.height
+			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
+			const py = (event.clientY - rect.top) * scaleY - geom.topMargin
+
+			if (px < 0 || px > geom.plotWidth || py < 0 || py > geom.plotHeight) {
+				return
+			}
+
+			const dataX = geom.xScale.invert(px)
+			const dataY = geom.yScale.invert(py)
+
+			const hitTolerance = 4 * pixelRatio
+			let hitId: string | null = null
+			for (let i = geom.annotations.length - 1; i >= 0; i--) {
+				const ann = geom.annotations[i]
+				const a0 = geom.xScale(ann.startSec)
+				if (ann.type === "interval") {
+					const a1 = geom.xScale(ann.endSec)
+					if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) {
+						hitId = ann.id
+						break
+					}
+				} else if (Math.abs(px - a0) <= hitTolerance) {
+					hitId = ann.id
+					break
+				}
+			}
+
+			onDataClick(dataX, dataY, hitId)
+		},
+		[onDataClick, pixelRatio]
+	)
 
 	return (
 		<div
@@ -265,7 +418,12 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			className={clsx("relative", className)}
 			style={style}
 		>
-			<canvas ref={setCanvasElement} className="h-auto w-full" />
+			<canvas
+				ref={setCanvasElement}
+				className="h-auto w-full"
+				style={onDataClick ? { cursor: "crosshair" } : undefined}
+				onClick={onDataClick ? handleClick : undefined}
+			/>
 		</div>
 	)
 }

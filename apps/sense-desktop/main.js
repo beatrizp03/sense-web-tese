@@ -4,19 +4,15 @@ const path = require('path');
 const { ipcMain, dialog } = require("electron");
 const { spawn } = require('child_process');
 
-// Use external modules
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
 const { BufferManager } = require('./dist/BufferManager.js');
 const { onChunkReady } = require('./dist/StorageSubscriber.js');
-// SessionManager for manifest/session logic
 const { SessionManager } = require('./src/SessionManager.js');
 const PerformanceLogger = require('./src/PerformanceLogger.js');
 const SESSION_SETTINGS_HISTORY_FILE = 'session-settings-history.json';
 const MAX_SESSION_SETTINGS_HISTORY = 5;
 const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.py');
 
-// Renderer-reported busy reason: blocks reload shortcuts and warns before unload.
-// null = idle; otherwise a short string like "recording" or "analyzing".
 let busyReason = null;
 
 function getSessionSettingsHistoryPath() {
@@ -940,9 +936,31 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   }
 });
 
-// Build a whole-session min/max envelope for each channel, streamed chunk by
-// chunk so the full raw signal is never held in memory. Returns ~targetPoints
-// points per channel (two per bucket) for a lightweight minimap overview.
+ipcMain.handle('read-session-annotations', async (_event, sessionFolder) => {
+  try {
+    const annotationsPath = path.join(sessionFolder, 'annotations.json');
+    const data = JSON.parse(fs.readFileSync(annotationsPath, 'utf-8'));
+    return data;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      return null;
+    }
+    console.error('[read-session-annotations] Failed to read annotations:', e);
+    return null;
+  }
+});
+
+ipcMain.handle('write-session-annotations', async (_event, sessionFolder, data) => {
+  try {
+    const annotationsPath = path.join(sessionFolder, 'annotations.json');
+    fs.writeFileSync(annotationsPath, JSON.stringify(data, null, 2));
+    return { ok: true };
+  } catch (e) {
+    console.error('[write-session-annotations] Failed to write annotations:', e);
+    throw e;
+  }
+});
+
 ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoints, segment) => {
   const target = Number(targetPoints) > 0 ? Number(targetPoints) : 2000;
   const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
@@ -952,8 +970,6 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
   const sampleRate = Number(manifest.sampleRate) || 1000;
   const channels = Array.isArray(manifest.channels) ? manifest.channels.map(String) : [];
 
-  // Optional 1-based segment filter: when set, only that segment's chunks /
-  // timing are decimated (chunks without a segment field default to 1).
   const selectedSegment = Number(segment) > 0 ? Number(segment) : null;
 
   const chunks = (Array.isArray(manifest.chunks) ? [...manifest.chunks] : [])
@@ -967,9 +983,7 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
       return ia - ib;
     });
 
-  // Estimate the total sample count from segment timing to size the buckets in
-  // a single pass. Falls back to ~1s buckets when timing is unavailable.
-  let estTotal = 0;
+ let estTotal = 0;
   const segList = Array.isArray(manifest.segments) ? manifest.segments : [];
   const segForEstimate = selectedSegment === null
     ? segList

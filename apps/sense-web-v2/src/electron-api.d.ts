@@ -46,6 +46,8 @@ declare global {
       closeSerialPort?: (path: string) => Promise<void>;
       clearRingBuffer?: () => void;
       readSessionManifest?: (sessionPath: string) => Promise<any>;
+      readSessionAnnotations?: (sessionFolder: string) => Promise<any>;
+      writeSessionAnnotations?: (sessionFolder: string, data: any) => Promise<{ ok: boolean }>;
       runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; outputSubdir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy">; range?: { startSec: number; endSec: number }; segment?: number }) => Promise<any>;
       cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;

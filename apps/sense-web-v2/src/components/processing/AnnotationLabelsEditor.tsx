@@ -15,6 +15,8 @@ interface AnnotationLabelsEditorProps {
 	onClose: () => void
 }
 
+const MAX_CHANNEL_LABELS = 9
+
 const APPLIES_TO_OPTIONS: { value: AnnotationAppliesTo; label: string }[] = [
 	{ value: "channel", label: "Channel" },
 	{ value: "segment", label: "Segment" }
@@ -55,13 +57,28 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 
 	if (!open || typeof document === "undefined") return null
 
+	const channelCount = draft.filter(label => label.appliesTo === "channel").length
+	const atChannelCap = channelCount >= MAX_CHANNEL_LABELS
+
 	const updateDraft = (id: number, patch: Partial<AnnotationLabel>) =>
-		setDraft(current => current.map(label => (label.id === id ? { ...label, ...patch } : label)))
+		setDraft(current => {
+			if (patch.appliesTo === "channel") {
+				const target = current.find(label => label.id === id)
+				const channels = current.filter(label => label.appliesTo === "channel").length
+				if (target && target.appliesTo !== "channel" && channels >= MAX_CHANNEL_LABELS) {
+					return current
+				}
+			}
+			return current.map(label => (label.id === id ? { ...label, ...patch } : label))
+		})
 
 	const removeDraft = (id: number) => setDraft(current => current.filter(label => label.id !== id))
 
 	const addDraft = () =>
 		setDraft(current => {
+			if (current.filter(label => label.appliesTo === "channel").length >= MAX_CHANNEL_LABELS) {
+				return current
+			}
 			const nextId = current.reduce((max, label) => Math.max(max, label.id), 0) + 1
 			return [
 				...current,
@@ -206,13 +223,19 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 				</div>
 
 				<div className="mt-4 flex items-center justify-between gap-2 border-t border-background-accent pt-4">
-					<button
-						type="button"
-						onClick={addDraft}
-						className="rounded-md border border-background-accent px-3 py-1.5 text-xs font-medium text-over-background-highest transition-colors hover:border-primary hover:text-primary"
-					>
-						+ Add label
-					</button>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={addDraft}
+							disabled={atChannelCap}
+							className="rounded-md border border-background-accent px-3 py-1.5 text-xs font-medium text-over-background-highest transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-background-accent disabled:hover:text-over-background-highest"
+						>
+							+ Add label
+						</button>
+						<span className="text-[10px] text-over-background-low">
+							{channelCount}/{MAX_CHANNEL_LABELS} channel labels (keys 1–9)
+						</span>
+					</div>
 					<div className="flex items-center gap-2">
 						<button
 							type="button"

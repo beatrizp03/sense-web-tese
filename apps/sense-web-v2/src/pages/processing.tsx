@@ -4,22 +4,19 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
 import SessionChart from "../components/processing/SessionChart"
-import ProcessingSidePanel from "../components/processing/ProcessingSidePanel"
+import ProcessingSidePanel, { SidePanelTab } from "../components/processing/ProcessingSidePanel"
 import AnalysisPanel from "../components/processing/AnalysisPanel"
 import AnnotationsPanel from "../components/processing/AnnotationsPanel"
 import SessionExportBar from "../components/processing/SessionExportBar"
 import { toRecord, toAxisRecord } from "../components/processing/analysisShared"
 import { useBusyGuard } from "../hooks/useBusyGuard"
+import { useAnnotations } from "../hooks/useAnnotations"
+import { useAnnotationLabels } from "../utils/annotationLabels"
 
 const SESSION_STORAGE_KEY = "processing:session"
 
 type AnalysisRange = { startSec: number; endSec: number }
 
-/**
- * Processing screen — the general post-processing container. It owns the
- * session/import lifecycle, the channel mapping shared with the chart, and the
- * chart itself.
- */
 const Page = () => {
 	const [sessionFolder, setSessionFolder] = useState("")
 	const [manifest, setManifest] = useState<any>(null)
@@ -31,8 +28,48 @@ const Page = () => {
 	const [analysisBusy, setAnalysisBusy] = useState(false)
 	const [windowRange, setWindowRange] = useState<AnalysisRange | null>(null)
 	const [selectedSegment, setSelectedSegment] = useState(1)
+	const [activeSideTab, setActiveSideTab] = useState<SidePanelTab>("analysis")
 
-	useBusyGuard(loading || analysisBusy ? "Analysis" : null)
+	const annotating = activeSideTab === "annotations"
+
+	const { labels: annotationLabels } = useAnnotationLabels()
+	const annotations = useAnnotations({
+		sessionFolder,
+		enabled: annotating,
+		labels: annotationLabels
+	})
+
+	useBusyGuard(
+		loading || analysisBusy
+			? "Analysis"
+			: annotations.dirty
+				? "You have unsaved annotations."
+				: null
+	)
+
+	const confirmDiscard = useCallback(() => {
+		if (!annotations.dirty) return true
+		return window.confirm("Annotations unsaved. Do you want to proceed?")
+	}, [annotations.dirty])
+
+	const annotationItems = useMemo(() => {
+		const byId = new Map(annotationLabels.map(l => [l.id, l]))
+		return annotations.annotations
+			.filter(a => a.segment === selectedSegment)
+			.sort((a, b) => a.startSec - b.startSec)
+			.map(a => {
+				const label = byId.get(a.labelId)
+				return {
+					id: a.id,
+					type: a.type,
+					startSec: a.startSec,
+					endSec: a.endSec,
+					color: label?.color ?? "#888888",
+					labelName: label?.name ?? "",
+					note: a.note ?? ""
+				}
+			})
+	}, [annotations.annotations, selectedSegment, annotationLabels])
 
 	useEffect(() => {
 		try {
@@ -125,10 +162,11 @@ const Page = () => {
 	}, [])
 
 	const importSessionFolder = useCallback(async () => {
+		if (!confirmDiscard()) return
 		const folder = await window.electronAPI?.selectAnalysisSessionFolder?.()
 		if (!folder) return
 		await loadSessionBundle(folder)
-	}, [loadSessionBundle])
+	}, [loadSessionBundle, confirmDiscard])
 
 	const chunkCount = Array.isArray(manifest?.chunks) ? manifest.chunks.length : 0
 	const segments = useMemo(() => (Array.isArray(manifest?.segments) ? manifest.segments : []), [manifest])
@@ -180,24 +218,41 @@ const Page = () => {
 									</TextButton>
 								</div>
 							</div>
-							{segments.length > 0 && (
-								<div className="flex flex-wrap items-center gap-2">
-									<span className="text-xs uppercase tracking-[0.2em] text-over-background-low">Segment</span>
-									{segments.map((_: any, i: number) => {
-										const seg = i + 1
-										return (
-											<button
-												key={seg}
-												type="button"
-												onClick={() => setSelectedSegment(seg)}
-												className={`rounded-full px-3 py-1 text-xs font-medium transition ${selectedSegment === seg ? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light" : "bg-background-accent text-over-background-medium hover:opacity-80"}`}
-											>
-												Segment {seg}
-											</button>
-										)
-									})}
-								</div>
-							)}
+							<div className="flex flex-wrap items-center gap-2">
+								{segments.length > 0 && (
+									<>
+										<span className="text-xs uppercase tracking-[0.2em] text-over-background-low">Segment</span>
+										{segments.map((_: any, i: number) => {
+											const seg = i + 1
+											return (
+												<button
+													key={seg}
+													type="button"
+													onClick={() => {
+														if (seg === selectedSegment) return
+														annotations.clearInteraction()
+														setSelectedSegment(seg)
+													}}
+													className={`rounded-full px-3 py-1 text-xs font-medium transition ${selectedSegment === seg ? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light" : "bg-background-accent text-over-background-medium hover:opacity-80"}`}
+												>
+													Segment {seg}
+												</button>
+											)
+										})}
+									</>
+								)}
+								<span className="ml-auto inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-over-background-medium">
+									{annotating ? (
+										<span className="relative inline-flex h-2.5 w-2.5">
+											<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-over-background-medium opacity-75" />
+											<span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-over-background-highest" />
+										</span>
+									) : (
+										<span className="text-xs inline-flex h-2.5 w-2.5 rounded-full border border-over-background-medium" />
+									)}
+									{annotating ? "Annotation ON" : "Annotation OFF"}
+								</span>
+							</div>
 							<SessionChart
 								channels={channels}
 								manifest={manifest}
@@ -207,10 +262,40 @@ const Page = () => {
 								signalAxes={appliedSignalAxes}
 								selectedSegment={selectedSegment}
 								onWindowRangeChange={setWindowRange}
+								annotating={annotating}
+								annotations={annotations.annotations}
+								labels={annotationLabels}
+								selectedAnnotationId={annotations.selectedId}
+								draft={annotations.draft}
+								onChartClick={annotations.handleChartClick}
 							/>
 						</div>
 						<div className="col-span-1">
-							<ProcessingSidePanel analysisContent={analysisPanel} annotationsContent={<AnnotationsPanel />} exportContent={<SessionExportBar manifest={manifest} withDescriptions />} />
+							<ProcessingSidePanel
+								analysisContent={analysisPanel}
+								annotationsContent={
+									<AnnotationsPanel
+										annotationCount={annotationItems.length}
+										dirty={annotations.dirty}
+										saving={annotations.saving}
+										onSave={annotations.save}
+										mode={annotations.mode}
+										onToggleMode={annotations.toggleMode}
+										activeLabelId={annotations.activeLabelId}
+										onSelectLabel={annotations.setActiveLabelId}
+										items={annotationItems}
+										selectedId={annotations.selectedId}
+										onSelectAnnotation={annotations.setSelectedId}
+										onRemoveAnnotation={annotations.removeAnnotation}
+										onSetNote={annotations.setAnnotationNote}
+									/>
+								}
+								exportContent={<SessionExportBar manifest={manifest} withDescriptions />}
+								onActiveTabChange={setActiveSideTab}
+								onBeforeTabChange={(from, to) =>
+									from === "annotations" && to !== "annotations" ? confirmDiscard() : true
+								}
+							/>
 						</div>
 					</div>
 				) : (

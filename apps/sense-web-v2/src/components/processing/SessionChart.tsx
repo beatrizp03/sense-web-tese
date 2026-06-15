@@ -4,12 +4,13 @@ import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import resolveConfig from "tailwindcss/resolveConfig"
 
 import tailwindConfig from "../../../tailwind.config"
-import CanvasChart from "../charts/CanvasChart"
+import CanvasChart, { CanvasAnnotation } from "../charts/CanvasChart"
+import { Annotation } from "../../hooks/useAnnotations"
+import { AnnotationLabel } from "../../utils/annotationLabels"
 
 const fullConfig = resolveConfig(tailwindConfig)
 const lineColorLight = (fullConfig.theme as any).colors["primary-light"]
 const lineColorDark = (fullConfig.theme as any).colors["primary-dark"]
-// Axes use the opposite background tone: dark gray on light mode, white on dark mode.
 const outlineColorLight = (fullConfig.theme as any).colors["background-accent-dark"]
 const outlineColorDark = (fullConfig.theme as any).colors["background-accent-light"]
 
@@ -19,7 +20,6 @@ const DEFAULT_WINDOW_SECONDS = 30
 const MIN_WINDOW_SECONDS = 2
 const MAX_WINDOW_SECONDS = 300
 const MAIN_BUCKETS = 1500
-// How many windows ahead to warm in the background so "Next" feels instant.
 const PREFETCH_WINDOWS = 1
 
 function sortChunks(chunks: any[]): any[] {
@@ -46,11 +46,6 @@ function computeTotalSeconds(manifest: any, sampleRate: number): number {
 	return ms > 0 ? ms / 1000 : 0
 }
 
-/**
- * Min/max-decimate a contiguous sample slice into ~`buckets` buckets, emitting
- * two points (min, max in time order) per bucket. x values are absolute
- * seconds: (baseFrame + i) / sampleRate.
- */
 function decimateSlice(
 	seg: Float32Array,
 	baseFrame: number,
@@ -113,8 +108,6 @@ function formatTime(seconds: number): string {
 
 type DragMode = "move" | "resize-left" | "resize-right" | null
 
-// Per-chunk channel values: { [channel]: Float32Array }, read once for all
-// channels so a chunk file is never parsed more than once per window.
 interface ChunkCache {
 	key: string
 	vals: (Record<string, Float32Array> | null)[]
@@ -122,12 +115,6 @@ interface ChunkCache {
 	loaded: number
 	cumLen: number
 }
-
-// ---------------------------------------------------------------------------
-// A single channel row: header + windowed main chart + minimap navigator.
-// Purely presentational — the window state lives in the parent stack so a drag
-// on any row updates every row at once.
-// ---------------------------------------------------------------------------
 
 interface ChannelRowProps {
 	label: string
@@ -144,6 +131,9 @@ interface ChannelRowProps {
 	onWindowChange: (startSec: number, secLen: number) => void
 	lineColor: string
 	outlineColor: string
+	annotations: CanvasAnnotation[]
+	draftIntervalStart: number | null
+	onDataClick?: (x: number, y: number, hitId: string | null) => void
 }
 
 const ChannelRow: React.FC<ChannelRowProps> = ({
@@ -160,7 +150,10 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	winLoading,
 	onWindowChange,
 	lineColor,
-	outlineColor
+	outlineColor,
+	annotations,
+	draftIntervalStart,
+	onDataClick
 }) => {
 	const winEndSec = windowStartSec + windowSec
 	const trackRef = useRef<HTMLDivElement | null>(null)
@@ -325,10 +318,12 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					xTicks={6}
 					yTicks={5}
 					xTickFormat={formatTime}
+					annotations={annotations}
+					draftIntervalStart={draftIntervalStart}
+					onDataClick={onDataClick}
 				/>
 			)}
 
-			{/* Window navigator: move / drag edges + input field; updates every row at once */}
 			<div className="flex items-center justify-between">
 				<label className="flex items-center gap-1.5 text-xs tracking-[0.2em] text-over-background-low">
 					WINDOW SIZE
@@ -411,10 +406,6 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	)
 }
 
-// ---------------------------------------------------------------------------
-// Stack: owns the shared window + the chunk loader (reads each chunk once for
-// all channels) + the whole-session overview, and renders one row per channel.
-// ---------------------------------------------------------------------------
 
 interface SessionChartProps {
 	channels: string[]
@@ -425,6 +416,12 @@ interface SessionChartProps {
 	signalAxes?: Record<string, string>
 	selectedSegment?: number
 	onWindowRangeChange?: (range: { startSec: number; endSec: number }) => void
+	annotating?: boolean
+	annotations?: Annotation[]
+	labels?: AnnotationLabel[]
+	selectedAnnotationId?: string | null
+	draft?: { startSec: number } | null
+	onChartClick?: (segment: number, dataX: number, hitId: string | null) => void
 }
 
 const SessionChart: React.FC<SessionChartProps> = ({
@@ -435,11 +432,36 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	signalKinds = {},
 	signalAxes = {},
 	selectedSegment = 1,
-	onWindowRangeChange
+	onWindowRangeChange,
+	annotating = false,
+	annotations = [],
+	labels = [],
+	selectedAnnotationId = null,
+	draft = null,
+	onChartClick
 }) => {
 	const isDark = useDarkTheme()
 	const lineColor = isDark ? lineColorDark : lineColorLight
 	const outlineColor = isDark ? outlineColorDark : outlineColorLight
+
+	const labelColorById = useMemo(() => {
+		const map: Record<number, string> = {}
+		for (const label of labels) map[label.id] = label.color
+		return map
+	}, [labels])
+
+	const segmentAnnotations = useMemo<CanvasAnnotation[]>(() => {
+		return annotations
+			.filter(ann => ann.segment === selectedSegment)
+			.map(ann => ({
+				id: ann.id,
+				type: ann.type,
+				startSec: ann.startSec,
+				endSec: ann.endSec,
+				color: labelColorById[ann.labelId] ?? "#888888",
+				selected: ann.id === selectedAnnotationId
+			}))
+	}, [annotations, selectedSegment, labelColorById, selectedAnnotationId])
 
 	const sampleRate = Number(manifest?.sampleRate) || 1000
 
@@ -674,6 +696,13 @@ const SessionChart: React.FC<SessionChartProps> = ({
 					onWindowChange={onWindowChange}
 					lineColor={lineColor}
 					outlineColor={outlineColor}
+					annotations={segmentAnnotations}
+					draftIntervalStart={draft ? draft.startSec : null}
+					onDataClick={
+						annotating && onChartClick
+							? (x, _y, hitId) => onChartClick(selectedSegment, x, hitId)
+							: undefined
+					}
 				/>
 			))}
 		</div>
