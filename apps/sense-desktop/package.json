@@ -7,8 +7,9 @@
   "description": "Electron wrapper for SENSE Web v2",
   "private": true,
   "scripts": {
-    "start": "electron .",
-    "start:no-warnings": "set ELECTRON_DISABLE_SECURITY_WARNINGS=1 && electron .",
+    "build": "tsc",
+    "start": "tsc && electron .",
+    "start:no-warnings": "tsc && cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=1 electron .",
     "build:worker": "python python/build_worker.py",
     "dist": "pnpm run build:worker && electron-builder",
     "dist:nobuild": "electron-builder"
@@ -18,7 +19,8 @@
     "serialport": "^13.0.0"
   },
   "devDependencies": {
-    "electron-builder": "^25.1.0"
+    "electron-builder": "^25.1.0",
+    "typescript": "^5.9.3"
   },
   "build": {
     "appId": "com.scientisst.sense-desktop",

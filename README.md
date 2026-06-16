@@ -127,8 +127,8 @@ process.
 
 ## Prerequisites
 
--   Node.js version 18.12.1 or higher
--   pnpm 7.26.3 or higher
+-   Node.js version 20.20.0 or higher
+-   pnpm 10.30.1 or higher
 
 ## Installing the Prerequisites
 
