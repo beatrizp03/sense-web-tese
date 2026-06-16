@@ -243,9 +243,6 @@ importers:
       '@types/d3':
         specifier: ^7.4.0
         version: 7.4.3
-      '@types/dom-serial':
-        specifier: ^1.0.3
-        version: 1.0.6
       '@types/file-saver':
         specifier: ^2.0.5
         version: 2.0.7
@@ -407,9 +404,6 @@ importers:
       '@types/d3':
         specifier: ^7.4.0
         version: 7.4.3
-      '@types/dom-serial':
-        specifier: ^1.0.3
-        version: 1.0.6
       '@types/node':
         specifier: ^18.11.9
         version: 18.19.130
@@ -432,9 +426,6 @@ importers:
         specifier: ^7.3.8
         version: 7.7.4
     devDependencies:
-      '@types/dom-serial':
-        specifier: ^1.0.3
-        version: 1.0.6
       '@types/node':
         specifier: ^20.1.2
         version: 20.19.33
@@ -1920,9 +1911,6 @@ packages:
 
   '@types/debug@4.1.13':
     resolution: {integrity: sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw==}
-
-  '@types/dom-serial@1.0.6':
-    resolution: {integrity: sha512-eUHKbc6mdMgMm75/oBLocs3wkOQkPQ/oNCT+b5OgUT6mLgIvDTp3wCCE9tYZNvDPPh6Cj9lVg2IguWfS/mDrrQ==}
 
   '@types/eslint-scope@3.7.7':
     resolution: {integrity: sha512-MzMFlSLBqNF2gcHWO0G1vP/YQyfvrxZ0bF+u7mzUdZ1/xK4A4sru+nraZz5i3iEIk1l1uyicaDVTB4QbbEkAYg==}
@@ -9325,8 +9313,6 @@ snapshots:
   '@types/debug@4.1.13':
     dependencies:
       '@types/ms': 2.1.0
-
-  '@types/dom-serial@1.0.6': {}
 
   '@types/eslint-scope@3.7.7':
     dependencies:
