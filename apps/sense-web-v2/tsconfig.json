@@ -1,5 +1,5 @@
 {
 	"extends": "@scientisst/tsconfig/nextjs.json",
-	"include": ["src", "next-env.d.ts"],
+	"include": ["src", "next-env.d.ts", "global.d.ts"],
 	"exclude": ["node_modules"]
 }
