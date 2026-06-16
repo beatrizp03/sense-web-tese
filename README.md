@@ -231,6 +231,49 @@ package.
    > Prefer hot-reload while developing? Use `pnpm dev:desktop` instead — it runs
    > the Next.js dev server and Electron together, with no separate build step.
 
+## Troubleshooting
+
+### `Electron failed to install correctly`
+
+If you see this error when running `pnpm start:desktop`:
+
+```
+Error: Electron failed to install correctly, please delete node_modules/electron and try installing again
+    at getElectronPath (.../node_modules/.pnpm/electron@40.6.1/node_modules/electron/index.js:17:11)
+```
+
+This means the Electron binary was not downloaded or extracted successfully. The most common cause on Windows is **Windows Defender (or another antivirus) silently blocking the extraction** of `electron.exe`. The download completes, but Defender quarantines or interrupts the file write, leaving the install incomplete.
+
+#### Install Electron manually (no Defender changes)
+
+If you cannot or do not want to add Defender exclusions, you can download and extract Electron by hand. The browser and File Explorer trigger different Defender behaviour than the Node.js postinstall, so this often works where the automated install does not.
+
+1. **Download the Electron zip** from the browser:
+```
+   https://github.com/electron/electron/releases/download/v40.6.1/electron-v40.6.1-win32-x64.zip
+```
+
+2. **Delete the broken `dist` folder:**
+```bash
+   rm -rf node_modules/.pnpm/electron@40.6.1/node_modules/electron/dist
+```
+
+3. **Extract the zip contents into a new `dist` folder.** In File Explorer, navigate to:
+```
+   <path-to-project>\node_modules\.pnpm\electron@40.6.1\node_modules\electron\
+```
+   Create a folder named `dist` there, then extract **the contents of the zip** (not the zip file itself) into it. You should end up with `electron.exe` directly inside `...\electron\dist\electron.exe`.
+
+4. **Create the `path.txt` file** in the `electron` folder (one level above `dist`), containing exactly this single line:
+```
+   electron.exe
+```
+
+5. **Run the app:**
+```bash
+   pnpm start:desktop
+```
+
 ## Notes
 
 -   You do **not** need to run `sense-web-v2` separately; the desktop app handles everything.
