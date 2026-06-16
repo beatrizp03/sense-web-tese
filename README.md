@@ -197,6 +197,8 @@ package.
 ## Setup & Installation
 
 1. **Clone the repository and install dependencies:**
+
+   _Note:_ install using Git Bash
    ```bash
    git clone <repo-url>
    cd sense-web-tese
@@ -215,15 +217,19 @@ package.
    
    Make sure you're using Python 3.11 or 3.12. To check, run `python --version`. If you skip this step, analysis won't work and you'll see warnings like `BioSPPy module ... is unavailable`.
 
-3. **Build the web app (sense-web-v2):**
-   This step is handled automatically when running the desktop app. No need to run or build `sense-web-v2` manually.
+3. **Build and run the Electron desktop app:**
 
-4. **Run the Electron desktop app:**
    ```bash
-   pnpm dev:desktop
+   pnpm build:desktop
+   pnpm start:desktop
    ```
 
-   This command will start both the Next.js server and the Electron app in development mode. The Electron window will open automatically.
+   `build:desktop` creates the production build of `sense-web-v2`; `start:desktop`
+   serves it and launches the Electron window automatically. You only need to
+   re-run `build:desktop` after changing the web app.
+
+   > Prefer hot-reload while developing? Use `pnpm dev:desktop` instead — it runs
+   > the Next.js dev server and Electron together, with no separate build step.
 
 ## Notes
 
