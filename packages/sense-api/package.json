@@ -24,7 +24,7 @@
 	"scripts": {
 		"prettier": "prettier --check .",
 		"prettier:fix": "prettier --write .",
-		"prebuild": "rm -rf dist/*",
+		"prebuild": "rimraf dist",
 		"build": "tsc",
 		"prepublish": "yarn build"
 	},
