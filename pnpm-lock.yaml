@@ -252,6 +252,9 @@ importers:
       '@types/react':
         specifier: ^18.0.21
         version: 18.3.28
+      '@types/w3c-web-serial':
+        specifier: ^1.0.3
+        version: 1.0.8
       autoprefixer:
         specifier: ^10.4.12
         version: 10.4.24(postcss@8.5.6)
