@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+
+import { useRouter } from "next/router"
+import resolveConfig from "tailwindcss/resolveConfig"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
+import tailwindConfig from "../../tailwind.config"
 import SenseLayout from "../components/layout/SenseLayout"
 import SessionChart from "../components/processing/SessionChart"
 import ProcessingSidePanel, { SidePanelTab } from "../components/processing/ProcessingSidePanel"
@@ -14,6 +18,10 @@ import { useAnnotations } from "../hooks/useAnnotations"
 import { useAnnotationLabels } from "../utils/annotationLabels"
 
 const SESSION_STORAGE_KEY = "processing:session"
+
+const fullConfig = resolveConfig(tailwindConfig)
+const backgroundDarkColor =
+	(fullConfig.theme as any)?.colors?.["background-dark"] ?? "#1C1C1E"
 
 type AnalysisRange = { startSec: number; endSec: number }
 
@@ -47,10 +55,67 @@ const Page = () => {
 				: null
 	)
 
-	const confirmDiscard = useCallback(() => {
-		if (!annotations.dirty) return true
-		return window.confirm("Annotations unsaved. Do you want to proceed?")
-	}, [annotations.dirty])
+	const [discardAction, setDiscardAction] = useState<(() => void) | null>(null)
+
+	const requestDiscard = useCallback(
+		(onConfirm: () => void) => {
+			if (!annotations.dirty) {
+				onConfirm()
+				return
+			}
+			setDiscardAction(() => onConfirm)
+		},
+		[annotations.dirty]
+	)
+
+	const handleTabChange = useCallback(
+		(to: SidePanelTab) => {
+			if (activeSideTab === "annotations" && to !== "annotations") {
+				requestDiscard(() => setActiveSideTab(to))
+			} else {
+				setActiveSideTab(to)
+			}
+		},
+		[activeSideTab, requestDiscard]
+	)
+
+	const router = useRouter()
+	const allowNavRef = useRef(false)
+
+	// Electron window close (X): show the unsaved-annotations modal instead of
+	// silently blocking the close. If clean, let the window close.
+	useEffect(() => {
+		if (!window.electronAPI?.onShowCloseWarning) return
+		return window.electronAPI.onShowCloseWarning(() => {
+			if (annotations.dirty) {
+				setDiscardAction(() => () => window.electronAPI?.confirmClose?.(true))
+			} else if (!loading && !analysisBusy) {
+				window.electronAPI?.confirmClose?.(true)
+			}
+		})
+	}, [annotations.dirty, loading, analysisBusy])
+
+	// Client-side navigation (Home/return button, links): same modal guard.
+	useEffect(() => {
+		const handler = (url: string) => {
+			if (allowNavRef.current) {
+				allowNavRef.current = false
+				return
+			}
+			if (annotations.dirty) {
+				setDiscardAction(() => () => {
+					allowNavRef.current = true
+					void router.push(url)
+				})
+				router.events.emit("routeChangeError", "aborted", url)
+				// Throwing aborts the in-flight navigation (Next.js pattern).
+				// eslint-disable-next-line no-throw-literal
+				throw "Navigation blocked: unsaved annotations."
+			}
+		}
+		router.events.on("routeChangeStart", handler)
+		return () => router.events.off("routeChangeStart", handler)
+	}, [annotations.dirty, router])
 
 	const annotationItems = useMemo(() => {
 		const byId = new Map(annotationLabels.map(l => [l.id, l]))
@@ -65,6 +130,7 @@ const Page = () => {
 					startSec: a.startSec,
 					endSec: a.endSec,
 					color: label?.color ?? "#888888",
+					labelId: a.labelId,
 					labelName: label?.name ?? "",
 					note: a.note ?? ""
 				}
@@ -161,12 +227,13 @@ const Page = () => {
 		}
 	}, [])
 
-	const importSessionFolder = useCallback(async () => {
-		if (!confirmDiscard()) return
-		const folder = await window.electronAPI?.selectAnalysisSessionFolder?.()
-		if (!folder) return
-		await loadSessionBundle(folder)
-	}, [loadSessionBundle, confirmDiscard])
+	const importSessionFolder = useCallback(() => {
+		requestDiscard(async () => {
+			const folder = await window.electronAPI?.selectAnalysisSessionFolder?.()
+			if (!folder) return
+			await loadSessionBundle(folder)
+		})
+	}, [loadSessionBundle, requestDiscard])
 
 	const chunkCount = Array.isArray(manifest?.chunks) ? manifest.chunks.length : 0
 	const segments = useMemo(() => (Array.isArray(manifest?.segments) ? manifest.segments : []), [manifest])
@@ -250,7 +317,7 @@ const Page = () => {
 									) : (
 										<span className="text-xs inline-flex h-2.5 w-2.5 rounded-full border border-over-background-medium" />
 									)}
-									{annotating ? "Annotation ON" : "Annotation OFF"}
+									{annotating ? "Annotations ON" : "Annotations OFF"}
 								</span>
 							</div>
 							<SessionChart
@@ -288,13 +355,20 @@ const Page = () => {
 										onSelectAnnotation={annotations.setSelectedId}
 										onRemoveAnnotation={annotations.removeAnnotation}
 										onSetNote={annotations.setAnnotationNote}
+										onSetLabel={annotations.setAnnotationLabel}
+										onClearAll={() =>
+											windowRange &&
+											annotations.clearAnnotationsInRange(
+												selectedSegment,
+												windowRange.startSec,
+												windowRange.endSec
+											)
+										}
 									/>
 								}
 								exportContent={<SessionExportBar manifest={manifest} withDescriptions />}
-								onActiveTabChange={setActiveSideTab}
-								onBeforeTabChange={(from, to) =>
-									from === "annotations" && to !== "annotations" ? confirmDiscard() : true
-								}
+								activeTab={activeSideTab}
+								onTabChange={handleTabChange}
 							/>
 						</div>
 					</div>
@@ -328,6 +402,41 @@ const Page = () => {
 					</div>
 				)}
 			</div>
+
+			{discardAction && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+					<div
+						className="w-full max-w-md rounded-lg p-8 text-white shadow-lg"
+						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
+					>
+						<h2 className="mb-4 text-xl font-bold text-red-600">Unsaved Annotations</h2>
+						<p className="mb-4">
+							You have unsaved annotations. Do you want to proceed and discard them?
+						</p>
+						<div className="flex justify-end gap-4">
+							<button
+								type="button"
+								onClick={() => setDiscardAction(null)}
+								className="rounded-lg border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
+							>
+								Cancel
+							</button>
+							<TextButton
+								size="base"
+								className="!text-sm"
+								onClick={() => {
+									const run = discardAction
+									setDiscardAction(null)
+									void annotations.discardChanges()
+									run()
+								}}
+							>
+								Proceed
+							</TextButton>
+						</div>
+					</div>
+				</div>
+			)}
 		</SenseLayout>
 	)
 }

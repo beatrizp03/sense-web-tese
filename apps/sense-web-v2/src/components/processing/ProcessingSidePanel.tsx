@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react"
+import { ReactNode } from "react"
 
 export type SidePanelTab = "analysis" | "annotations" | "export"
 
@@ -12,8 +12,9 @@ interface ProcessingSidePanelProps {
 	analysisContent?: ReactNode
 	annotationsContent?: ReactNode
 	exportContent?: ReactNode
-	onActiveTabChange?: (tab: SidePanelTab) => void
-	onBeforeTabChange?: (from: SidePanelTab, to: SidePanelTab) => boolean
+	activeTab: SidePanelTab
+	/** Request to switch tabs; the parent decides whether to allow it. */
+	onTabChange: (tab: SidePanelTab) => void
 }
 
 /**
@@ -24,19 +25,12 @@ const ProcessingSidePanel: React.FC<ProcessingSidePanelProps> = ({
 	analysisContent,
 	annotationsContent,
 	exportContent,
-	onActiveTabChange,
-	onBeforeTabChange
+	activeTab,
+	onTabChange
 }) => {
-	const [activeTab, setActiveTab] = useState<SidePanelTab>("analysis")
-
-	useEffect(() => {
-		onActiveTabChange?.(activeTab)
-	}, [activeTab, onActiveTabChange])
-
 	const handleTabClick = (tab: SidePanelTab) => {
 		if (tab === activeTab) return
-		if (onBeforeTabChange && !onBeforeTabChange(activeTab, tab)) return
-		setActiveTab(tab)
+		onTabChange(tab)
 	}
 
 	return (

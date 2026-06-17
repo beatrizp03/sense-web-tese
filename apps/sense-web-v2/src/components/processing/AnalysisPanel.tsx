@@ -627,28 +627,30 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
 			{activeTab === "import" ? (
 				<div className="space-y-3">
-					<TextButton size="base" className="text-sm w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={() => runAnalysis(windowRange ?? undefined)} disabled={loading || !sessionFolder || !windowRange}>
-						Analyse Window
-					</TextButton>
-					<TextButton size="base" className="text-sm w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={() => runAnalysis(undefined)} disabled={loading || !sessionFolder}>
-						Analyse Full Session
-					</TextButton>
+					<div className="flex gap-3">
+						<TextButton size="base" className="text-xs flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={() => runAnalysis(windowRange ?? undefined)} disabled={loading || !sessionFolder || !windowRange}>
+							Analyse Window
+						</TextButton>
+						<TextButton size="base" className="text-xs flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95" onClick={() => runAnalysis(undefined)} disabled={loading || !sessionFolder}>
+							Analyse Full Session
+						</TextButton>
+					</div>
 
 					<label className="flex items-center gap-2 text-sm">
 						<input type="checkbox" checked={outlierRemovalEnabled} onChange={e => setOutlierRemovalEnabled(e.target.checked)} />
-						<span className="text-sm">Enable Outlier Removal</span>
+						<span className="text-xs">Enable Outlier Removal</span>
 					</label>
 
 					<label className="flex items-center gap-2 text-sm">
-						<span className="text-sm">Library used:</span>
+						<span className="text-xs">Library used:</span>
 						<select
 							value={edaMethodSelection}
 							onChange={e => setEdaMethodSelection(e.target.value as any)}
 							className="rounded-full border border-background-accent bg-background px-3 py-1 text-xs"
 						>
-							<option value="auto">Auto</option>
-							<option value="neurokit">NeuroKit2</option>
-							<option value="biosppy">BioSPPy</option>
+							<option value="auto" className="text-xs">Auto</option>
+							<option value="neurokit" className="text-xs">NeuroKit2</option>
+							<option value="biosppy" className="text-xs">BioSPPy</option>
 						</select>
 					</label>
 
@@ -677,7 +679,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 											/>
 											<div>
 												<div className="text-xs font-medium">{channelNames[channel] ?? channel}</div>
-												<div className="text-sm text-over-background-low">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
+												<div className="text-xs text-over-background-low">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
 											</div>
 										</label>
 										<div className="flex flex-wrap items-center justify-end gap-2">

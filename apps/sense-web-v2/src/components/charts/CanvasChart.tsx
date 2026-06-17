@@ -92,6 +92,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		plotHeight: number
 		leftMargin: number
 		topMargin: number
+		overhang: number
 		annotations: CanvasAnnotation[]
 	} | null>(null)
 
@@ -280,7 +281,11 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				context.rect(0, -selectedOverhang, plotWidth, plotHeight + selectedOverhang)
 				context.clip()
 
-				for (const ann of annotations ?? []) {
+				// Draw intervals first so points always render on top of them.
+				const ordered = [...(annotations ?? [])].sort((a, b) =>
+					a.type === b.type ? 0 : a.type === "interval" ? -1 : 1
+				)
+				for (const ann of ordered) {
 					const x0 = xScale(ann.startSec)
 					const o = ann.selected ? selectedOverhang : overhang
 					if (ann.type === "interval") {
@@ -338,6 +343,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				plotHeight,
 				leftMargin: scaledLeftMargin,
 				topMargin: scaledTopMargin,
+				overhang: (15 + 12) * pixelRatio,
 				annotations: annotations ?? []
 			}
 		}
@@ -383,7 +389,10 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
 			const py = (event.clientY - rect.top) * scaleY - geom.topMargin
 
-			if (px < 0 || px > geom.plotWidth || py < 0 || py > geom.plotHeight) {
+			const inX = px >= 0 && px <= geom.plotWidth
+			const inPlotY = py >= 0 && py <= geom.plotHeight
+			const inOverhangY = py >= -geom.overhang && py < 0
+			if (!inX || (!inPlotY && !inOverhangY)) {
 				return
 			}
 
@@ -392,20 +401,28 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 			const hitTolerance = 4 * pixelRatio
 			let hitId: string | null = null
-			for (let i = geom.annotations.length - 1; i >= 0; i--) {
+			// Points render on top of intervals, so they win hit-testing too: test
+			// every point first, then fall back to intervals.
+			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
 				const ann = geom.annotations[i]
+				if (ann.type !== "point") continue
 				const a0 = geom.xScale(ann.startSec)
-				if (ann.type === "interval") {
-					const a1 = geom.xScale(ann.endSec)
-					if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) {
-						hitId = ann.id
-						break
-					}
-				} else if (Math.abs(px - a0) <= hitTolerance) {
+				const triangle = (ann.selected ? 8 : 6) * pixelRatio
+				if (Math.abs(px - a0) <= Math.max(hitTolerance, triangle)) {
 					hitId = ann.id
-					break
 				}
 			}
+			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
+				const ann = geom.annotations[i]
+				if (ann.type !== "interval") continue
+				const a0 = geom.xScale(ann.startSec)
+				const a1 = geom.xScale(ann.endSec)
+				if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) {
+					hitId = ann.id
+				}
+			}
+
+			if (!inPlotY && !hitId) return
 
 			onDataClick(dataX, dataY, hitId)
 		},

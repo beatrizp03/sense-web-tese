@@ -104,6 +104,24 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		}
 	}, [sessionFolder])
 
+	// Discard unsaved edits by reloading the last saved annotations from disk.
+	const discardChanges = useCallback(async () => {
+		setDraft(null)
+		setSelectedId(null)
+		if (!sessionFolder || !window.electronAPI?.readSessionAnnotations) {
+			setAnnotations([])
+			setDirty(false)
+			return
+		}
+		try {
+			const data = await window.electronAPI.readSessionAnnotations(sessionFolder)
+			setAnnotations(sanitizeAnnotations((data as AnnotationsFile | null)?.annotations))
+		} catch {
+			setAnnotations([])
+		}
+		setDirty(false)
+	}, [sessionFolder])
+
 	// ---- Placement ----------------------------------------------------------
 	const resolveLabelId = useCallback((): number | null => {
 		if (activeLabelId != null) return activeLabelId
@@ -113,6 +131,11 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 	const handleChartClick = useCallback(
 		(segment: number, dataX: number, hitId: string | null) => {
 			if (!enabled) return
+
+			if (hitId && !(mode === "interval" && draft)) {
+				setSelectedId(hitId)
+				return
+			}
 
 			if (mode === "point") {
 				const labelId = resolveLabelId()
@@ -173,6 +196,31 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		setAnnotations(list => list.map(a => (a.id === id ? { ...a, note } : a)))
 		setDirty(true)
 	}, [])
+
+	const setAnnotationLabel = useCallback((id: string, labelId: number) => {
+		setAnnotations(list => list.map(a => (a.id === id ? { ...a, labelId } : a)))
+		setDirty(true)
+	}, [])
+
+	// Remove only the annotations of a segment that are visible in the given
+	// time window (i.e. overlap [startSec, endSec]).
+	const clearAnnotationsInRange = useCallback(
+		(segment: number, startSec: number, endSec: number) => {
+			setAnnotations(list => {
+				const next = list.filter(a => {
+					if (a.segment !== segment) return true
+					const aEnd = a.type === "interval" ? a.endSec : a.startSec
+					const overlaps = aEnd >= startSec && a.startSec <= endSec
+					return !overlaps
+				})
+				if (next.length !== list.length) setDirty(true)
+				return next
+			})
+			setSelectedId(null)
+			setDraft(null)
+		},
+		[]
+	)
 
 	const removeAnnotation = useCallback((id: string) => {
 		setAnnotations(list => {
@@ -274,6 +322,9 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		removeSelected,
 		removeAnnotation,
 		setAnnotationNote,
+		setAnnotationLabel,
+		clearAnnotationsInRange,
+		discardChanges,
 		clearInteraction,
 		save
 	}

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
@@ -15,8 +15,19 @@ export interface AnnotationListItem {
 	startSec: number
 	endSec: number
 	color: string
+	labelId: number
 	labelName: string
 	note: string
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+	const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+	if (!match) return hex
+	const int = parseInt(match[1], 16)
+	const r = (int >> 16) & 255
+	const g = (int >> 8) & 255
+	const b = int & 255
+	return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
 function formatTimeTenths(seconds: number): string {
@@ -40,6 +51,8 @@ interface AnnotationsPanelProps {
 	onSelectAnnotation?: (id: string | null) => void
 	onRemoveAnnotation?: (id: string) => void
 	onSetNote?: (id: string, note: string) => void
+	onSetLabel?: (id: string, labelId: number) => void
+	onClearAll?: () => void
 }
 
 const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: string }[] = [
@@ -63,10 +76,34 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	selectedId = null,
 	onSelectAnnotation,
 	onRemoveAnnotation,
-	onSetNote
+	onSetNote,
+	onSetLabel,
+	onClearAll
 }) => {
-	const { labels } = useAnnotationLabels()
+	const { labels, update: updateLabel } = useAnnotationLabels()
 	const [editing, setEditing] = useState(false)
+
+	const listRef = useRef<HTMLDivElement>(null)
+	const selectedRowRef = useRef<HTMLDivElement>(null)
+	const [maxHeight, setMaxHeight] = useState<number>()
+
+	useEffect(() => {
+		const list = listRef.current
+		if (!list || items.length <= 5) {
+			setMaxHeight(undefined)
+			return
+		}
+		const rows = list.children
+		const first = rows[0] as HTMLElement | undefined
+		const sixth = rows[5] as HTMLElement | undefined
+		if (!first || !sixth) return
+		const gap = parseFloat(getComputedStyle(list).rowGap) || 0
+		setMaxHeight(sixth.offsetTop - first.offsetTop - gap)
+	}, [items, selectedId])
+
+	useEffect(() => {
+		if (selectedId) selectedRowRef.current?.scrollIntoView({ block: "nearest" })
+	}, [selectedId])
 
 	const channelLabels = labels.filter(label => label.appliesTo === "channel")
 	const segmentLabels = labels.filter(label => label.appliesTo === "segment")
@@ -74,12 +111,12 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	return (
 		<div className="space-y-4 pr-1 text-over-background-highest">
 			<div className="rounded-xl border border-background-accent bg-background-accent p-3">
-				<div className="flex items-center justify-between">
+				<div className="flex items-center justify-between gap-2">
 					<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">
 						{annotationCount} annotation{annotationCount === 1 ? "" : "s"} on this segment
 					</p>
 					{dirty && (
-						<span className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-500">
+						<span className="text-xs uppercase tracking-[0.18em] text-amber-500 pr-3">
 							Unsaved
 						</span>
 					)}
@@ -88,12 +125,17 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				{items.length === 0 ? (
 					<p className="mt-3 text-xs text-over-background-low">No annotations yet.</p>
 				) : (
-					<div className="mt-3 flex flex-col gap-1">
+					<div
+						ref={listRef}
+						style={{ maxHeight }}
+						className="table-scroll mt-3 flex flex-col gap-1 overflow-y-auto pr-1"
+					>
 						{items.map(item => {
 							const selected = item.id === selectedId
 							return (
 								<div
 									key={item.id}
+									ref={selected ? selectedRowRef : undefined}
 									className={`group rounded-md border transition-colors ${
 										selected
 											? "border-primary bg-primary/10"
@@ -106,10 +148,25 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 											onClick={() => onSelectAnnotation?.(selected ? null : item.id)}
 											className="flex min-w-0 flex-1 items-center gap-2 text-left"
 										>
-											<span
-												className="h-3 w-3 shrink-0 rounded-full"
-												style={{ backgroundColor: item.color }}
-											/>
+											{item.type === "point" ? (
+												<span
+													className="h-0 w-0 shrink-0"
+													style={{
+														borderLeft: "5px solid transparent",
+														borderRight: "5px solid transparent",
+														borderTop: `8px solid ${item.color}`
+													}}
+												/>
+											) : (
+												<span
+													className="h-3 w-3 shrink-0"
+													style={{
+														borderLeft: `2px solid ${item.color}`,
+														borderRight: `2px solid ${item.color}`,
+														backgroundColor: hexToRgba(item.color, 0.16)
+													}}
+												/>
+											)}
 											<span className="shrink-0 text-xs capitalize text-over-background-highest">
 												{item.type}
 											</span>
@@ -119,7 +176,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 													: formatTimeTenths(item.startSec)}
 											</span>
 											{!selected && item.note && (
-												<span className="truncate text-xs italic text-over-background-low">
+												<span className="truncate pr-1 text-xs italic text-over-background-low">
 													{item.note}
 												</span>
 											)}
@@ -134,14 +191,62 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 										</button>
 									</div>
 									{selected && (
-										<div className="px-2 pb-2">
+										<div
+											className="space-y-2 px-2 pb-2"
+											onKeyDown={event => {
+												// Enter/Esc close the annotation from anywhere in the editor
+												// (e.g. right after picking a colour swatch), not just the input.
+												if (event.key === "Enter" || event.key === "Escape") {
+													event.preventDefault()
+													onSelectAnnotation?.(null)
+												}
+											}}
+										>
+											{/* Label picker — colour swatches; name shown on hover */}
+											<div className="flex flex-wrap items-center gap-2">
+												{channelLabels.map(label => {
+													const active = label.id === item.labelId
+													return (
+														<span
+															key={label.id}
+															className="group/swatch relative inline-flex"
+														>
+															<button
+																type="button"
+																onClick={() => onSetLabel?.(item.id, label.id)}
+																aria-label={label.name}
+																className={`h-5 w-5 rounded-full transition-transform hover:scale-110 ${
+																	active
+																		? "ring-2 ring-primary ring-offset-1 ring-offset-background-accent"
+																		: ""
+																}`}
+																style={{ backgroundColor: label.color }}
+															/>
+															<span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 -translate-x-1/2 whitespace-nowrap rounded border border-background-accent bg-background px-1.5 py-0.5 text-xs text-over-background-highest opacity-0 shadow-md transition-opacity group-hover/swatch:opacity-100">
+																{label.name}
+															</span>
+														</span>
+													)
+												})}
+											</div>
+
+											{/* Description */}
 											<input
 												type="text"
 												value={item.note}
 												onChange={event => onSetNote?.(item.id, event.target.value)}
+												onKeyDown={event => {
+													if (event.key === "Escape" || event.key === "Enter") {
+														event.preventDefault()
+														onSelectAnnotation?.(null)
+													} else if (event.key === "Delete") {
+														event.preventDefault()
+														onRemoveAnnotation?.(item.id)
+													}
+												}}
 												placeholder="Add a description…"
 												autoFocus
-												className="w-full rounded border border-background-accent bg-background px-2 py-1 text-xs text-over-background-highest outline-none focus:border-primary"
+												className="w-full rounded border border-background-accent bg-background py-1 pl-3 pr-3 text-xs text-over-background-highest outline-none focus:border-primary"
 											/>
 										</div>
 									)}
@@ -151,12 +256,20 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</div>
 				)}
 
-				<div className="mt-3 flex justify-center">
+				<div className="mt-3 flex items-center justify-between gap-2 pr-2">
+					<button
+						type="button"
+						onClick={onClearAll}
+						disabled={items.length === 0}
+						className="flex h-12 flex-1 basis-0 items-center justify-center rounded-lg bg-over-background-low px-4 text-xs text-background-white transition hover:opacity-80 disabled:opacity-40"
+					>
+						Clear window's annotations
+					</button>
 					<TextButton
 						size="base"
 						onClick={onSave}
 						disabled={saving || !dirty}
-						className="px-6 text-xs"
+						className="flex-1 basis-0 px-4 py-2 !text-xs motion-safe:hover:!scale-95"
 					>
 						{saving ? "Saving…" : "Save annotations"}
 					</TextButton>
@@ -188,7 +301,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						)
 					})}
 				</div>
-				<p className="mt-1.5 text-xs text-over-background-low">
+				<p className="mt-1.5 text-[10px] text-over-background-low">
 					Click the chart to place · Esc cancels · Del removes selected
 				</p>
 			</div>
@@ -217,7 +330,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 								className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
 									active
 										? "border-2 border-primary bg-primary/10"
-										: "border border-over-background-highest hover:bg-background-accent"
+										: "border border-background-accent hover:bg-background-accent"
 								}`}
 							>
 								{index < 9 && (
