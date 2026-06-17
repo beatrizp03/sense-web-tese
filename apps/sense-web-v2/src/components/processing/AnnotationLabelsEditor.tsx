@@ -6,6 +6,7 @@ import {
 	AnnotationLabel,
 	DEFAULT_ANNOTATION_LABELS,
 	getAnnotationLabels,
+	nextLabelId,
 	setAnnotationLabels
 } from "../../utils/annotationLabels"
 import HelpHint from "./HelpHint"
@@ -57,32 +58,35 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 
 	if (!open || typeof document === "undefined") return null
 
-	const channelCount = draft.filter(label => label.appliesTo === "channel").length
+	const visible = draft.filter(label => !label.retired)
+	const activeChannelCount = (list: AnnotationLabel[]) =>
+		list.filter(label => label.appliesTo === "channel" && !label.retired).length
+	const channelCount = activeChannelCount(draft)
 	const atChannelCap = channelCount >= MAX_CHANNEL_LABELS
 
 	const updateDraft = (id: number, patch: Partial<AnnotationLabel>) =>
 		setDraft(current => {
 			if (patch.appliesTo === "channel") {
 				const target = current.find(label => label.id === id)
-				const channels = current.filter(label => label.appliesTo === "channel").length
-				if (target && target.appliesTo !== "channel" && channels >= MAX_CHANNEL_LABELS) {
+				if (target && target.appliesTo !== "channel" && activeChannelCount(current) >= MAX_CHANNEL_LABELS) {
 					return current
 				}
 			}
-			return current.map(label => (label.id === id ? { ...label, ...patch } : label))
+			return current.map(label => (label.id === id ? { ...label, ...patch, id: label.id } : label))
 		})
 
-	const removeDraft = (id: number) => setDraft(current => current.filter(label => label.id !== id))
+	const removeDraft = (id: number) =>
+		setDraft(current => current.map(label => (label.id === id ? { ...label, retired: true } : label)))
 
 	const addDraft = () =>
 		setDraft(current => {
-			if (current.filter(label => label.appliesTo === "channel").length >= MAX_CHANNEL_LABELS) {
+			if (activeChannelCount(current) >= MAX_CHANNEL_LABELS) {
 				return current
 			}
-			const nextId = current.reduce((max, label) => Math.max(max, label.id), 0) + 1
+			const id = nextLabelId(current)
 			return [
 				...current,
-				{ id: nextId, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel" }
+				{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel", predefined: false, retired: false }
 			]
 		})
 
@@ -139,7 +143,7 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 				</div>
 
 				<div className="mt-4 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
-					{draft.map(label => (
+					{visible.map(label => (
 						<div
 							key={label.id}
 							className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-2.5 dark:bg-background-accent-dark"
@@ -215,7 +219,7 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 							</div>
 						</div>
 					))}
-					{draft.length === 0 && (
+					{visible.length === 0 && (
 						<p className="rounded-xl border border-dashed border-background-accent p-3 text-xs text-over-background-medium">
 							No labels yet. Add one to start annotating.
 						</p>

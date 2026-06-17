@@ -18,7 +18,6 @@ type Point = [number, number | null]
 
 const DEFAULT_WINDOW_SECONDS = 30
 const MIN_WINDOW_SECONDS = 2
-const MAX_WINDOW_SECONDS = 300
 const MAIN_BUCKETS = 1500
 const PREFETCH_WINDOWS = 1
 
@@ -156,6 +155,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	onDataClick
 }) => {
 	const winEndSec = windowStartSec + windowSec
+	const maxWindowSec = Math.max(MIN_WINDOW_SECONDS, rangeSeconds)
 	const trackRef = useRef<HTMLDivElement | null>(null)
 	const dragRef = useRef<{
 		mode: DragMode
@@ -192,13 +192,13 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					Math.max(0, secAtClientX(event.clientX)),
 					end0 - MIN_WINDOW_SECONDS
 				)
-				onWindowChange(s, Math.min(MAX_WINDOW_SECONDS, end0 - s))
+				onWindowChange(s, Math.min(maxWindowSec, end0 - s))
 			} else if (drag.mode === "resize-right") {
 				const e = Math.max(
 					Math.min(rangeSeconds, secAtClientX(event.clientX)),
 					s0 + MIN_WINDOW_SECONDS
 				)
-				onWindowChange(s0, Math.min(MAX_WINDOW_SECONDS, e - s0))
+				onWindowChange(s0, Math.min(maxWindowSec, e - s0))
 			}
 		}
 		const onUp = () => {
@@ -243,7 +243,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 			return
 		}
 		const clamped = Math.min(
-			MAX_WINDOW_SECONDS,
+			maxWindowSec,
 			Math.max(MIN_WINDOW_SECONDS, parsed)
 		)
 
@@ -330,7 +330,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					<input
 						type="number"
 						min={MIN_WINDOW_SECONDS}
-						max={MAX_WINDOW_SECONDS}
+						max={Math.round(maxWindowSec)}
 						value={sizeDraft}
 						onChange={event => setSizeDraft(event.target.value)}
 						onBlur={event => commitSize(event.target.value)}

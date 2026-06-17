@@ -25,6 +25,13 @@ const backgroundDarkColor =
 
 type AnalysisRange = { startSec: number; endSec: number }
 
+function hexToRgba(hex: string, alpha: number): string {
+	const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+	if (!match) return hex
+	const int = parseInt(match[1], 16)
+	return `rgba(${(int >> 16) & 255}, ${(int >> 8) & 255}, ${int & 255}, ${alpha})`
+}
+
 const Page = () => {
 	const [sessionFolder, setSessionFolder] = useState("")
 	const [manifest, setManifest] = useState<any>(null)
@@ -37,6 +44,7 @@ const Page = () => {
 	const [windowRange, setWindowRange] = useState<AnalysisRange | null>(null)
 	const [selectedSegment, setSelectedSegment] = useState(1)
 	const [activeSideTab, setActiveSideTab] = useState<SidePanelTab>("analysis")
+	const [segLabelMenu, setSegLabelMenu] = useState<number | null>(null)
 
 	const annotating = activeSideTab === "annotations"
 
@@ -117,13 +125,19 @@ const Page = () => {
 		return () => router.events.off("routeChangeStart", handler)
 	}, [annotations.dirty, router])
 
+	const labels = annotations.labels
+	const labelById = useMemo(() => new Map(labels.map(l => [l.id, l])), [labels])
+	const segmentScopedLabels = useMemo(
+		() => labels.filter(l => l.appliesTo === "segment" && !l.retired),
+		[labels]
+	)
+
 	const annotationItems = useMemo(() => {
-		const byId = new Map(annotationLabels.map(l => [l.id, l]))
 		return annotations.annotations
 			.filter(a => a.segment === selectedSegment)
 			.sort((a, b) => a.startSec - b.startSec)
 			.map(a => {
-				const label = byId.get(a.labelId)
+				const label = labelById.get(a.labelId)
 				return {
 					id: a.id,
 					type: a.type,
@@ -135,7 +149,7 @@ const Page = () => {
 					note: a.note ?? ""
 				}
 			})
-	}, [annotations.annotations, selectedSegment, annotationLabels])
+	}, [annotations.annotations, selectedSegment, labelById])
 
 	useEffect(() => {
 		try {
@@ -291,19 +305,76 @@ const Page = () => {
 										<span className="text-xs uppercase tracking-[0.2em] text-over-background-low">Segment</span>
 										{segments.map((_: any, i: number) => {
 											const seg = i + 1
+											const segLabel = labelById.get(annotations.segmentLabels[seg])
+											const tint = segLabel ? hexToRgba(segLabel.color, selectedSegment === seg ? 0.55 : 0.15) : undefined
 											return (
-												<button
-													key={seg}
-													type="button"
-													onClick={() => {
-														if (seg === selectedSegment) return
-														annotations.clearInteraction()
-														setSelectedSegment(seg)
-													}}
-													className={`rounded-full px-3 py-1 text-xs font-medium transition ${selectedSegment === seg ? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light" : "bg-background-accent text-over-background-medium hover:opacity-80"}`}
-												>
-													Segment {seg}
-												</button>
+												<span key={seg} className="relative inline-flex">
+													<button
+														type="button"
+														title={segLabel ? `Segment ${seg} · ${segLabel.name} (double-click to change)` : `Segment ${seg} (double-click to label)`}
+														onClick={() => {
+															if (seg === selectedSegment) return
+															annotations.clearInteraction()
+															setSelectedSegment(seg)
+														}}
+														onDoubleClick={() => setSegLabelMenu(prev => (prev === seg ? null : seg))}
+														style={tint ? { backgroundColor: tint } : undefined}
+														className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+															tint
+																? "text-over-background-highest"
+																: selectedSegment === seg
+																	? "bg-over-background-low-light text-over-background-high-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light"
+																	: "bg-background-accent text-over-background-medium hover:opacity-80"
+														} ${selectedSegment === seg ? "ring-1 ring-background-accent-light/50 ring-offset-1 ring-offset-background" : ""}`}
+													>
+														Segment {seg}
+													</button>
+													{segLabelMenu === seg && (
+														<>
+															{/* click-away */}
+															<div className="fixed inset-0 z-10" onClick={() => setSegLabelMenu(null)} role="presentation" />
+															<div className="absolute left-0 top-full z-20 mt-1 min-w-[10rem] rounded-lg border border-background-accent bg-background p-1.5 shadow-xl">
+																<p className="px-1.5 py-1 text-[10px] uppercase tracking-[0.18em] text-over-background-low">
+																	Label segment {seg}
+																</p>
+																{segmentScopedLabels.length === 0 ? (
+																	<p className="px-1.5 py-1 text-xs text-over-background-low">No segment labels defined.</p>
+																) : (
+																	segmentScopedLabels.map(label => {
+																		const active = annotations.segmentLabels[seg] === label.id
+																		return (
+																			<button
+																				key={label.id}
+																				type="button"
+																				onClick={() => {
+																					annotations.setSegmentLabel(seg, active ? null : label.id)
+																					setSegLabelMenu(null)
+																				}}
+																				className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors ${active ? "bg-primary/10" : "hover:bg-background-accent"}`}
+																			>
+																				<span className="h-3 w-3 shrink-0 rounded-full text-xs" style={{ backgroundColor: label.color }} />
+																				<span className="text-over-background-highest text-xs">{label.name}</span>
+																				{active && <span className="ml-auto text-background-accent-light">✓</span>}
+																			</button>
+																		)
+																	})
+																)}
+																{annotations.segmentLabels[seg] != null && (
+																	<button
+																		type="button"
+																		onClick={() => {
+																			annotations.setSegmentLabel(seg, null)
+																			setSegLabelMenu(null)
+																		}}
+																		className="mt-1 flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs text-over-background-medium transition-colors hover:bg-background-accent"
+																	>
+																		Clear label
+																	</button>
+																)}
+															</div>
+														</>
+													)}
+												</span>
 											)
 										})}
 									</>
@@ -331,7 +402,7 @@ const Page = () => {
 								onWindowRangeChange={setWindowRange}
 								annotating={annotating}
 								annotations={annotations.annotations}
-								labels={annotationLabels}
+								labels={labels}
 								selectedAnnotationId={annotations.selectedId}
 								draft={annotations.draft}
 								onChartClick={annotations.handleChartClick}
@@ -342,6 +413,7 @@ const Page = () => {
 								analysisContent={analysisPanel}
 								annotationsContent={
 									<AnnotationsPanel
+										labels={labels}
 										annotationCount={annotationItems.length}
 										dirty={annotations.dirty}
 										saving={annotations.saving}

@@ -650,10 +650,10 @@ const Page = () => {
 					</TextButton>
 				</div>
 				<div className="mt-4 flex flex-wrap gap-2">
-					{annotationLabels.length === 0 ? (
+					{annotationLabels.filter(label => !label.retired).length === 0 ? (
 						<p className="text-sm text-over-background-medium">No labels defined.</p>
 					) : (
-						annotationLabels.map(label => (
+						annotationLabels.filter(label => !label.retired).map(label => (
 							<span
 								key={label.id}
 								className="inline-flex items-center gap-1.5 rounded-full border border-background-accent px-2.5 py-1 text-xs text-over-background-highest"

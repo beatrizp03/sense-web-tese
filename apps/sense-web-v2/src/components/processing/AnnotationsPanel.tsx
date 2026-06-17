@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
-import { useAnnotationLabels } from "../../utils/annotationLabels"
+import { AnnotationLabel } from "../../utils/annotationLabels"
 import { AnnotationMode, AnnotationType } from "../../hooks/useAnnotations"
 import AnnotationLabelsEditor from "./AnnotationLabelsEditor"
 import HelpHint from "./HelpHint"
@@ -38,6 +38,7 @@ function formatTimeTenths(seconds: number): string {
 }
 
 interface AnnotationsPanelProps {
+	labels?: AnnotationLabel[]
 	annotationCount?: number
 	dirty?: boolean
 	saving?: boolean
@@ -64,6 +65,7 @@ const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: s
  * Annotations tab body.
  */
 const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
+	labels = [],
 	annotationCount = 0,
 	dirty = false,
 	saving = false,
@@ -80,7 +82,6 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	onSetLabel,
 	onClearAll
 }) => {
-	const { labels, update: updateLabel } = useAnnotationLabels()
 	const [editing, setEditing] = useState(false)
 
 	const listRef = useRef<HTMLDivElement>(null)
@@ -105,8 +106,8 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 		if (selectedId) selectedRowRef.current?.scrollIntoView({ block: "nearest" })
 	}, [selectedId])
 
-	const channelLabels = labels.filter(label => label.appliesTo === "channel")
-	const segmentLabels = labels.filter(label => label.appliesTo === "segment")
+	const channelLabels = labels.filter(label => label.appliesTo === "channel" && !label.retired)
+	const segmentLabels = labels.filter(label => label.appliesTo === "segment" && !label.retired)
 
 	return (
 		<div className="space-y-4 pr-1 text-over-background-highest">
@@ -319,6 +320,9 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						Edit labels
 					</button>
 				</div>
+				<p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
+					Channel
+				</p>
 				<div className="flex flex-col gap-1.5">
 					{channelLabels.map((label, index) => {
 						const active = activeLabelId === label.id
@@ -352,22 +356,30 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						)
 					})}
 				</div>
-			</div>
 
-			{/* Segment labels legend */}
-			<div className="rounded-xl border border-background-accent bg-background-accent p-3">
-				<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">Segment labels</p>
-				<div className="mt-3 flex flex-col gap-2 text-xs">
+				<p className="mb-1.5 mt-4 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
+					Segment
+				</p>
+				<div className="flex flex-wrap items-center gap-1.5">
 					{segmentLabels.map(label => (
-						<div key={label.id} className="flex items-center gap-2 text-xs">
-							<span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: label.color }} />
-							<span className="text-xs text-xs text-over-background-highest">{label.name}</span>
+						<span
+							key={label.id}
+							className="inline-flex cursor-default items-center gap-1.5 rounded-full border border-background-accent bg-background-accent-light px-2 py-1 text-xs text-over-background-medium dark:bg-background-accent-dark"
+						>
+							<span
+								className="h-2.5 w-2.5 shrink-0 rounded-full"
+								style={{ backgroundColor: label.color }}
+							/>
+							{label.name}
 							<HelpHint label={`About ${label.name}`} width="w-[14rem]">
 								<span className="text-xs text-over-background-highest">{label.description}</span>
 							</HelpHint>
-						</div>
+						</span>
 					))}
 				</div>
+				<p className="mt-1.5 text-[10px] text-over-background-low">
+					Double-click a segment to set or change its label
+				</p>
 			</div>
 
 			<AnnotationLabelsEditor open={editing} onClose={() => setEditing(false)} />

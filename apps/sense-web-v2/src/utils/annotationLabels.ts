@@ -9,20 +9,22 @@ export interface AnnotationLabel {
 	description: string
 	color: string
 	appliesTo: AnnotationAppliesTo
+	predefined?: boolean
+	retired?: boolean
 }
 
-/** Default annotation label set used until the user customises it. */
+/** Default annotation label set the dictionary is seeded with. */
 export const DEFAULT_ANNOTATION_LABELS: AnnotationLabel[] = [
-	{ id: 1, name: "noise", category: "quality", description: "Corrupted data", color: "#6E6E6E", appliesTo: "channel" },
-	{ id: 2, name: "disturbance", category: "quality", description: "Protocol deviation", color: "#E0A52E", appliesTo: "channel" },
-	{ id: 3, name: "stimulus", category: "event", description: "External cue", color: "#1F77B4", appliesTo: "channel" },
-	{ id: 4, name: "onset", category: "event", description: "Event start", color: "#2BA84A", appliesTo: "channel" },
-	{ id: 5, name: "offset", category: "event", description: "Event end", color: "#0F5A2C", appliesTo: "channel" },
-	{ id: 6, name: "peak", category: "feature", description: "Local maximum", color: "#B83BCB", appliesTo: "channel" },
-	{ id: 7, name: "baseline", category: "state", description: "Resting period", color: "#BFB89E", appliesTo: "channel" },
-	{ id: 8, name: "movement", category: "quality", description: "Motion artifact", color: "#E84545", appliesTo: "channel" },
-	{ id: 20, name: "healthy", category: "class", description: "Control subject", color: "#3FA66A", appliesTo: "segment" },
-	{ id: 21, name: "sick", category: "class", description: "Clinical condition", color: "#C0392B", appliesTo: "segment" }
+	{ id: 1, name: "noise", category: "quality", description: "Corrupted data", color: "#6E6E6E", appliesTo: "channel", predefined: true },
+	{ id: 2, name: "disturbance", category: "quality", description: "Protocol deviation", color: "#E0A52E", appliesTo: "channel", predefined: true },
+	{ id: 3, name: "stimulus", category: "event", description: "External cue", color: "#1F77B4", appliesTo: "channel", predefined: true },
+	{ id: 4, name: "onset", category: "event", description: "Event start", color: "#2BA84A", appliesTo: "channel", predefined: true },
+	{ id: 5, name: "offset", category: "event", description: "Event end", color: "#0F5A2C", appliesTo: "channel", predefined: true },
+	{ id: 6, name: "peak", category: "feature", description: "Local maximum", color: "#B83BCB", appliesTo: "channel", predefined: true },
+	{ id: 7, name: "baseline", category: "state", description: "Resting period", color: "#BFB89E", appliesTo: "channel", predefined: true },
+	{ id: 8, name: "movement", category: "quality", description: "Motion artifact", color: "#E84545", appliesTo: "channel", predefined: true },
+	{ id: 20, name: "healthy", category: "class", description: "Control subject", color: "#3FA66A", appliesTo: "segment", predefined: true },
+	{ id: 21, name: "sick", category: "class", description: "Clinical condition", color: "#C0392B", appliesTo: "segment", predefined: true }
 ]
 
 const STORAGE_KEY = "processing:annotationLabels"
@@ -32,6 +34,8 @@ const listeners = new Set<() => void>()
 
 const isBrowser = () => typeof window !== "undefined"
 
+const CANONICAL_IDS = new Set(DEFAULT_ANNOTATION_LABELS.map(label => label.id))
+
 function sanitize(value: unknown): AnnotationLabel[] | null {
 	if (!Array.isArray(value)) return null
 	const out: AnnotationLabel[] = []
@@ -39,20 +43,26 @@ function sanitize(value: unknown): AnnotationLabel[] | null {
 		if (!item || typeof item !== "object") continue
 		const raw = item as Record<string, unknown>
 		const id = Number(raw.id)
-		const name = typeof raw.name === "string" ? raw.name : ""
-		const color = typeof raw.color === "string" ? raw.color : "#888888"
-		const appliesTo = raw.appliesTo === "segment" ? "segment" : "channel"
 		if (!Number.isFinite(id)) continue
+		const appliesTo: AnnotationAppliesTo = raw.appliesTo === "segment" ? "segment" : "channel"
+		const predefined =
+			raw.predefined === true || (raw.predefined === undefined && CANONICAL_IDS.has(id))
 		out.push({
 			id,
-			name,
+			name: typeof raw.name === "string" ? raw.name : "",
 			category: typeof raw.category === "string" ? raw.category : "",
 			description: typeof raw.description === "string" ? raw.description : "",
-			color,
-			appliesTo
+			color: typeof raw.color === "string" ? raw.color : "#888888",
+			appliesTo,
+			predefined,
+			retired: raw.retired === true
 		})
 	}
 	return out
+}
+
+export function sanitizeLabels(value: unknown): AnnotationLabel[] {
+	return sanitize(value) ?? []
 }
 
 export function getAnnotationLabels(): AnnotationLabel[] {
@@ -86,19 +96,25 @@ function subscribe(listener: () => void): () => void {
 	}
 }
 
-function nextId(list: AnnotationLabel[]): number {
+/**
+ * Next id for a new label: one past the highest id ever seen, INCLUDING tombstones.
+ * Because retired labels are never removed, this is monotonic — ids are never reused.
+ */
+export function nextLabelId(list: AnnotationLabel[]): number {
 	return list.reduce((max, label) => Math.max(max, label.id), 0) + 1
 }
 
 export function addAnnotationLabel(partial?: Partial<AnnotationLabel>): AnnotationLabel {
 	const list = getAnnotationLabels()
 	const label: AnnotationLabel = {
-		id: nextId(list),
+		id: partial?.id ?? nextLabelId(list),
 		name: "new label",
 		category: "custom",
 		description: "",
 		color: "#888888",
 		appliesTo: "channel",
+		predefined: false,
+		retired: false,
 		...partial
 	}
 	setAnnotationLabels([...list, label])
@@ -106,15 +122,28 @@ export function addAnnotationLabel(partial?: Partial<AnnotationLabel>): Annotati
 }
 
 export function updateAnnotationLabel(id: number, patch: Partial<AnnotationLabel>): void {
-	setAnnotationLabels(getAnnotationLabels().map(label => (label.id === id ? { ...label, ...patch } : label)))
+	const { id: _ignoredId, ...safe } = patch
+	setAnnotationLabels(getAnnotationLabels().map(label => (label.id === id ? { ...label, ...safe } : label)))
 }
 
-export function removeAnnotationLabel(id: number): void {
-	setAnnotationLabels(getAnnotationLabels().filter(label => label.id !== id))
+export function retireAnnotationLabel(id: number): void {
+	setAnnotationLabels(getAnnotationLabels().map(label => (label.id === id ? { ...label, retired: true } : label)))
 }
 
+export function restoreAnnotationLabel(id: number): void {
+	setAnnotationLabels(getAnnotationLabels().map(label => (label.id === id ? { ...label, retired: false } : label)))
+}
+
+/**
+ * Restore the predefined seed (attributes + un-retired) and retire any user-added
+ * labels as tombstones. User labels are never dropped, so id monotonicity holds.
+ */
 export function resetAnnotationLabels(): void {
-	setAnnotationLabels(DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label })))
+	const seed = DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label }))
+	const userTombstones = getAnnotationLabels()
+		.filter(label => !CANONICAL_IDS.has(label.id))
+		.map(label => ({ ...label, retired: true }))
+	setAnnotationLabels([...seed, ...userTombstones])
 }
 
 export function useAnnotationLabels() {
@@ -129,7 +158,8 @@ export function useAnnotationLabels() {
 		() => ({
 			add: addAnnotationLabel,
 			update: updateAnnotationLabel,
-			remove: removeAnnotationLabel,
+			retire: retireAnnotationLabel,
+			restore: restoreAnnotationLabel,
 			reset: resetAnnotationLabels
 		}),
 		[]
