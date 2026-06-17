@@ -133,6 +133,8 @@ interface ChannelRowProps {
 	annotations: CanvasAnnotation[]
 	draftIntervalStart: number | null
 	onDataClick?: (x: number, y: number, hitId: string | null) => void
+	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
+	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
 
 const ChannelRow: React.FC<ChannelRowProps> = ({
@@ -152,7 +154,9 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	outlineColor,
 	annotations,
 	draftIntervalStart,
-	onDataClick
+	onDataClick,
+	onAnnotationDragBound,
+	onAnnotationMove
 }) => {
 	const winEndSec = windowStartSec + windowSec
 	const maxWindowSec = Math.max(MIN_WINDOW_SECONDS, rangeSeconds)
@@ -321,6 +325,8 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					annotations={annotations}
 					draftIntervalStart={draftIntervalStart}
 					onDataClick={onDataClick}
+					onAnnotationDragBound={onAnnotationDragBound}
+					onAnnotationMove={onAnnotationMove}
 				/>
 			)}
 
@@ -422,6 +428,8 @@ interface SessionChartProps {
 	selectedAnnotationId?: string | null
 	draft?: { startSec: number } | null
 	onChartClick?: (segment: number, dataX: number, hitId: string | null) => void
+	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
+	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
 
 const SessionChart: React.FC<SessionChartProps> = ({
@@ -438,7 +446,9 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	labels = [],
 	selectedAnnotationId = null,
 	draft = null,
-	onChartClick
+	onChartClick,
+	onAnnotationDragBound,
+	onAnnotationMove
 }) => {
 	const isDark = useDarkTheme()
 	const lineColor = isDark ? lineColorDark : lineColorLight
@@ -455,9 +465,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			.filter(ann => ann.segment === selectedSegment)
 			.map(ann => ({
 				id: ann.id,
-				type: ann.type,
-				startSec: ann.startSec,
-				endSec: ann.endSec,
+				t0: ann.t0,
+				t1: ann.t1,
 				color: labelColorById[ann.labelId] ?? "#888888",
 				selected: ann.id === selectedAnnotationId
 			}))
@@ -703,6 +712,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 							? (x, _y, hitId) => onChartClick(selectedSegment, x, hitId)
 							: undefined
 					}
+					onAnnotationDragBound={annotating ? onAnnotationDragBound : undefined}
+					onAnnotationMove={annotating ? onAnnotationMove : undefined}
 				/>
 			))}
 		</div>

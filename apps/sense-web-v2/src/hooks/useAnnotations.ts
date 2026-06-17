@@ -2,18 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AnnotationLabel, sanitizeLabels } from "../utils/annotationLabels"
 
+/** Derived kind — never stored; always computed from t0/t1. */
 export type AnnotationType = "point" | "interval"
 export type AnnotationMode = "idle" | "point" | "interval"
 
 export interface Annotation {
 	id: string
 	segment: number
-	type: AnnotationType
-	startSec: number
-	endSec: number
+	t0: number
+	t1: number
 	labelId: number
 	note: string
 }
+
+export const annotationKind = (a: { t0: number; t1: number }): AnnotationType =>
+	a.t0 === a.t1 ? "point" : "interval"
 
 interface AnnotationsFile {
 	version: number
@@ -47,17 +50,16 @@ function sanitizeAnnotations(value: unknown): Annotation[] {
 	for (const item of value) {
 		if (!item || typeof item !== "object") continue
 		const raw = item as Record<string, unknown>
-		const startSec = Number(raw.startSec)
-		const endSec = Number(raw.endSec ?? raw.startSec)
+		const t0 = Number(raw.t0 ?? raw.startSec)
+		const t1raw = Number(raw.t1 ?? raw.endSec ?? raw.t0 ?? raw.startSec)
 		const labelId = Number(raw.labelId)
-		if (!Number.isFinite(startSec) || !Number.isFinite(labelId)) continue
-		const type: AnnotationType = raw.type === "interval" ? "interval" : "point"
+		if (!Number.isFinite(t0) || !Number.isFinite(labelId)) continue
+		const t1 = Number.isFinite(t1raw) ? Math.max(t0, t1raw) : t0
 		out.push({
 			id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
 			segment: Number(raw.segment) || 1,
-			type,
-			startSec,
-			endSec: type === "interval" && Number.isFinite(endSec) ? endSec : startSec,
+			t0,
+			t1,
 			labelId,
 			note: typeof raw.note === "string" ? raw.note : ""
 		})
@@ -184,7 +186,7 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 				const id = newId()
 				setAnnotations(prev => [
 					...prev,
-					{ id, segment, type: "point", startSec: dataX, endSec: dataX, labelId, note: "" }
+					{ id, segment, t0: dataX, t1: dataX, labelId, note: "" }
 				])
 				setSelectedId(id)
 				setDirty(true)
@@ -199,12 +201,12 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 				const labelId = resolveLabelId()
 				setDraft(null)
 				if (labelId == null) return
-				const startSec = Math.min(draft.startSec, dataX)
-				const endSec = Math.max(draft.startSec, dataX)
+				const t0 = Math.min(draft.startSec, dataX)
+				const t1 = Math.max(draft.startSec, dataX)
 				const id = newId()
 				setAnnotations(prev => [
 					...prev,
-					{ id, segment, type: "interval", startSec, endSec, labelId, note: "" }
+					{ id, segment, t0, t1, labelId, note: "" }
 				])
 				setSelectedId(id)
 				setDirty(true)
@@ -243,6 +245,28 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		setDirty(true)
 	}, [])
 
+	const setAnnotationBounds = useCallback(
+		(id: string, edge: "t0" | "t1" | "point", x: number) => {
+			setAnnotations(list =>
+				list.map(a => {
+					if (a.id !== id) return a
+					if (edge === "point") return { ...a, t0: x, t1: x }
+					if (edge === "t0") return { ...a, t0: Math.min(x, a.t1) }
+					return { ...a, t1: Math.max(x, a.t0) }
+				})
+			)
+			setDirty(true)
+		},
+		[]
+	)
+
+	const setAnnotationSpan = useCallback((id: string, t0: number, t1: number) => {
+		setAnnotations(list =>
+			list.map(a => (a.id === id ? { ...a, t0: Math.min(t0, t1), t1: Math.max(t0, t1) } : a))
+		)
+		setDirty(true)
+	}, [])
+
 	// Remove only the annotations of a segment that are visible in the given
 	// time window (i.e. overlap [startSec, endSec]).
 	const clearAnnotationsInRange = useCallback(
@@ -250,8 +274,7 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 			setAnnotations(list => {
 				const next = list.filter(a => {
 					if (a.segment !== segment) return true
-					const aEnd = a.type === "interval" ? a.endSec : a.startSec
-					const overlaps = aEnd >= startSec && a.startSec <= endSec
+					const overlaps = a.t1 >= startSec && a.t0 <= endSec
 					return !overlaps
 				})
 				if (next.length !== list.length) setDirty(true)
@@ -334,7 +357,7 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		setSaving(true)
 		try {
 			const payload: AnnotationsFile = {
-				version: 1,
+				version: 2,
 				savedAt: new Date().toISOString(),
 				annotations,
 				labels: effectiveLabels,
@@ -368,6 +391,8 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		removeAnnotation,
 		setAnnotationNote,
 		setAnnotationLabel,
+		setAnnotationBounds,
+		setAnnotationSpan,
 		clearAnnotationsInRange,
 		discardChanges,
 		clearInteraction,

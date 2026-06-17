@@ -5,9 +5,8 @@ import * as d3 from "d3"
 
 export interface CanvasAnnotation {
 	id: string
-	type: "point" | "interval"
-	startSec: number
-	endSec: number
+	t0: number
+	t1: number
 	color: string
 	selected?: boolean
 }
@@ -47,6 +46,8 @@ export interface CanvasChartProps {
 	draftIntervalStart?: number | null
 	draftColor?: string
 	onDataClick?: (x: number, y: number, hitId: string | null) => void
+	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
+	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
 
 const CanvasChart: React.FC<CanvasChartProps> = ({
@@ -73,7 +74,9 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	annotations,
 	draftIntervalStart,
 	draftColor,
-	onDataClick
+	onDataClick,
+	onAnnotationDragBound,
+	onAnnotationMove
 }) => {
 	const [parentElement, setParentElement] = useState<HTMLDivElement | null>(
 		null
@@ -281,15 +284,15 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				context.rect(0, -selectedOverhang, plotWidth, plotHeight + selectedOverhang)
 				context.clip()
 
-				// Draw intervals first so points always render on top of them.
+				const isBand = (a: CanvasAnnotation) => a.t0 !== a.t1
 				const ordered = [...(annotations ?? [])].sort((a, b) =>
-					a.type === b.type ? 0 : a.type === "interval" ? -1 : 1
+					isBand(a) === isBand(b) ? 0 : isBand(a) ? -1 : 1
 				)
 				for (const ann of ordered) {
-					const x0 = xScale(ann.startSec)
+					const x0 = xScale(ann.t0)
 					const o = ann.selected ? selectedOverhang : overhang
-					if (ann.type === "interval") {
-						const x1 = xScale(ann.endSec)
+					if (isBand(ann)) {
+						const x1 = xScale(ann.t1)
 						const left = Math.min(x0, x1)
 						const w = Math.abs(x1 - x0)
 						context.fillStyle = hexToRgba(ann.color, ann.selected ? 0.3 : 0.16)
@@ -318,6 +321,24 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 						context.lineTo(x0, -o + m * 1.5)
 						context.closePath()
 						context.fill()
+					}
+				}
+
+				const selForHandles = ordered.find(a => a.selected)
+				if (selForHandles) {
+					const ho = selectedOverhang
+					const hw = 4 * pixelRatio
+					const tops = isBand(selForHandles)
+						? [xScale(selForHandles.t0), xScale(selForHandles.t1)]
+						: [xScale(selForHandles.t0)]
+					context.lineWidth = 1.5 * pixelRatio
+					for (const hx of tops) {
+						context.fillStyle = selForHandles.color
+						context.strokeStyle = "#ffffff"
+						context.beginPath()
+						context.rect(hx - hw, -ho - hw, hw * 2, hw * 2)
+						context.fill()
+						context.stroke()
 					}
 				}
 
@@ -375,8 +396,19 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		draftColor
 	])
 
+	const resizeRef = useRef<
+		| { id: string; edge: "t0" | "t1" | "point" }
+		| { id: string; edge: "move"; grabX: number; t0: number; t1: number }
+		| null
+	>(null)
+	const justResizedRef = useRef(false)
+
 	const handleClick = useCallback(
 		(event: React.MouseEvent<HTMLCanvasElement>) => {
+			if (justResizedRef.current) {
+				justResizedRef.current = false
+				return
+			}
 			if (!onDataClick) return
 			const canvas = event.currentTarget
 			const geom = geomRef.current
@@ -401,12 +433,10 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 			const hitTolerance = 4 * pixelRatio
 			let hitId: string | null = null
-			// Points render on top of intervals, so they win hit-testing too: test
-			// every point first, then fall back to intervals.
 			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
 				const ann = geom.annotations[i]
-				if (ann.type !== "point") continue
-				const a0 = geom.xScale(ann.startSec)
+				if (ann.t0 !== ann.t1) continue
+				const a0 = geom.xScale(ann.t0)
 				const triangle = (ann.selected ? 8 : 6) * pixelRatio
 				if (Math.abs(px - a0) <= Math.max(hitTolerance, triangle)) {
 					hitId = ann.id
@@ -414,9 +444,9 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			}
 			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
 				const ann = geom.annotations[i]
-				if (ann.type !== "interval") continue
-				const a0 = geom.xScale(ann.startSec)
-				const a1 = geom.xScale(ann.endSec)
+				if (ann.t0 === ann.t1) continue
+				const a0 = geom.xScale(ann.t0)
+				const a1 = geom.xScale(ann.t1)
 				if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) {
 					hitId = ann.id
 				}
@@ -429,6 +459,90 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		[onDataClick, pixelRatio]
 	)
 
+	// Map a pointer event's clientX to a data-x using the current geometry.
+	const clientXToData = (clientX: number, canvas: HTMLCanvasElement): number | null => {
+		const geom = geomRef.current
+		const rect = canvas.getBoundingClientRect()
+		if (!geom || rect.width <= 0) return null
+		const scaleX = canvas.width / rect.width
+		const px = (clientX - rect.left) * scaleX - geom.leftMargin
+		return geom.xScale.invert(px)
+	}
+
+	const handlePointerDown = useCallback(
+		(event: React.PointerEvent<HTMLCanvasElement>) => {
+			if (!onAnnotationDragBound && !onAnnotationMove) return
+			const geom = geomRef.current
+			const canvas = event.currentTarget
+			const rect = canvas.getBoundingClientRect()
+			if (!geom || rect.width <= 0) return
+			const scaleX = canvas.width / rect.width
+			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
+			const sel = geom.annotations.find(a => a.selected)
+			if (!sel) return
+			const grab = 8 * pixelRatio
+			let edge: "t0" | "t1" | "point" | null = null
+			if (sel.t0 === sel.t1) {
+				if (Math.abs(px - geom.xScale(sel.t0)) <= grab) edge = "point"
+			} else if (Math.abs(px - geom.xScale(sel.t0)) <= grab) {
+				edge = "t0"
+			} else if (Math.abs(px - geom.xScale(sel.t1)) <= grab) {
+				edge = "t1"
+			}
+			if (edge && onAnnotationDragBound) {
+				resizeRef.current = { id: sel.id, edge }
+			} else if (onAnnotationMove && sel.t0 !== sel.t1) {
+				// Interior of a selected interval (between the edge grab zones): move it.
+				const left = geom.xScale(Math.min(sel.t0, sel.t1))
+				const right = geom.xScale(Math.max(sel.t0, sel.t1))
+				if (px <= left + grab || px >= right - grab) return
+				resizeRef.current = {
+					id: sel.id,
+					edge: "move",
+					grabX: geom.xScale.invert(px),
+					t0: sel.t0,
+					t1: sel.t1
+				}
+			} else {
+				return
+			}
+			try {
+				canvas.setPointerCapture(event.pointerId)
+			} catch {
+				/* ignore */
+			}
+			event.preventDefault()
+		},
+		[onAnnotationDragBound, onAnnotationMove, pixelRatio]
+	)
+
+	const handlePointerMove = useCallback(
+		(event: React.PointerEvent<HTMLCanvasElement>) => {
+			const r = resizeRef.current
+			if (!r) return
+			const x = clientXToData(event.clientX, event.currentTarget)
+			if (x == null) return
+			if (r.edge === "move") {
+				const delta = x - r.grabX
+				onAnnotationMove?.(r.id, r.t0 + delta, r.t1 + delta)
+			} else {
+				onAnnotationDragBound?.(r.id, r.edge, x)
+			}
+		},
+		[onAnnotationDragBound, onAnnotationMove]
+	)
+
+	const endResize = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+		if (!resizeRef.current) return
+		resizeRef.current = null
+		justResizedRef.current = true
+		try {
+			event.currentTarget.releasePointerCapture(event.pointerId)
+		} catch {
+			/* ignore */
+		}
+	}, [])
+
 	return (
 		<div
 			ref={setParentElement}
@@ -438,8 +552,12 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			<canvas
 				ref={setCanvasElement}
 				className="h-auto w-full"
-				style={onDataClick ? { cursor: "crosshair" } : undefined}
+				style={onDataClick || onAnnotationDragBound || onAnnotationMove ? { cursor: "crosshair" } : undefined}
 				onClick={onDataClick ? handleClick : undefined}
+				onPointerDown={onAnnotationDragBound || onAnnotationMove ? handlePointerDown : undefined}
+				onPointerMove={onAnnotationDragBound || onAnnotationMove ? handlePointerMove : undefined}
+				onPointerUp={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
+				onPointerCancel={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
 			/>
 		</div>
 	)

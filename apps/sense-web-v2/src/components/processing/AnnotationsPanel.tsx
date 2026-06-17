@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import { AnnotationLabel } from "../../utils/annotationLabels"
-import { AnnotationMode, AnnotationType } from "../../hooks/useAnnotations"
+import { AnnotationMode } from "../../hooks/useAnnotations"
 import AnnotationLabelsEditor from "./AnnotationLabelsEditor"
 import HelpHint from "./HelpHint"
 
@@ -11,9 +11,8 @@ export { DEFAULT_ANNOTATION_LABELS as ANNOTATION_LABELS } from "../../utils/anno
 
 export interface AnnotationListItem {
 	id: string
-	type: AnnotationType
-	startSec: number
-	endSec: number
+	t0: number
+	t1: number
 	color: string
 	labelId: number
 	labelName: string
@@ -133,6 +132,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					>
 						{items.map(item => {
 							const selected = item.id === selectedId
+							const isPoint = item.t0 === item.t1
 							return (
 								<div
 									key={item.id}
@@ -149,7 +149,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 											onClick={() => onSelectAnnotation?.(selected ? null : item.id)}
 											className="flex min-w-0 flex-1 items-center gap-2 text-left"
 										>
-											{item.type === "point" ? (
+											{isPoint ? (
 												<span
 													className="h-0 w-0 shrink-0"
 													style={{
@@ -169,12 +169,12 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 												/>
 											)}
 											<span className="shrink-0 text-xs capitalize text-over-background-highest">
-												{item.type}
+												{isPoint ? "point" : "interval"}
 											</span>
 											<span className="shrink-0 tabular-nums text-over-background-medium text-xs">
-												{item.type === "interval"
-													? `${formatTimeTenths(item.startSec)} – ${formatTimeTenths(item.endSec)}`
-													: formatTimeTenths(item.startSec)}
+												{isPoint
+													? formatTimeTenths(item.t0)
+													: `${formatTimeTenths(item.t0)} – ${formatTimeTenths(item.t1)}`}
 											</span>
 											{!selected && item.note && (
 												<span className="truncate pr-1 text-xs italic text-over-background-low">
@@ -270,12 +270,35 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						size="base"
 						onClick={onSave}
 						disabled={saving || !dirty}
-						className="flex-1 basis-0 px-4 py-2 !text-xs motion-safe:hover:!scale-95"
+						className="flex h-12 flex-1 basis-0 items-center justify-center px-4 !text-xs motion-safe:hover:!scale-95"
 					>
 						{saving ? "Saving…" : "Save annotations"}
 					</TextButton>
 				</div>
 			</div>
+
+			<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-background-accent bg-background px-3 py-2 text-xs text-over-background-medium">
+				<span className="w-full text-xs uppercase tracking-[0.18em] text-over-background-low">
+					How to annotate
+				</span>
+				<span className="inline-flex items-center gap-1.5 text-xs">
+					<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Point</kbd>
+					 - P + click on graph
+				</span>
+				<span className="inline-flex items-center gap-1.5 text-xs">
+					<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Interval</kbd>
+					 - I + click twice on the graph
+				</span>
+				<span className="inline-flex items-center gap-1.5 text-xs">
+					<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Move P / I</kbd>
+					 - Click and drag an annotation
+				</span>
+				<span className="inline-flex items-center gap-1.5 text-xs">
+					<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Resize I</kbd>
+					 - Drag one of the ends
+				</span>
+			</div>
+
 			<div>
 				<p className="mb-2 text-xs uppercase tracking-[0.2em] text-over-background-low">
 					1 - Tool

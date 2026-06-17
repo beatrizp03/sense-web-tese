@@ -135,14 +135,13 @@ const Page = () => {
 	const annotationItems = useMemo(() => {
 		return annotations.annotations
 			.filter(a => a.segment === selectedSegment)
-			.sort((a, b) => a.startSec - b.startSec)
+			.sort((a, b) => a.t0 - b.t0)
 			.map(a => {
 				const label = labelById.get(a.labelId)
 				return {
 					id: a.id,
-					type: a.type,
-					startSec: a.startSec,
-					endSec: a.endSec,
+					t0: a.t0,
+					t1: a.t1,
 					color: label?.color ?? "#888888",
 					labelId: a.labelId,
 					labelName: label?.name ?? "",
@@ -406,6 +405,8 @@ const Page = () => {
 								selectedAnnotationId={annotations.selectedId}
 								draft={annotations.draft}
 								onChartClick={annotations.handleChartClick}
+								onAnnotationDragBound={annotations.setAnnotationBounds}
+								onAnnotationMove={annotations.setAnnotationSpan}
 							/>
 						</div>
 						<div className="col-span-1">
