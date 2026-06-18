@@ -53,6 +53,10 @@ interface AnnotationsPanelProps {
 	onSetNote?: (id: string, note: string) => void
 	onSetLabel?: (id: string, labelId: number) => void
 	onClearAll?: () => void
+	onUndo?: () => void
+	onRedo?: () => void
+	canUndo?: boolean
+	canRedo?: boolean
 }
 
 const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: string }[] = [
@@ -79,9 +83,14 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	onRemoveAnnotation,
 	onSetNote,
 	onSetLabel,
-	onClearAll
+	onClearAll,
+	onUndo,
+	onRedo,
+	canUndo = false,
+	canRedo = false
 }) => {
 	const [editing, setEditing] = useState(false)
+	const [helpOpen, setHelpOpen] = useState(true)
 
 	const listRef = useRef<HTMLDivElement>(null)
 	const selectedRowRef = useRef<HTMLDivElement>(null)
@@ -95,10 +104,9 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 		}
 		const rows = list.children
 		const first = rows[0] as HTMLElement | undefined
-		const sixth = rows[5] as HTMLElement | undefined
-		if (!first || !sixth) return
-		const gap = parseFloat(getComputedStyle(list).rowGap) || 0
-		setMaxHeight(sixth.offsetTop - first.offsetTop - gap)
+		const fifth = rows[4] as HTMLElement | undefined
+		if (!first || !fifth) return
+		setMaxHeight(fifth.offsetTop - first.offsetTop + first.offsetHeight / 2)
 	}, [items, selectedId])
 
 	useEffect(() => {
@@ -115,11 +123,28 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">
 						{annotationCount} annotation{annotationCount === 1 ? "" : "s"} on this segment
 					</p>
-					{dirty && (
-						<span className="text-xs uppercase tracking-[0.18em] text-amber-500 pr-3">
-							Unsaved
-						</span>
-					)}
+					<div className="flex items-center gap-1">
+					<button
+						type="button"
+						onClick={onUndo}
+						disabled={!canUndo}
+						title="Undo (Ctrl+Z)"
+						aria-label="Undo"
+						className="rounded border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+					>
+						↶
+					</button>
+					<button
+						type="button"
+						onClick={onRedo}
+						disabled={!canRedo}
+						title="Redo (Ctrl+Shift+Z)"
+						aria-label="Redo"
+						className="rounded border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+					>
+						↷
+					</button>
+					</div>
 				</div>
 
 				{items.length === 0 ? (
@@ -277,26 +302,35 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				</div>
 			</div>
 
-			<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-background-accent bg-background px-3 py-2 text-xs text-over-background-medium">
-				<span className="w-full text-xs uppercase tracking-[0.18em] text-over-background-low">
-					How to annotate
-				</span>
-				<span className="inline-flex items-center gap-1.5 text-xs">
-					<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Point</kbd>
-					 - P + click on graph
-				</span>
-				<span className="inline-flex items-center gap-1.5 text-xs">
-					<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Interval</kbd>
-					 - I + click twice on the graph
-				</span>
-				<span className="inline-flex items-center gap-1.5 text-xs">
-					<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Move P / I</kbd>
-					 - Click and drag an annotation
-				</span>
-				<span className="inline-flex items-center gap-1.5 text-xs">
-					<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Resize I</kbd>
-					 - Drag one of the ends
-				</span>
+			<div className="rounded-lg border border-background-accent bg-background px-3 py-2 text-xs text-over-background-medium">
+				<button
+					type="button"
+					onClick={() => setHelpOpen(open => !open)}
+					className="flex w-full items-center justify-between text-xs uppercase tracking-[0.18em] text-over-background-low"
+				>
+					<span className="text-xs">How to annotate</span>
+					<span aria-hidden className="text-xs leading-none">{helpOpen ? "▾" : "▸"}</span>
+				</button>
+				{helpOpen && (
+				<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Point</kbd>
+						- P + click on graph
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Interval</kbd>
+						- I + click twice on the graph
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Move P / I</kbd>
+						- Click and drag an annotation
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Resize I</kbd>
+						- Click and drag the ends
+					</span>
+				</div>
+				)}
 			</div>
 
 			<div>

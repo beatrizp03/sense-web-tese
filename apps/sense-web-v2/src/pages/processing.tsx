@@ -439,6 +439,10 @@ const Page = () => {
 												windowRange.endSec
 											)
 										}
+										onUndo={annotations.undo}
+										onRedo={annotations.redo}
+										canUndo={annotations.canUndo}
+										canRedo={annotations.canRedo}
 									/>
 								}
 								exportContent={

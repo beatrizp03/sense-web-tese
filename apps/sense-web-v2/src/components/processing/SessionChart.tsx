@@ -454,23 +454,28 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	const lineColor = isDark ? lineColorDark : lineColorLight
 	const outlineColor = isDark ? outlineColorDark : outlineColorLight
 
-	const labelColorById = useMemo(() => {
-		const map: Record<number, string> = {}
-		for (const label of labels) map[label.id] = label.color
+	const labelById = useMemo(() => {
+		const map = new Map<number, AnnotationLabel>()
+		for (const label of labels) map.set(label.id, label)
 		return map
 	}, [labels])
 
 	const segmentAnnotations = useMemo<CanvasAnnotation[]>(() => {
 		return annotations
 			.filter(ann => ann.segment === selectedSegment)
-			.map(ann => ({
-				id: ann.id,
-				t0: ann.t0,
-				t1: ann.t1,
-				color: labelColorById[ann.labelId] ?? "#888888",
-				selected: ann.id === selectedAnnotationId
-			}))
-	}, [annotations, selectedSegment, labelColorById, selectedAnnotationId])
+			.map(ann => {
+				const label = labelById.get(ann.labelId)
+				return {
+					id: ann.id,
+					t0: ann.t0,
+					t1: ann.t1,
+					color: label?.color ?? "#888888",
+					selected: ann.id === selectedAnnotationId,
+					label: label?.name,
+					description: label?.description
+				}
+			})
+	}, [annotations, selectedSegment, labelById, selectedAnnotationId])
 
 	const sampleRate = Number(manifest?.sampleRate) || 1000
 

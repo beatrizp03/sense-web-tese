@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { AnnotationLabel, sanitizeLabels } from "../utils/annotationLabels"
 
@@ -127,6 +127,84 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 	const [sessionLabels, setSessionLabels] = useState<AnnotationLabel[] | null>(null)
 	const [segmentLabels, setSegmentLabels] = useState<Record<number, number>>({})
 
+	const annotationsRef = useRef(annotations)
+	useEffect(() => {
+		annotationsRef.current = annotations
+	}, [annotations])
+
+	// ---- Undo / redo --------------------------------------------------------
+	const historyRef = useRef<{ past: Annotation[][]; future: Annotation[][] }>({ past: [], future: [] })
+	const lastEditRef = useRef<{ tag: string; at: number }>({ tag: "", at: 0 })
+	const [canUndo, setCanUndo] = useState(false)
+	const [canRedo, setCanRedo] = useState(false)
+
+	const resetHistory = useCallback(() => {
+		historyRef.current = { past: [], future: [] }
+		lastEditRef.current = { tag: "", at: 0 }
+		setCanUndo(false)
+		setCanRedo(false)
+	}, [])
+
+	const snap = useCallback(
+		(t: number) => {
+			const rate = Number(sampleRate)
+			return rate > 0 ? Math.round(t * rate) / rate : t
+		},
+		[sampleRate]
+	)
+
+	const HISTORY_LIMIT = 100
+	const commit = useCallback((tag: string, updater: (list: Annotation[]) => Annotation[]) => {
+		const prev = annotationsRef.current
+		const next = updater(prev)
+		if (next === prev) return
+		const now = Date.now()
+		const h = historyRef.current
+		const last = lastEditRef.current
+		const coalesce = tag !== "" && tag === last.tag && now - last.at < 700
+		if (!coalesce) {
+			h.past.push(prev)
+			if (h.past.length > HISTORY_LIMIT) h.past.shift()
+		}
+		h.future = []
+		lastEditRef.current = { tag, at: now }
+		annotationsRef.current = next
+		setAnnotations(next)
+		setDirty(true)
+		setCanUndo(true)
+		setCanRedo(false)
+	}, [])
+
+	const undo = useCallback(() => {
+		const h = historyRef.current
+		const prev = h.past.pop()
+		if (prev === undefined) return
+		h.future.push(annotationsRef.current)
+		lastEditRef.current = { tag: "", at: 0 }
+		annotationsRef.current = prev
+		setAnnotations(prev)
+		setSelectedId(null)
+		setDraft(null)
+		setDirty(true)
+		setCanUndo(h.past.length > 0)
+		setCanRedo(true)
+	}, [])
+
+	const redo = useCallback(() => {
+		const h = historyRef.current
+		const next = h.future.pop()
+		if (next === undefined) return
+		h.past.push(annotationsRef.current)
+		lastEditRef.current = { tag: "", at: 0 }
+		annotationsRef.current = next
+		setAnnotations(next)
+		setSelectedId(null)
+		setDraft(null)
+		setDirty(true)
+		setCanUndo(true)
+		setCanRedo(h.future.length > 0)
+	}, [])
+
 	const effectiveLabels = useMemo(() => sessionLabels ?? labels, [sessionLabels, labels])
 
 	const channelLabels = useMemo(
@@ -175,6 +253,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		setDirty(false)
 		setSessionLabels(null)
 		setSegmentLabels({})
+		resetHistory()
 		if (!sessionFolder || !window.electronAPI?.readSessionAnnotations) return
 		void (async () => {
 			try {
@@ -190,7 +269,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		return () => {
 			cancelled = true
 		}
-	}, [sessionFolder, applyFileMeta, readSidecars])
+	}, [sessionFolder, applyFileMeta, readSidecars, resetHistory])
 
 	// Discard unsaved edits by reloading the last saved annotations from disk.
 	const discardChanges = useCallback(async () => {
@@ -210,8 +289,9 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		} catch {
 			setAnnotations([])
 		}
+		resetHistory()
 		setDirty(false)
-	}, [sessionFolder, applyFileMeta, readSidecars])
+	}, [sessionFolder, applyFileMeta, readSidecars, resetHistory])
 
 	const setSegmentLabel = useCallback((segment: number, labelId: number | null) => {
 		setSegmentLabels(prev => {
@@ -241,10 +321,10 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 			if (mode === "point") {
 				const labelId = resolveLabelId()
 				if (labelId == null) return
-				const ann = makeAnnotation(segment, dataX, dataX, labelId)
-				setAnnotations(prev => [...prev, ann])
+				const x = snap(dataX)
+				const ann = makeAnnotation(segment, x, x, labelId)
+				commit(`add:${ann.id}`, prev => [...prev, ann])
 				setSelectedId(ann.id)
-				setDirty(true)
 				return
 			}
 
@@ -258,32 +338,26 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 				if (labelId == null) return
 				const ann = makeAnnotation(
 					segment,
-					Math.min(draft.startSec, dataX),
-					Math.max(draft.startSec, dataX),
+					snap(Math.min(draft.startSec, dataX)),
+					snap(Math.max(draft.startSec, dataX)),
 					labelId
 				)
-				setAnnotations(prev => [...prev, ann])
+				commit(`add:${ann.id}`, prev => [...prev, ann])
 				setSelectedId(ann.id)
-				setDirty(true)
 				return
 			}
 
 			setSelectedId(hitId)
 		},
-		[enabled, mode, draft, resolveLabelId]
+		[enabled, mode, draft, resolveLabelId, commit, snap]
 	)
 
 	const removeSelected = useCallback(() => {
 		setSelectedId(prev => {
-			if (!prev) return prev
-			setAnnotations(list => {
-				const next = list.filter(a => a.id !== prev)
-				if (next.length !== list.length) setDirty(true)
-				return next
-			})
+			if (prev) commit(`del:${prev}`, list => list.filter(a => a.id !== prev))
 			return null
 		})
-	}, [])
+	}, [commit])
 
 	const toggleMode = useCallback((target: Exclude<AnnotationMode, "idle">) => {
 		setDraft(null)
@@ -291,67 +365,66 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 	}, [])
 
 	const setAnnotationNote = useCallback((id: string, note: string) => {
-		setAnnotations(list => list.map(a => (a.id === id ? { ...a, note, updatedAt: nowIso() } : a)))
-		setDirty(true)
-	}, [])
+		commit(`note:${id}`, list => list.map(a => (a.id === id ? { ...a, note, updatedAt: nowIso() } : a)))
+	}, [commit])
 
 	const setAnnotationLabel = useCallback((id: string, labelId: number) => {
-		setAnnotations(list => list.map(a => (a.id === id ? { ...a, labelId, updatedAt: nowIso() } : a)))
-		setDirty(true)
-	}, [])
+		commit(`label:${id}`, list => list.map(a => (a.id === id ? { ...a, labelId, updatedAt: nowIso() } : a)))
+	}, [commit])
 
 	const setAnnotationBounds = useCallback(
 		(id: string, edge: "t0" | "t1" | "point", x: number) => {
-			setAnnotations(list =>
+			const sx = snap(x)
+			commit(`bounds:${id}`, list =>
 				list.map(a => {
 					if (a.id !== id) return a
 					const ts = nowIso()
-					if (edge === "point") return { ...a, t0: x, t1: x, updatedAt: ts }
-					if (edge === "t0") return { ...a, t0: Math.min(x, a.t1), updatedAt: ts }
-					return { ...a, t1: Math.max(x, a.t0), updatedAt: ts }
+					if (edge === "point") return { ...a, t0: sx, t1: sx, updatedAt: ts }
+					if (edge === "t0") return { ...a, t0: Math.min(sx, a.t1), updatedAt: ts }
+					return { ...a, t1: Math.max(sx, a.t0), updatedAt: ts }
 				})
 			)
-			setDirty(true)
 		},
-		[]
+		[commit, snap]
 	)
 
-	const setAnnotationSpan = useCallback((id: string, t0: number, t1: number) => {
-		setAnnotations(list =>
-			list.map(a =>
-				a.id === id ? { ...a, t0: Math.min(t0, t1), t1: Math.max(t0, t1), updatedAt: nowIso() } : a
+	const setAnnotationSpan = useCallback(
+		(id: string, t0: number, t1: number) => {
+			const a0 = snap(t0)
+			const a1 = snap(t1)
+			commit(`move:${id}`, list =>
+				list.map(a =>
+					a.id === id ? { ...a, t0: Math.min(a0, a1), t1: Math.max(a0, a1), updatedAt: nowIso() } : a
+				)
 			)
-		)
-		setDirty(true)
-	}, [])
+		},
+		[commit, snap]
+	)
 
 	// Remove only the annotations of a segment that are visible in the given
 	// time window (i.e. overlap [startSec, endSec]).
 	const clearAnnotationsInRange = useCallback(
 		(segment: number, startSec: number, endSec: number) => {
-			setAnnotations(list => {
-				const next = list.filter(a => {
+			commit(`clear:${Date.now()}`, list =>
+				list.filter(a => {
 					if (a.segment !== segment) return true
 					const overlaps = a.t1 >= startSec && a.t0 <= endSec
 					return !overlaps
 				})
-				if (next.length !== list.length) setDirty(true)
-				return next
-			})
+			)
 			setSelectedId(null)
 			setDraft(null)
 		},
-		[]
+		[commit]
 	)
 
-	const removeAnnotation = useCallback((id: string) => {
-		setAnnotations(list => {
-			const next = list.filter(a => a.id !== id)
-			if (next.length !== list.length) setDirty(true)
-			return next
-		})
-		setSelectedId(prev => (prev === id ? null : prev))
-	}, [])
+	const removeAnnotation = useCallback(
+		(id: string) => {
+			commit(`del:${id}`, list => list.filter(a => a.id !== id))
+			setSelectedId(prev => (prev === id ? null : prev))
+		},
+		[commit]
+	)
 
 	const clearInteraction = useCallback(() => {
 		setDraft(null)
@@ -375,6 +448,17 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 			}
 
 			const key = event.key
+			if ((event.ctrlKey || event.metaKey) && (key === "z" || key === "Z")) {
+				event.preventDefault()
+				if (event.shiftKey) redo()
+				else undo()
+				return
+			}
+			if ((event.ctrlKey || event.metaKey) && (key === "y" || key === "Y")) {
+				event.preventDefault()
+				redo()
+				return
+			}
 			if (key === "p" || key === "P") {
 				event.preventDefault()
 				toggleMode("point")
@@ -399,7 +483,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		}
 		window.addEventListener("keydown", onKeyDown)
 		return () => window.removeEventListener("keydown", onKeyDown)
-	}, [enabled, channelLabels, removeSelected, toggleMode])
+	}, [enabled, channelLabels, removeSelected, toggleMode, undo, redo])
 
 	// Cancel any in-progress interaction when leaving annotation mode.
 	useEffect(() => {
@@ -458,6 +542,10 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		segmentLabels,
 		setSegmentLabel,
 		exportCsv,
+		undo,
+		redo,
+		canUndo,
+		canRedo,
 		mode,
 		setMode,
 		toggleMode,

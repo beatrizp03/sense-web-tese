@@ -9,6 +9,8 @@ export interface CanvasAnnotation {
 	t1: number
 	color: string
 	selected?: boolean
+	label?: string
+	description?: string
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -402,6 +404,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		| null
 	>(null)
 	const justResizedRef = useRef(false)
+	const [hover, setHover] = useState<{ x: number; y: number; label: string; description: string } | null>(null)
 
 	const handleClick = useCallback(
 		(event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -516,10 +519,32 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		[onAnnotationDragBound, onAnnotationMove, pixelRatio]
 	)
 
-	const handlePointerMove = useCallback(
-		(event: React.PointerEvent<HTMLCanvasElement>) => {
-			const r = resizeRef.current
-			if (!r) return
+	const findAnnotationAt = (clientX: number, canvas: HTMLCanvasElement): CanvasAnnotation | null => {
+		const geom = geomRef.current
+		const rect = canvas.getBoundingClientRect()
+		if (!geom || rect.width <= 0) return null
+		const scaleX = canvas.width / rect.width
+		const px = (clientX - rect.left) * scaleX - geom.leftMargin
+		const tol = 4 * pixelRatio
+		for (let i = geom.annotations.length - 1; i >= 0; i--) {
+			const ann = geom.annotations[i]
+			if (ann.t0 !== ann.t1) continue
+			const tri = (ann.selected ? 8 : 6) * pixelRatio
+			if (Math.abs(px - geom.xScale(ann.t0)) <= Math.max(tol, tri)) return ann
+		}
+		for (let i = geom.annotations.length - 1; i >= 0; i--) {
+			const ann = geom.annotations[i]
+			if (ann.t0 === ann.t1) continue
+			const a0 = geom.xScale(ann.t0)
+			const a1 = geom.xScale(ann.t1)
+			if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) return ann
+		}
+		return null
+	}
+
+	const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+		const r = resizeRef.current
+		if (r) {
 			const x = clientXToData(event.clientX, event.currentTarget)
 			if (x == null) return
 			if (r.edge === "move") {
@@ -528,9 +553,21 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			} else {
 				onAnnotationDragBound?.(r.id, r.edge, x)
 			}
-		},
-		[onAnnotationDragBound, onAnnotationMove]
-	)
+			return
+		}
+		const hit = findAnnotationAt(event.clientX, event.currentTarget)
+		if (hit && (hit.label || hit.description)) {
+			const rect = event.currentTarget.getBoundingClientRect()
+			setHover({
+				x: event.clientX - rect.left,
+				y: event.clientY - rect.top,
+				label: hit.label ?? "",
+				description: hit.description ?? ""
+			})
+		} else {
+			setHover(prev => (prev ? null : prev))
+		}
+	}
 
 	const endResize = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
 		if (!resizeRef.current) return
@@ -555,10 +592,22 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				style={onDataClick || onAnnotationDragBound || onAnnotationMove ? { cursor: "crosshair" } : undefined}
 				onClick={onDataClick ? handleClick : undefined}
 				onPointerDown={onAnnotationDragBound || onAnnotationMove ? handlePointerDown : undefined}
-				onPointerMove={onAnnotationDragBound || onAnnotationMove ? handlePointerMove : undefined}
+				onPointerMove={handlePointerMove}
 				onPointerUp={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
 				onPointerCancel={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
+				onPointerLeave={() => setHover(null)}
 			/>
+			{hover && (
+				<div
+					className="pointer-events-none absolute z-20 max-w-[16rem] rounded-md border border-background-accent bg-background px-2 py-1 text-xs shadow-lg"
+					style={{ left: hover.x + 12, top: hover.y + 12 }}
+				>
+					{hover.label && <span className="font-semibold text-xs text-over-background-highest">{hover.label}</span>}
+					{hover.description && (
+						<span className="block text-xs text-over-background-medium">{hover.description}</span>
+					)}
+				</div>
+			)}
 		</div>
 	)
 }
