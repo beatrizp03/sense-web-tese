@@ -57,6 +57,7 @@ interface AnnotationsPanelProps {
 	onRedo?: () => void
 	canUndo?: boolean
 	canRedo?: boolean
+	onLabelsChange?: (labels: AnnotationLabel[]) => void
 }
 
 const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: string }[] = [
@@ -87,7 +88,8 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	onUndo,
 	onRedo,
 	canUndo = false,
-	canRedo = false
+	canRedo = false,
+	onLabelsChange
 }) => {
 	const [editing, setEditing] = useState(false)
 	const [helpOpen, setHelpOpen] = useState(true)
@@ -439,7 +441,12 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				</p>
 			</div>
 
-			<AnnotationLabelsEditor open={editing} onClose={() => setEditing(false)} />
+			<AnnotationLabelsEditor
+				open={editing}
+				onClose={() => setEditing(false)}
+				value={labels}
+				onSave={onLabelsChange}
+			/>
 		</div>
 	)
 }

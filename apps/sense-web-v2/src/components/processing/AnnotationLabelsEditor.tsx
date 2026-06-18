@@ -14,6 +14,8 @@ import HelpHint from "./HelpHint"
 interface AnnotationLabelsEditorProps {
 	open: boolean
 	onClose: () => void
+	value?: AnnotationLabel[]
+	onSave?: (labels: AnnotationLabel[]) => void
 }
 
 const MAX_CHANNEL_LABELS = 9
@@ -40,11 +42,11 @@ const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
 /**
  * Pop-up editor for annotation labels (add / rename / recolor / delete).
  */
-const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose }) => {
+const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave }) => {
 	const [draft, setDraft] = useState<AnnotationLabel[]>([])
 
 	useEffect(() => {
-		if (open) setDraft(getAnnotationLabels().map(label => ({ ...label })))
+		if (open) setDraft((value ?? getAnnotationLabels()).map(label => ({ ...label })))
 	}, [open])
 
 	useEffect(() => {
@@ -93,7 +95,8 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 	const resetDraft = () => setDraft(DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label })))
 
 	const save = () => {
-		setAnnotationLabels(draft)
+		if (onSave) onSave(draft)
+		else setAnnotationLabels(draft)
 		onClose()
 	}
 

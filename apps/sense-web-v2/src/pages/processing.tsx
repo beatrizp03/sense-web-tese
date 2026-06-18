@@ -443,6 +443,7 @@ const Page = () => {
 										onRedo={annotations.redo}
 										canUndo={annotations.canUndo}
 										canRedo={annotations.canRedo}
+										onLabelsChange={annotations.setLabels}
 									/>
 								}
 								exportContent={

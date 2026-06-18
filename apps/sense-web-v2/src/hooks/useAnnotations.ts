@@ -293,6 +293,11 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		setDirty(false)
 	}, [sessionFolder, applyFileMeta, readSidecars, resetHistory])
 
+	const setLabels = useCallback((next: AnnotationLabel[]) => {
+		setSessionLabels(sanitizeLabels(next))
+		setDirty(true)
+	}, [])
+
 	const setSegmentLabel = useCallback((segment: number, labelId: number | null) => {
 		setSegmentLabels(prev => {
 			const next = { ...prev }
@@ -541,6 +546,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		labels: effectiveLabels,
 		segmentLabels,
 		setSegmentLabel,
+		setLabels,
 		exportCsv,
 		undo,
 		redo,
