@@ -5,13 +5,14 @@ import { useSessionExport } from "../../hooks/useSessionExport"
 interface SessionExportBarProps {
 	manifest: any
 	withDescriptions?: boolean
+	onExportAnnotations?: () => void
 }
 
 /**
  * Export controls: raw CSV and a PDF preview (shared with the acquisition summary
  * page), plus a CSV-with-annotations export.
  */
-const SessionExportBar: React.FC<SessionExportBarProps> = ({ manifest, withDescriptions = false }) => {
+const SessionExportBar: React.FC<SessionExportBarProps> = ({ manifest, withDescriptions = false, onExportAnnotations }) => {
 	const { csvDownloading, convertToCSV, convertToPDF } = useSessionExport(manifest)
 	const hasSession = Array.isArray(manifest?.chunks) && manifest.chunks.length > 0
 
@@ -30,9 +31,9 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({ manifest, withDescr
 		},
 		{
 			label: "Download CSV + Annotations",
-			description: "The raw CSV bundled with your saved annotations and labels (coming soon).",
-			onClick: undefined,
-			disabled: true
+			description: "Your saved annotations and labels, exported as annotations.csv in the session folder.",
+			onClick: onExportAnnotations,
+			disabled: !hasSession || !onExportAnnotations
 		}
 	]
 

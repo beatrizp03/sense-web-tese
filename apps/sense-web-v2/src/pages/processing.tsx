@@ -52,7 +52,9 @@ const Page = () => {
 	const annotations = useAnnotations({
 		sessionFolder,
 		enabled: annotating,
-		labels: annotationLabels
+		labels: annotationLabels,
+		sampleRate: Number(manifest?.sampleRate) || undefined,
+		segments: Array.isArray(manifest?.segments) ? manifest.segments : undefined
 	})
 
 	useBusyGuard(
@@ -439,7 +441,13 @@ const Page = () => {
 										}
 									/>
 								}
-								exportContent={<SessionExportBar manifest={manifest} withDescriptions />}
+								exportContent={
+									<SessionExportBar
+										manifest={manifest}
+										withDescriptions
+										onExportAnnotations={() => void annotations.exportCsv()}
+									/>
+								}
 								activeTab={activeSideTab}
 								onTabChange={handleTabChange}
 							/>

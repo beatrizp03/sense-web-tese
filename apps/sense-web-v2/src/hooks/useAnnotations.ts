@@ -2,21 +2,49 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AnnotationLabel, sanitizeLabels } from "../utils/annotationLabels"
 
-/** Derived kind — never stored; always computed from t0/t1. */
 export type AnnotationType = "point" | "interval"
 export type AnnotationMode = "idle" | "point" | "interval"
+export type AnnotationScope = "channel" | "record"
+export type AnnotationSource = "manual" | "auto"
 
 export interface Annotation {
 	id: string
+	scope: AnnotationScope
+	channel: string | null
 	segment: number
 	t0: number
 	t1: number
 	labelId: number
 	note: string
+	source: AnnotationSource
+	creator: string
+	createdAt: string
+	updatedAt: string
 }
 
 export const annotationKind = (a: { t0: number; t1: number }): AnnotationType =>
 	a.t0 === a.t1 ? "point" : "interval"
+
+const CREATOR = "user"
+const nowIso = () => new Date().toISOString()
+
+function makeAnnotation(segment: number, t0: number, t1: number, labelId: number): Annotation {
+	const now = nowIso()
+	return {
+		id: newId(),
+		scope: "channel",
+		channel: null,
+		segment,
+		t0,
+		t1,
+		labelId,
+		note: "",
+		source: "manual",
+		creator: CREATOR,
+		createdAt: now,
+		updatedAt: now
+	}
+}
 
 interface AnnotationsFile {
 	version: number
@@ -24,6 +52,12 @@ interface AnnotationsFile {
 	annotations: Annotation[]
 	labels?: AnnotationLabel[]
 	segmentLabels?: Record<number, number>
+}
+
+interface LabelsFile {
+	schemaVersion?: number
+	savedAt?: string
+	labels?: AnnotationLabel[]
 }
 
 function sanitizeSegmentLabels(value: unknown): Record<number, number> {
@@ -55,13 +89,20 @@ function sanitizeAnnotations(value: unknown): Annotation[] {
 		const labelId = Number(raw.labelId)
 		if (!Number.isFinite(t0) || !Number.isFinite(labelId)) continue
 		const t1 = Number.isFinite(t1raw) ? Math.max(t0, t1raw) : t0
+		const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : ""
 		out.push({
 			id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
+			scope: raw.scope === "record" ? "record" : "channel",
+			channel: typeof raw.channel === "string" ? raw.channel : null,
 			segment: Number(raw.segment) || 1,
 			t0,
 			t1,
 			labelId,
-			note: typeof raw.note === "string" ? raw.note : ""
+			note: typeof raw.note === "string" ? raw.note : "",
+			source: raw.source === "auto" ? "auto" : "manual",
+			creator: typeof raw.creator === "string" ? raw.creator : CREATOR,
+			createdAt,
+			updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt
 		})
 	}
 	return out
@@ -71,9 +112,11 @@ interface UseAnnotationsOptions {
 	sessionFolder: string
 	enabled: boolean
 	labels: AnnotationLabel[]
+	sampleRate?: number
+	segments?: { index: number; startedAt?: number }[]
 }
 
-export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotationsOptions) {
+export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, segments }: UseAnnotationsOptions) {
 	const [annotations, setAnnotations] = useState<Annotation[]>([])
 	const [activeLabelId, setActiveLabelId] = useState<number | null>(null)
 	const [mode, setMode] = useState<AnnotationMode>("idle")
@@ -102,10 +145,25 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		[effectiveLabels, activeLabelId]
 	)
 
-	const applyFileMeta = useCallback((data: AnnotationsFile | null) => {
-		const fileLabels = data?.labels
-		setSessionLabels(Array.isArray(fileLabels) && fileLabels.length > 0 ? sanitizeLabels(fileLabels) : null)
+	const applyFileMeta = useCallback((data: AnnotationsFile | null, labelsFile: LabelsFile | null) => {
+		const sidecar = labelsFile?.labels
+		const snapshot = data?.labels
+		const arr =
+			Array.isArray(sidecar) && sidecar.length > 0
+				? sidecar
+				: Array.isArray(snapshot) && snapshot.length > 0
+					? snapshot
+					: null
+		setSessionLabels(arr ? sanitizeLabels(arr) : null)
 		setSegmentLabels(sanitizeSegmentLabels(data?.segmentLabels))
+	}, [])
+
+	const readSidecars = useCallback(async (folder: string) => {
+		const [data, labelsFile] = await Promise.all([
+			window.electronAPI!.readSessionAnnotations!(folder) as Promise<AnnotationsFile | null>,
+			(window.electronAPI?.readSessionLabels?.(folder) ?? Promise.resolve(null)) as Promise<LabelsFile | null>
+		])
+		return { data, labelsFile }
 	}, [])
 
 	// ---- Load on session change --------------------------------------------
@@ -120,10 +178,10 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		if (!sessionFolder || !window.electronAPI?.readSessionAnnotations) return
 		void (async () => {
 			try {
-				const data = (await window.electronAPI!.readSessionAnnotations!(sessionFolder)) as AnnotationsFile | null
+				const { data, labelsFile } = await readSidecars(sessionFolder)
 				if (cancelled) return
 				setAnnotations(sanitizeAnnotations(data?.annotations))
-				applyFileMeta(data)
+				applyFileMeta(data, labelsFile)
 				setDirty(false)
 			} catch {
 				if (!cancelled) setAnnotations([])
@@ -132,7 +190,7 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		return () => {
 			cancelled = true
 		}
-	}, [sessionFolder, applyFileMeta])
+	}, [sessionFolder, applyFileMeta, readSidecars])
 
 	// Discard unsaved edits by reloading the last saved annotations from disk.
 	const discardChanges = useCallback(async () => {
@@ -146,14 +204,14 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 			return
 		}
 		try {
-			const data = (await window.electronAPI.readSessionAnnotations(sessionFolder)) as AnnotationsFile | null
+			const { data, labelsFile } = await readSidecars(sessionFolder)
 			setAnnotations(sanitizeAnnotations(data?.annotations))
-			applyFileMeta(data)
+			applyFileMeta(data, labelsFile)
 		} catch {
 			setAnnotations([])
 		}
 		setDirty(false)
-	}, [sessionFolder, applyFileMeta])
+	}, [sessionFolder, applyFileMeta, readSidecars])
 
 	const setSegmentLabel = useCallback((segment: number, labelId: number | null) => {
 		setSegmentLabels(prev => {
@@ -183,12 +241,9 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 			if (mode === "point") {
 				const labelId = resolveLabelId()
 				if (labelId == null) return
-				const id = newId()
-				setAnnotations(prev => [
-					...prev,
-					{ id, segment, t0: dataX, t1: dataX, labelId, note: "" }
-				])
-				setSelectedId(id)
+				const ann = makeAnnotation(segment, dataX, dataX, labelId)
+				setAnnotations(prev => [...prev, ann])
+				setSelectedId(ann.id)
 				setDirty(true)
 				return
 			}
@@ -201,14 +256,14 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 				const labelId = resolveLabelId()
 				setDraft(null)
 				if (labelId == null) return
-				const t0 = Math.min(draft.startSec, dataX)
-				const t1 = Math.max(draft.startSec, dataX)
-				const id = newId()
-				setAnnotations(prev => [
-					...prev,
-					{ id, segment, t0, t1, labelId, note: "" }
-				])
-				setSelectedId(id)
+				const ann = makeAnnotation(
+					segment,
+					Math.min(draft.startSec, dataX),
+					Math.max(draft.startSec, dataX),
+					labelId
+				)
+				setAnnotations(prev => [...prev, ann])
+				setSelectedId(ann.id)
 				setDirty(true)
 				return
 			}
@@ -236,12 +291,12 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 	}, [])
 
 	const setAnnotationNote = useCallback((id: string, note: string) => {
-		setAnnotations(list => list.map(a => (a.id === id ? { ...a, note } : a)))
+		setAnnotations(list => list.map(a => (a.id === id ? { ...a, note, updatedAt: nowIso() } : a)))
 		setDirty(true)
 	}, [])
 
 	const setAnnotationLabel = useCallback((id: string, labelId: number) => {
-		setAnnotations(list => list.map(a => (a.id === id ? { ...a, labelId } : a)))
+		setAnnotations(list => list.map(a => (a.id === id ? { ...a, labelId, updatedAt: nowIso() } : a)))
 		setDirty(true)
 	}, [])
 
@@ -250,9 +305,10 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 			setAnnotations(list =>
 				list.map(a => {
 					if (a.id !== id) return a
-					if (edge === "point") return { ...a, t0: x, t1: x }
-					if (edge === "t0") return { ...a, t0: Math.min(x, a.t1) }
-					return { ...a, t1: Math.max(x, a.t0) }
+					const ts = nowIso()
+					if (edge === "point") return { ...a, t0: x, t1: x, updatedAt: ts }
+					if (edge === "t0") return { ...a, t0: Math.min(x, a.t1), updatedAt: ts }
+					return { ...a, t1: Math.max(x, a.t0), updatedAt: ts }
 				})
 			)
 			setDirty(true)
@@ -262,7 +318,9 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 
 	const setAnnotationSpan = useCallback((id: string, t0: number, t1: number) => {
 		setAnnotations(list =>
-			list.map(a => (a.id === id ? { ...a, t0: Math.min(t0, t1), t1: Math.max(t0, t1) } : a))
+			list.map(a =>
+				a.id === id ? { ...a, t0: Math.min(t0, t1), t1: Math.max(t0, t1), updatedAt: nowIso() } : a
+			)
 		)
 		setDirty(true)
 	}, [])
@@ -356,25 +414,50 @@ export function useAnnotations({ sessionFolder, enabled, labels }: UseAnnotation
 		if (!sessionFolder || !window.electronAPI?.writeSessionAnnotations) return
 		setSaving(true)
 		try {
+			const rate = Number(sampleRate) > 0 ? Number(sampleRate) : 1000
+			const segStartMs = new Map((segments ?? []).map(s => [s.index, s.startedAt]))
+			const anchored = annotations.map(a => {
+				const base = segStartMs.get(a.segment)
+				return {
+					...a,
+					sample: Math.round(a.t0 * rate),
+					sampleEnd: Math.round(a.t1 * rate),
+					atStartMs: typeof base === "number" ? Math.round(base + a.t0 * 1000) : null,
+					atEndMs: typeof base === "number" ? Math.round(base + a.t1 * 1000) : null
+				}
+			})
+			const savedAt = new Date().toISOString()
 			const payload: AnnotationsFile = {
-				version: 2,
-				savedAt: new Date().toISOString(),
-				annotations,
+				version: 3,
+				savedAt,
+				annotations: anchored,
 				labels: effectiveLabels,
 				segmentLabels
 			}
 			await window.electronAPI.writeSessionAnnotations(sessionFolder, payload)
+			await window.electronAPI.writeSessionLabels?.(sessionFolder, {
+				schemaVersion: 1,
+				savedAt,
+				labels: effectiveLabels
+			})
 			setDirty(false)
 		} finally {
 			setSaving(false)
 		}
-	}, [sessionFolder, annotations, effectiveLabels, segmentLabels])
+	}, [sessionFolder, annotations, effectiveLabels, segmentLabels, sampleRate, segments])
+
+	const exportCsv = useCallback(async () => {
+		await save()
+		if (!sessionFolder || !window.electronAPI?.exportAnnotationsCsv) return null
+		return window.electronAPI.exportAnnotationsCsv(sessionFolder)
+	}, [save, sessionFolder])
 
 	return {
 		annotations,
 		labels: effectiveLabels,
 		segmentLabels,
 		setSegmentLabel,
+		exportCsv,
 		mode,
 		setMode,
 		toggleMode,

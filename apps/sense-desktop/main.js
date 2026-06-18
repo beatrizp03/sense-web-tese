@@ -936,28 +936,95 @@ ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   }
 });
 
-ipcMain.handle('read-session-annotations', async (_event, sessionFolder) => {
+function atomicWriteJson(filePath, value) {
+  const tmpPath = `${filePath}.tmp`;
+  const fd = fs.openSync(tmpPath, 'w');
   try {
-    const annotationsPath = path.join(sessionFolder, 'annotations.json');
-    const data = JSON.parse(fs.readFileSync(annotationsPath, 'utf-8'));
-    return data;
+    fs.writeSync(fd, JSON.stringify(value, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpPath, filePath);
+}
+
+function readJsonOrNull(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch (e) {
-    if (e && e.code === 'ENOENT') {
-      return null;
-    }
-    console.error('[read-session-annotations] Failed to read annotations:', e);
+    if (e && e.code === 'ENOENT') return null;
+    console.error('[sidecar] Failed to read', filePath, e);
     return null;
   }
+}
+
+ipcMain.handle('read-session-annotations', async (_event, sessionFolder) => {
+  return readJsonOrNull(path.join(sessionFolder, 'annotations.json'));
 });
 
 ipcMain.handle('write-session-annotations', async (_event, sessionFolder, data) => {
   try {
-    const annotationsPath = path.join(sessionFolder, 'annotations.json');
-    fs.writeFileSync(annotationsPath, JSON.stringify(data, null, 2));
+    atomicWriteJson(path.join(sessionFolder, 'annotations.json'), data);
     return { ok: true };
   } catch (e) {
     console.error('[write-session-annotations] Failed to write annotations:', e);
     throw e;
+  }
+});
+
+ipcMain.handle('read-session-labels', async (_event, sessionFolder) => {
+  return readJsonOrNull(path.join(sessionFolder, 'labels.json'));
+});
+
+ipcMain.handle('write-session-labels', async (_event, sessionFolder, data) => {
+  try {
+    atomicWriteJson(path.join(sessionFolder, 'labels.json'), data);
+    return { ok: true };
+  } catch (e) {
+    console.error('[write-session-labels] Failed to write labels:', e);
+    throw e;
+  }
+});
+
+ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
+  try {
+    const ann = readJsonOrNull(path.join(sessionFolder, 'annotations.json'));
+    if (!ann || !Array.isArray(ann.annotations)) {
+      return { ok: false, error: 'No annotations to export.' };
+    }
+    const labelsFile = readJsonOrNull(path.join(sessionFolder, 'labels.json'));
+    const labelList = (labelsFile && Array.isArray(labelsFile.labels) ? labelsFile.labels
+      : Array.isArray(ann.labels) ? ann.labels : []);
+    const labelById = new Map(labelList.map(l => [l.id, l]));
+
+    const esc = (v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const columns = [
+      'id', 'scope', 'channel', 'segment', 't0', 't1', 'sample', 'sampleEnd',
+      'atStartMs', 'atEndMs', 'labelId', 'labelName', 'source', 'creator',
+      'createdAt', 'updatedAt', 'note'
+    ];
+    const rows = [columns.join(',')];
+    for (const a of ann.annotations) {
+      const label = labelById.get(a.labelId);
+      rows.push(columns.map(c => esc(c === 'labelName' ? (label ? label.name : '') : a[c])).join(','));
+    }
+    const csvPath = path.join(sessionFolder, 'annotations.csv');
+    const tmpPath = `${csvPath}.tmp`;
+    const fd = fs.openSync(tmpPath, 'w');
+    try {
+      fs.writeSync(fd, rows.join('\n'));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmpPath, csvPath);
+    return { ok: true, path: csvPath, count: ann.annotations.length };
+  } catch (e) {
+    console.error('[export-annotations-csv] Failed:', e);
+    return { ok: false, error: String(e) };
   }
 });
 

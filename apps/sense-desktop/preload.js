@@ -340,6 +340,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeSessionAnnotations: async (sessionFolder, data) => {
     return await ipcRenderer.invoke('write-session-annotations', sessionFolder, data);
   },
+  readSessionLabels: async (sessionFolder) => {
+    return await ipcRenderer.invoke('read-session-labels', sessionFolder);
+  },
+  writeSessionLabels: async (sessionFolder, data) => {
+    return await ipcRenderer.invoke('write-session-labels', sessionFolder, data);
+  },
+  exportAnnotationsCsv: async (sessionFolder) => {
+    return await ipcRenderer.invoke('export-annotations-csv', sessionFolder);
+  },
   selectAnalysisSessionFolder: async () => {
     return await ipcRenderer.invoke('select-analysis-session-folder');
   },
