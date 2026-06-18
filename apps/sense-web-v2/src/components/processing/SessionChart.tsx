@@ -372,7 +372,13 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 			</div>
 			<div
 				ref={trackRef}
-				className="relative h-12 w-full overflow-hidden rounded-md bg-background"
+				className="relative h-12 w-full cursor-pointer overflow-hidden rounded-md bg-background"
+				onClick={event => {
+					if (event.target !== event.currentTarget || rangeSeconds <= 0) return
+					const sec = secAtClientX(event.clientX)
+					const start = Math.min(Math.max(0, sec - windowSec / 2), Math.max(0, rangeSeconds - windowSec))
+					onWindowChange(start, windowSec)
+				}}
 			>
 				{minimapPoints ? (
 					<svg
@@ -393,6 +399,18 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 						{overviewLoading ? "Building overview…" : ""}
 					</div>
 				)}
+				{rangeSeconds > 0 &&
+					annotations.map(a => {
+						const left = (a.t0 / rangeSeconds) * 100
+						const width = Math.max(0.5, ((a.t1 - a.t0) / rangeSeconds) * 100)
+						return (
+							<div
+								key={a.id}
+								className="pointer-events-none absolute top-0 h-full"
+								style={{ left: `${left}%`, width: `${width}%`, backgroundColor: a.color, opacity: 0.75 }}
+							/>
+						)
+					})}
 				<div
 					className="absolute top-0 h-full cursor-grab touch-none rounded-sm border-2 border-background-accent-dark bg-primary/25 active:cursor-grabbing dark:border-background-accent-light"
 					style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
