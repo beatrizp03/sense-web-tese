@@ -42,6 +42,64 @@ const addSvgToPDF = async (
 	canvas.remove()
 }
 
+function hexToRgb(hex: string): [number, number, number] {
+	const match = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim())
+	if (!match) return [136, 136, 136]
+	const int = parseInt(match[1], 16)
+	return [(int >> 16) & 255, (int >> 8) & 255, int & 255]
+}
+
+const chunkNumber = (c: any): number =>
+	Number(String(c && c.file).match(/chunk(\d+)/)?.[1] ?? 0)
+
+function decimateByIndex(
+	values: number[],
+	maxPoints: number
+): [number, number][] {
+	const n = values.length
+	if (n <= maxPoints) {
+		return values.map((v, i) => [i, v] as [number, number])
+	}
+	const bucket = n / maxPoints
+	const out: [number, number][] = []
+	for (let b = 0; b < maxPoints; b++) {
+		const s = Math.floor(b * bucket)
+		const e = Math.floor((b + 1) * bucket)
+		let mn = Infinity
+		let mx = -Infinity
+		let mnI = s
+		let mxI = s
+		for (let i = s; i < e; i++) {
+			const v = values[i]
+			if (!Number.isFinite(v)) continue
+			if (v < mn) {
+				mn = v
+				mnI = i
+			}
+			if (v > mx) {
+				mx = v
+				mxI = i
+			}
+		}
+		if (mn === Infinity) continue
+		if (mnI <= mxI) {
+			out.push([mnI, mn])
+			out.push([mxI, mx])
+		} else {
+			out.push([mxI, mx])
+			out.push([mnI, mn])
+		}
+	}
+	return out
+}
+
+function formatClock(seconds: number): string {
+	const sec = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+	const m = Math.floor(sec / 60)
+	const s = sec % 60
+	return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`
+}
+
 /**
  * Session export logic shared by the acquisition summary page and the processing
  * page. CSV streams every chunk file into one CSV per segment (zipped); PDF
@@ -51,15 +109,9 @@ const addSvgToPDF = async (
 export function useSessionExport(manifest: any) {
 	const [csvDownloading, setCsvDownloading] = useState(false)
 	const [annotationsDownloading, setAnnotationsDownloading] = useState(false)
+	const [annotatedPdfDownloading, setAnnotatedPdfDownloading] = useState(false)
 	const csvExportedRef = useRef(false)
 	const pdfExportedRef = useRef(false)
-
-	// Build the per-segment CSV-in-a-zip from the manifest + chunk files. When
-	// `annotations` is provided, an extra `annotation` column is appended, with
-	// each frame row carrying the label(s) of any annotation anchored to that
-	// frame (points cover one frame; intervals cover the whole [t0, t1] span).
-	// Returns the zip blob + the first segment's timestamp, or null if the
-	// session metadata is incomplete (an alert is shown in that case).
 	const buildSessionCsvZip = useCallback(
 		async (
 			annotations?: Annotation[],
@@ -89,7 +141,7 @@ export function useSessionExport(manifest: any) {
 			const labelById = new Map((labels ?? []).map(l => [l.id, l]))
 			const escCsv = (v: string) =>
 				/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
-			// Anchor annotations to frame ordinals within their segment.
+
 			const annsBySegment = new Map<number, { s: number; e: number; text: string }[]>()
 			for (const a of annotations ?? []) {
 				const seg = Number(a.segment) || 1
@@ -104,13 +156,13 @@ export function useSessionExport(manifest: any) {
 
 			const zip = new JSZip();
 			let firstTimestamp = 0;
-			// Group chunk files by segment
+
 			const segmentFiles: Record<string, string[]> = {};
 			for (const chunkRec of manifest.chunks) {
 				if (!segmentFiles[chunkRec.segment]) segmentFiles[chunkRec.segment] = [];
 				segmentFiles[chunkRec.segment].push(chunkRec.file);
 			}
-			// For each segment, process chunk files sequentially
+
 			for (const [segmentIdx, files] of Object.entries(segmentFiles)) {
 				const segment = segmentsMeta.find(s => s.index == segmentIdx);
 				const fileContent = [];
@@ -637,5 +689,414 @@ export function useSessionExport(manifest: any) {
 		window.electronAPI?.logPerfEvent?.('pdf_export', Date.now() - pdfExportStart);
 	}, [manifest])
 
-	return { csvDownloading, annotationsDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToCSVWithAnnotations, convertToPDF }
+	const convertToAnnotatedPDF = useCallback(
+		async (opts: {
+			segment: number
+			startSec: number
+			endSec: number
+			channels: string[]
+			channelNames?: Record<string, string>
+			annotations: Annotation[]
+			labels: AnnotationLabel[]
+		}) => {
+			if (annotatedPdfDownloading) return
+			setAnnotatedPdfDownloading(true)
+			const exportStart = Date.now()
+			try {
+				const channels = opts.channels
+				const storedChannelNames = opts.channelNames ?? manifest.channelNames ?? {}
+				const deviceType = manifest.deviceType
+				const samplingRate = manifest.sampleRate
+				const segmentsMeta = manifest.segments || []
+				const segment = opts.segment
+
+				if (!channels?.length || !deviceType || !samplingRate) {
+					alert("Missing or incomplete manifest/session metadata.")
+					return
+				}
+				if (!manifest.chunks || manifest.chunks.length === 0) {
+					alert("No chunk files found in manifest. Export aborted.")
+					return
+				}
+				if (deviceType !== "sense" && deviceType !== "maker") {
+					alert("Device type not supported yet.")
+					return
+				}
+
+				const rate = Number(samplingRate) > 0 ? Number(samplingRate) : 1000
+				const startSec = Math.max(0, Math.min(opts.startSec, opts.endSec))
+				const endSec = Math.max(opts.startSec, opts.endSec)
+				const startFrame = Math.max(0, Math.round(startSec * rate))
+				const endFrame = Math.max(startFrame + 1, Math.round(endSec * rate))
+				const segMeta = segmentsMeta.find((s: any) => Number(s?.index) === segment) || segmentsMeta[segment - 1]
+				const timestamp = new Date(Number(segMeta?.startedAt) || 0)
+
+				const segmentChunks = manifest.chunks
+					.filter((c: any) => (Number(c.segment) || 1) === segment)
+					.sort((a: any, b: any) => chunkNumber(a) - chunkNumber(b))
+				const perChannel: Record<string, number[]> = {}
+				for (const ch of channels) perChannel[ch] = []
+				let idx = 0
+				for (const c of segmentChunks) {
+					if (idx >= endFrame) break
+					const data = await window.electronAPI?.readChunkFile?.(c.file)
+					const frames = Array.isArray(data?.frames) ? data.frames : (Array.isArray(data) ? data : [])
+					for (let j = 0; j < frames.length; j++) {
+						if (idx >= endFrame) break
+						if (idx >= startFrame) {
+							const fc = frames[j]?.channels
+							for (const ch of channels) {
+								const v = Number(fc?.[ch])
+								perChannel[ch].push(Number.isFinite(v) ? v : NaN)
+							}
+						}
+						idx++
+					}
+				}
+				const sampleCount = perChannel[channels[0]]?.length ?? 0
+				if (sampleCount === 0) {
+					alert("No samples found in the selected range.")
+					return
+				}
+
+				const labelById = new Map(opts.labels.map(l => [l.id, l]))
+				const drawn = opts.annotations
+					.filter(a => (Number(a.segment) || 1) === segment && a.t1 >= startSec && a.t0 <= endSec)
+					.sort((a, b) => a.t0 - b.t0)
+
+				const pdf = new JsPDF({
+					orientation: "landscape",
+					unit: "mm",
+					format: "a4",
+					floatPrecision: 16,
+					putOnlyUsedFonts: true,
+					compress: true
+				})
+
+				const DOCUMENT_WIDTH = 297
+				const DOCUMENT_HEIGHT = 210
+				const DOCUMENT_DPI = 400
+				const DOCUMENT_MARGIN = 25.4
+				const TEXT_PRIMARY: [number, number, number] = [0, 0, 0]
+				const TEXT_SECONDARY: [number, number, number] = [138, 138, 138]
+
+				// Fonts (same as convertToPDF).
+				const loadFont = async (url: string) =>
+					Buffer.from(
+						String.fromCharCode(...new Uint8Array(await (await fetch(url)).arrayBuffer())),
+						"binary"
+					).toString("base64")
+				pdf.addFileToVFS("Imagine.ttf", await loadFont("/static/imagine.ttf"))
+				pdf.addFont("Imagine.ttf", "Imagine", "normal")
+				pdf.addFileToVFS("Lexend-Regular.ttf", await loadFont("/static/lexend-regular.ttf"))
+				pdf.addFont("Lexend-Regular.ttf", "Lexend", "regular")
+				pdf.addFileToVFS("Lexend-SemiBold.ttf", await loadFont("/static/lexend-semibold.ttf"))
+				pdf.addFont("Lexend-SemiBold.ttf", "Lexend", "semibold")
+				pdf.addFileToVFS("Lexend-Light.ttf", await loadFont("/static/lexend-light.ttf"))
+				pdf.addFont("Lexend-Light.ttf", "Lexend", "light")
+
+				const spanSec = endSec - startSec
+				const pages = Math.ceil(channels.length / 3)
+				for (let page = 0; page < pages; page++) {
+					if (page > 0) pdf.addPage()
+
+					const channelsOnPage = page < pages - 1 ? 3 : channels.length - 3 * page
+					const svgAspectRatio = channelsOnPage <= 2 ? 1282 / 180.5 : 1282 / 114.5
+					const backgroundAspectRatio = channelsOnPage <= 2 ? 1282 / 212 : 1282 / 147
+					const smallChart = channelsOnPage > 2
+
+					const svgWidth = 1282
+					const svgHeight = svgWidth / svgAspectRatio
+					const xScale = d3.scaleLinear().domain([0, Math.max(1, sampleCount - 1)]).range([0, svgWidth])
+					const yScale = d3.scaleLinear().domain([0, 4095]).range([svgHeight, 0])
+
+					// Header with logo and summary
+					await addSvgToPDF(
+						pdf,
+						"/static/scientisst-break.svg",
+						DOCUMENT_MARGIN,
+						DOCUMENT_MARGIN,
+						25,
+						25 / (350 / 111.79),
+						DOCUMENT_DPI
+					)
+					pdf.setTextColor(...TEXT_PRIMARY)
+					pdf.setFont("Lexend", "semibold")
+					pdf.setFontSize(11.5)
+					pdf.text("Acquisition Summary", DOCUMENT_WIDTH - DOCUMENT_MARGIN, DOCUMENT_MARGIN, {
+						align: "right",
+						baseline: "top"
+					})
+					pdf.setFont("Lexend", "regular")
+					pdf.setFontSize(6)
+					pdf.text(
+						`Segment ${segment} · ${formatClock(startSec)}–${formatClock(endSec)} preview with ${drawn.length} annotation${drawn.length === 1 ? "" : "s"}\ngenerated by SENSE WEB at sense.scientisst.com`,
+						DOCUMENT_WIDTH - DOCUMENT_MARGIN,
+						DOCUMENT_MARGIN + 5,
+						{ align: "right", baseline: "top" }
+					)
+
+					// Fields titles
+					pdf.setFont("Lexend", "regular")
+					pdf.setFontSize(6)
+					pdf.setTextColor(...TEXT_SECONDARY)
+					pdf.text("DEVICE", DOCUMENT_MARGIN, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+					pdf.text("SAMPLING FREQUENCY", DOCUMENT_MARGIN + 35, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+					pdf.text("DATE", DOCUMENT_MARGIN + 75, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+					pdf.text("TIME", DOCUMENT_MARGIN + 105, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+					pdf.text("TECHNICIAN", DOCUMENT_MARGIN + 135, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+					pdf.text("PATIENT/CODE", DOCUMENT_MARGIN + 175, DOCUMENT_MARGIN + 15, { align: "left", baseline: "top" })
+
+					// Field values
+					pdf.setFontSize(8)
+					pdf.setFont("Lexend", "regular")
+					pdf.setTextColor(...TEXT_PRIMARY)
+					pdf.text("ScientISST CORE", DOCUMENT_MARGIN, DOCUMENT_MARGIN + 18, { align: "left", baseline: "top" })
+					pdf.text(`${Math.round(rate)} Hz`, DOCUMENT_MARGIN + 35, DOCUMENT_MARGIN + 18, { align: "left", baseline: "top" })
+					pdf.text(
+						new Date(timestamp).toLocaleDateString("en-UK", { year: "numeric", month: "short", day: "numeric" }),
+						DOCUMENT_MARGIN + 75,
+						DOCUMENT_MARGIN + 18,
+						{ align: "left", baseline: "top" }
+					)
+					pdf.text(
+						new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+						DOCUMENT_MARGIN + 105,
+						DOCUMENT_MARGIN + 18,
+						{ align: "left", baseline: "top" }
+					)
+					pdf.text("Someone's Name", DOCUMENT_MARGIN + 135, DOCUMENT_MARGIN + 18, { align: "left", baseline: "top" })
+					pdf.text("Someone's Name or Code", DOCUMENT_MARGIN + 175, DOCUMENT_MARGIN + 18, { align: "left", baseline: "top" })
+
+					let offset = 27
+					for (let channel = page * 3; channel < page * 3 + channelsOnPage; channel++) {
+						const ch = channels[channel]
+						pdf.setFont("Lexend", "regular")
+						pdf.setFontSize(6)
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text(
+							storedChannelNames[ch] ? `${storedChannelNames[ch]} (${ch})` : ch,
+							DOCUMENT_MARGIN,
+							DOCUMENT_MARGIN + offset,
+							{ align: "left", baseline: "top" }
+						)
+
+						await addSvgToPDF(
+							pdf,
+							smallChart ? "/static/axis_lower.svg" : "/static/axis_higher.svg",
+							DOCUMENT_MARGIN,
+							DOCUMENT_MARGIN + offset + 3.5,
+							DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2,
+							(DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2) / backgroundAspectRatio,
+							DOCUMENT_DPI
+						)
+
+						// Time axis labels across the chosen span.
+						pdf.setFont("Lexend", "light")
+						pdf.setFontSize(6)
+						pdf.setTextColor(...TEXT_SECONDARY)
+						const ticks = 6
+						for (let i = 0; i <= ticks; i++) {
+							pdf.text(
+								(startSec + (spanSec * i) / ticks).toFixed(1),
+								DOCUMENT_MARGIN + ((DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2) * i) / ticks,
+								DOCUMENT_MARGIN + offset + (smallChart ? 32.5 : 45.5),
+								{ align: i === 0 ? "left" : i === ticks ? "right" : "center", baseline: "top" }
+							)
+						}
+						pdf.text(
+							"SECONDS",
+							DOCUMENT_WIDTH - DOCUMENT_MARGIN,
+							DOCUMENT_MARGIN + offset + (smallChart ? 36.5 : 49.5),
+							{ align: "right", baseline: "top" }
+						)
+
+						const svg = d3.create("svg").attr("viewBox", [0, 0, svgWidth, svgHeight] as any).attr("font-family", "Imagine")
+
+						const data = decimateByIndex(perChannel[ch], 2000)
+
+						// Annotation bands (behind the trace).
+						for (const a of drawn) {
+							if (a.t0 === a.t1) continue
+							const color = labelById.get(a.labelId)?.color ?? "#888888"
+							const r0 = Math.max(0, Math.round(a.t0 * rate) - startFrame)
+							const r1 = Math.min(sampleCount - 1, Math.round(a.t1 * rate) - startFrame)
+							const x0 = xScale(r0)
+							const x1 = xScale(r1)
+							svg.append("rect")
+								.attr("x", Math.min(x0, x1))
+								.attr("y", 0)
+								.attr("width", Math.max(2, Math.abs(x1 - x0)))
+								.attr("height", svgHeight)
+								.attr("fill", color)
+								.attr("fill-opacity", 0.16)
+						}
+
+						// Signal trace.
+						svg.append("path")
+							.datum(data)
+							.attr("fill", "none")
+							.attr("stroke", "red")
+							.attr("stroke-width", 3)
+							.attr(
+								"d",
+								d3
+									.line()
+									.defined(d => Number.isFinite(d[1]))
+									.x(d => xScale(d[0]))
+									.y(d => yScale(d[1])) as any
+							)
+
+						// Annotation point/edge markers (on top).
+						for (const a of drawn) {
+							const color = labelById.get(a.labelId)?.color ?? "#888888"
+							const edges = a.t0 === a.t1 ? [a.t0] : [a.t0, a.t1]
+							for (const t of edges) {
+								if (t < startSec || t > endSec) continue
+								const x = xScale(Math.round(t * rate) - startFrame)
+								svg.append("line")
+									.attr("x1", x)
+									.attr("x2", x)
+									.attr("y1", 0)
+									.attr("y2", svgHeight)
+									.attr("stroke", color)
+									.attr("stroke-width", a.t0 === a.t1 ? 4 : 3)
+							}
+						}
+
+						await addSvgToPDF(
+							pdf,
+							svg.node() as SVGSVGElement,
+							DOCUMENT_MARGIN,
+							DOCUMENT_MARGIN + offset + 3.5 + (DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2) / (1282 / 16.25),
+							DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2,
+							(DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2) / svgAspectRatio,
+							DOCUMENT_DPI
+						)
+						svg.remove()
+
+						offset += smallChart ? 37 : 57
+					}
+
+					pdf.setFont("Lexend", "regular")
+					pdf.setFontSize(6)
+					pdf.setTextColor(...TEXT_SECONDARY)
+					pdf.text("OBSERVATIONS", DOCUMENT_MARGIN, DOCUMENT_MARGIN + 140, { align: "left", baseline: "top" })
+
+					const observations =
+						"Lorem ipsum dolor sit amet consectetur adipisicing elit. Illum reprehenderit fuga, a, culpa consequatur dolorem molestias magni vero maxime quia suscipit ipsam debitis. Enim alias neque blanditiis soluta nisi odio doloribus ut sit, reiciendis esse, reprehenderit eius hic, repudiandae adipisci natus expedita fuga ad asperiores. Aliquid vero labore quaerat! Consectetur quaerat veritatis, placeat deserunt ullam neque sequi fuga quasi nulla tempora iusto aut? Perferendis id repellat in deleniti molestias. Molestiae alias quo soluta libero qui iste, sed eum magni non voluptas beatae atque dicta accusamus totam. Id ullam reprehenderit, fugit laborum odio dignissimos vel obcaecati minus, qui eos eum provident!"
+					const d_obs = pdf.splitTextToSize(observations, DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2)
+					pdf.setTextColor(...TEXT_PRIMARY)
+					pdf.text(d_obs, DOCUMENT_MARGIN, DOCUMENT_MARGIN + 140 + 3.5, { align: "left", baseline: "top" })
+
+					// Notices
+					pdf.setFont("Lexend", "light")
+					pdf.setFontSize(6)
+					pdf.setTextColor(...TEXT_SECONDARY)
+					pdf.text(
+						["(C) 2023 ScientISST", "Designed by ScientISST at Instituto de Telecomunicações, Lisbon, Portugal"],
+						DOCUMENT_MARGIN,
+						DOCUMENT_HEIGHT - DOCUMENT_MARGIN - 2.5,
+						{ align: "left", baseline: "bottom" }
+					)
+					pdf.text(
+						[
+							"ScientISST hardware and software are not medical devices certified for diagnosis or treatment.",
+							"This PDF report is provided to you as is only for research and educational purposes."
+						],
+						DOCUMENT_WIDTH - DOCUMENT_MARGIN,
+						DOCUMENT_HEIGHT - DOCUMENT_MARGIN - 2.5,
+						{ align: "right", baseline: "bottom" }
+					)
+				}
+
+				// ---- Annotation table page ----
+				pdf.addPage()
+				pdf.setFont("Lexend", "semibold")
+				pdf.setFontSize(12)
+				pdf.setTextColor(...TEXT_PRIMARY)
+				pdf.text("Annotations", DOCUMENT_MARGIN, DOCUMENT_MARGIN, { align: "left", baseline: "top" })
+
+				let ty = DOCUMENT_MARGIN + 8
+				if (drawn.length === 0) {
+					pdf.setFont("Lexend", "regular")
+					pdf.setFontSize(8)
+					pdf.setTextColor(...TEXT_SECONDARY)
+					pdf.text("No annotations in the selected range.", DOCUMENT_MARGIN, ty, { align: "left", baseline: "top" })
+				} else {
+					const cols = {
+						swatch: DOCUMENT_MARGIN,
+						label: DOCUMENT_MARGIN + 7,
+						type: DOCUMENT_MARGIN + 48,
+						time: DOCUMENT_MARGIN + 72,
+						desc: DOCUMENT_MARGIN + 116,
+						note: DOCUMENT_MARGIN + 200
+					}
+					const descW = cols.note - cols.desc - 3
+					const noteW = DOCUMENT_WIDTH - DOCUMENT_MARGIN - cols.note - 1
+
+					const drawHeader = () => {
+						pdf.setFont("Lexend", "semibold")
+						pdf.setFontSize(7)
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text("LABEL", cols.label, ty, { align: "left", baseline: "top" })
+						pdf.text("TYPE", cols.type, ty, { align: "left", baseline: "top" })
+						pdf.text("TIME", cols.time, ty, { align: "left", baseline: "top" })
+						pdf.text("DESCRIPTION", cols.desc, ty, { align: "left", baseline: "top" })
+						pdf.text("NOTE", cols.note, ty, { align: "left", baseline: "top" })
+						ty += 4
+						pdf.setDrawColor(210, 210, 210)
+						pdf.line(DOCUMENT_MARGIN, ty, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ty)
+						ty += 3
+					}
+					drawHeader()
+
+					for (const a of drawn) {
+						const label = labelById.get(a.labelId)
+						const name = label?.name ?? String(a.labelId)
+						const isPoint = a.t0 === a.t1
+						const timeText = isPoint ? formatClock(a.t0) : `${formatClock(a.t0)}–${formatClock(a.t1)}`
+						const descLines = pdf.splitTextToSize(label?.description ?? "", descW)
+						const noteLines = pdf.splitTextToSize(a.note ?? "", noteW)
+						const rowLines = Math.max(1, descLines.length, noteLines.length)
+						const rowH = rowLines * 3.4 + 3
+
+						if (ty + rowH > DOCUMENT_HEIGHT - DOCUMENT_MARGIN) {
+							pdf.addPage()
+							ty = DOCUMENT_MARGIN
+							drawHeader()
+						}
+
+						const [r, g, b] = hexToRgb(label?.color ?? "#888888")
+						pdf.setFillColor(r, g, b)
+						pdf.rect(cols.swatch, ty, 3.5, 3.5, "F")
+
+						pdf.setFont("Lexend", "regular")
+						pdf.setFontSize(7.5)
+						pdf.setTextColor(...TEXT_PRIMARY)
+						pdf.text(name, cols.label, ty, { align: "left", baseline: "top" })
+						pdf.text(isPoint ? "point" : "interval", cols.type, ty, { align: "left", baseline: "top" })
+						pdf.text(timeText, cols.time, ty, { align: "left", baseline: "top" })
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text(descLines.length ? descLines : "—", cols.desc, ty, { align: "left", baseline: "top" })
+						pdf.text(noteLines.length ? noteLines : "—", cols.note, ty, { align: "left", baseline: "top" })
+
+						ty += rowH
+						pdf.setDrawColor(238, 238, 238)
+						pdf.line(DOCUMENT_MARGIN, ty - 1.5, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ty - 1.5)
+					}
+				}
+
+				const timestampISO = new Date(timestamp).toISOString()
+				const segTag = segmentsMeta.length > 1 ? `seg${segment}_` : ""
+				pdf.save(`${timestampISO}_annotation_${segTag}${Math.round(startSec)}_${Math.round(endSec)}.pdf`)
+				window.electronAPI?.logPerfEvent?.('annotated_pdf_export', Date.now() - exportStart)
+			} finally {
+				setAnnotatedPdfDownloading(false)
+			}
+		},
+		[manifest, annotatedPdfDownloading]
+	)
+
+	return { csvDownloading, annotationsDownloading, annotatedPdfDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToCSVWithAnnotations, convertToPDF, convertToAnnotatedPDF }
 }

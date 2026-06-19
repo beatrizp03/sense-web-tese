@@ -452,6 +452,8 @@ const Page = () => {
 										withDescriptions
 										annotations={annotations.annotations}
 										labels={labels}
+										defaultSegment={selectedSegment}
+										defaultRange={windowRange}
 									/>
 								}
 								activeTab={activeSideTab}
