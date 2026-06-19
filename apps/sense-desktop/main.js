@@ -992,36 +992,122 @@ ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
     if (!ann || !Array.isArray(ann.annotations)) {
       return { ok: false, error: 'No annotations to export.' };
     }
+    const manifest = readJsonOrNull(path.join(sessionFolder, 'session.json'));
+    if (!manifest || !Array.isArray(manifest.channels) || manifest.channels.length === 0) {
+      return { ok: false, error: 'Missing or unreadable session.json.' };
+    }
     const labelsFile = readJsonOrNull(path.join(sessionFolder, 'labels.json'));
     const labelList = (labelsFile && Array.isArray(labelsFile.labels) ? labelsFile.labels
       : Array.isArray(ann.labels) ? ann.labels : []);
     const labelById = new Map(labelList.map(l => [l.id, l]));
 
+    const channels = manifest.channels.map(String);
+    const channelNames = (manifest.channelNames && typeof manifest.channelNames === 'object')
+      ? manifest.channelNames : {};
+    const sampleRate = Number(manifest.sampleRate) > 0 ? Number(manifest.sampleRate) : 1000;
+    const segmentsMeta = Array.isArray(manifest.segments) ? manifest.segments : [];
+    const allChunks = Array.isArray(manifest.chunks) ? manifest.chunks : [];
+
     const esc = (v) => {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const columns = [
-      'id', 'scope', 'channel', 'segment', 't0', 't1', 'sample', 'sampleEnd',
-      'atStartMs', 'atEndMs', 'labelId', 'labelName', 'source', 'creator',
-      'createdAt', 'updatedAt', 'note'
-    ];
-    const rows = [columns.join(',')];
-    for (const a of ann.annotations) {
-      const label = labelById.get(a.labelId);
-      rows.push(columns.map(c => esc(c === 'labelName' ? (label ? label.name : '') : a[c])).join(','));
+
+    const chunkNo = (c) => Number(String(c && c.file).match(/chunk(\d+)/)?.[1] ?? 0);
+    const bySegment = new Map();
+    for (const c of allChunks) {
+      const seg = Number(c.segment) || 1;
+      if (!bySegment.has(seg)) bySegment.set(seg, []);
+      bySegment.get(seg).push(c);
     }
-    const csvPath = path.join(sessionFolder, 'annotations.csv');
+    const segmentNumbers = [...bySegment.keys()].sort((a, b) => a - b);
+
+    const annsBySegment = new Map();
+    let annTotal = 0;
+    for (const a of ann.annotations) {
+      const seg = Number(a.segment) || 1;
+      const sRaw = Number.isFinite(Number(a.sample)) ? Number(a.sample) : Math.round(Number(a.t0) * sampleRate);
+      const eRaw = Number.isFinite(Number(a.sampleEnd)) ? Number(a.sampleEnd) : Math.round(Number(a.t1) * sampleRate);
+      const label = labelById.get(a.labelId);
+      const name = label ? label.name : (a.labelId != null ? String(a.labelId) : '');
+      const text = a.note ? `${name} (${a.note})` : name;
+      if (!annsBySegment.has(seg)) annsBySegment.set(seg, []);
+      annsBySegment.get(seg).push({ s: Math.min(sRaw, eRaw), e: Math.max(sRaw, eRaw), text });
+      annTotal++;
+    }
+
+    const headerChannels = channels.map(ch => {
+      const nm = channelNames[ch];
+      return (typeof nm === 'string' && nm.trim().length > 0) ? `${nm.trim()} - ${ch}` : ch;
+    });
+
+    const lines = [];
+    for (const seg of segmentNumbers) {
+      const segMeta = segmentsMeta.find(s => Number(s.index) === seg) || segmentsMeta[seg - 1];
+      const startedAt = Number(segMeta && segMeta.startedAt) || 0;
+      const metadata = {
+        Device: manifest.deviceType === 'sense' ? 'ScientISST Sense'
+          : manifest.deviceType === 'maker' ? 'ScientISST Maker'
+          : (manifest.deviceType || ''),
+        Channels: channels,
+        'Sampling rate (Hz)': sampleRate,
+        Segment: seg,
+        'ISO 8601': new Date(startedAt).toISOString(),
+        Timestamp: startedAt
+      };
+      lines.push('#' + JSON.stringify(metadata));
+      lines.push('#NSeq,' + headerChannels.join(',') + ',annotation');
+
+      const segAnns = annsBySegment.get(seg) || [];
+      const segChunks = bySegment.get(seg).slice().sort((a, b) => chunkNo(a) - chunkNo(b));
+      let frameIdx = 0;
+      for (const c of segChunks) {
+        const abs = path.isAbsolute(c.file) ? c.file : path.join(sessionFolder, c.file);
+        const data = readJsonOrNull(abs);
+        const frames = Array.isArray(data && data.frames) ? data.frames : (Array.isArray(data) ? data : []);
+        for (let j = 0; j < frames.length; j++) {
+          const f = frames[j];
+          const row = [f.sequence];
+          for (const ch of channels) row.push(f.channels ? f.channels[ch] : '');
+          let labelText = '';
+          if (segAnns.length > 0) {
+            const hits = [];
+            for (const an of segAnns) {
+              if (frameIdx >= an.s && frameIdx <= an.e) hits.push(an.text);
+            }
+            labelText = hits.join('; ');
+          }
+          row.push(esc(labelText));
+          lines.push(row.join(','));
+          frameIdx++;
+        }
+      }
+    }
+
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+    const saveOptions = {
+      title: 'Save signal + annotations CSV',
+      defaultPath: path.join(sessionFolder, 'signal_with_annotations.csv'),
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    };
+    const result = win
+      ? await dialog.showSaveDialog(win, saveOptions)
+      : await dialog.showSaveDialog(saveOptions);
+    if (result.canceled || !result.filePath) {
+      return { ok: false, canceled: true };
+    }
+
+    const csvPath = result.filePath;
     const tmpPath = `${csvPath}.tmp`;
     const fd = fs.openSync(tmpPath, 'w');
     try {
-      fs.writeSync(fd, rows.join('\n'));
+      fs.writeSync(fd, lines.join('\n'));
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
     fs.renameSync(tmpPath, csvPath);
-    return { ok: true, path: csvPath, count: ann.annotations.length };
+    return { ok: true, path: csvPath, count: annTotal };
   } catch (e) {
     console.error('[export-annotations-csv] Failed:', e);
     return { ok: false, error: String(e) };

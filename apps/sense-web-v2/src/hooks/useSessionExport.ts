@@ -7,6 +7,9 @@ import FileSaver from "file-saver"
 import JsPDF from "jspdf"
 import JSZip from "jszip"
 
+import { Annotation } from "./useAnnotations"
+import { AnnotationLabel } from "../utils/annotationLabels"
+
 const addSvgToPDF = async (
 	pdf: JsPDF,
 	svg: SVGSVGElement | string,
@@ -47,32 +50,56 @@ const addSvgToPDF = async (
  */
 export function useSessionExport(manifest: any) {
 	const [csvDownloading, setCsvDownloading] = useState(false)
+	const [annotationsDownloading, setAnnotationsDownloading] = useState(false)
 	const csvExportedRef = useRef(false)
 	const pdfExportedRef = useRef(false)
 
-	const convertToCSV = useCallback(async () => {
-		if (csvDownloading) return
-		setCsvDownloading(true)
-		const csvExportStart = Date.now();
-		try {
-			// Use manifest/chunk files as source of truth, but stream chunk files one by one
-			let channels = manifest.channels || [];
-			let deviceType = manifest.deviceType;
-			let storedChannelNames = manifest.channelNames || {};
-			let sampleRate = manifest.sampleRate;
-			let segmentsMeta = manifest.segments || [];
+	// Build the per-segment CSV-in-a-zip from the manifest + chunk files. When
+	// `annotations` is provided, an extra `annotation` column is appended, with
+	// each frame row carrying the label(s) of any annotation anchored to that
+	// frame (points cover one frame; intervals cover the whole [t0, t1] span).
+	// Returns the zip blob + the first segment's timestamp, or null if the
+	// session metadata is incomplete (an alert is shown in that case).
+	const buildSessionCsvZip = useCallback(
+		async (
+			annotations?: Annotation[],
+			labels?: AnnotationLabel[]
+		): Promise<{ blob: Blob; timestampISO: string } | null> => {
+			const channels = manifest.channels || [];
+			const deviceType = manifest.deviceType;
+			const storedChannelNames = manifest.channelNames || {};
+			const sampleRate = manifest.sampleRate;
+			const segmentsMeta = manifest.segments || [];
 
 			if (!channels.length || !deviceType || !sampleRate) {
 				alert("Missing or incomplete manifest/session metadata.");
-				return;
+				return null;
 			}
 			if (!manifest.chunks || manifest.chunks.length === 0) {
 				alert("No chunk files found in manifest. Export aborted.");
-				return;
+				return null;
 			}
 			if (deviceType !== "sense" && deviceType !== "maker") {
 				alert("Device type not supported yet.");
-				return;
+				return null;
+			}
+
+			const withAnnotations = annotations !== undefined
+			const rate = Number(sampleRate) > 0 ? Number(sampleRate) : 1000
+			const labelById = new Map((labels ?? []).map(l => [l.id, l]))
+			const escCsv = (v: string) =>
+				/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+			// Anchor annotations to frame ordinals within their segment.
+			const annsBySegment = new Map<number, { s: number; e: number; text: string }[]>()
+			for (const a of annotations ?? []) {
+				const seg = Number(a.segment) || 1
+				const s = Math.round(Number(a.t0) * rate)
+				const e = Math.round(Number(a.t1) * rate)
+				const label = labelById.get(a.labelId)
+				const name = label ? label.name : (a.labelId != null ? String(a.labelId) : "")
+				const text = a.note ? `${name} (${a.note})` : name
+				if (!annsBySegment.has(seg)) annsBySegment.set(seg, [])
+				annsBySegment.get(seg)!.push({ s: Math.min(s, e), e: Math.max(s, e), text })
 			}
 
 			const zip = new JSZip();
@@ -116,8 +143,10 @@ export function useSessionExport(manifest: any) {
 								? `${label.trim()} - ${channel}`
 								: channel
 						})
-						.join(",")
+						.join(",") + (withAnnotations ? ",annotation" : "")
 				);
+				const segAnns = annsBySegment.get(Number(segmentIdx)) || []
+				let frameIdx = 0
 				// For each chunk file in this segment, load and stream frames
 				for (const chunkFile of files) {
 					try {
@@ -130,7 +159,19 @@ export function useSessionExport(manifest: any) {
 							for (let k = 0; k < channels.length; k++) {
 								frameContent.push(frames[j].channels[channels[k]]);
 							}
+							if (withAnnotations) {
+								let labelText = ""
+								if (segAnns.length > 0) {
+									const hits: string[] = []
+									for (const an of segAnns) {
+										if (frameIdx >= an.s && frameIdx <= an.e) hits.push(an.text)
+									}
+									labelText = hits.join("; ")
+								}
+								frameContent.push(escCsv(labelText))
+							}
 							fileContent.push(frameContent.join(","));
+							frameIdx++
 						}
 					} catch (e) {
 						console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
@@ -142,14 +183,43 @@ export function useSessionExport(manifest: any) {
 				firstTimestamp = new Date().getTime();
 			}
 			const timestampISO = new Date(firstTimestamp).toISOString();
-			const content = await zip.generateAsync({ type: "blob" })
-			FileSaver.saveAs(content, `${timestampISO}.zip`);
+			const blob = await zip.generateAsync({ type: "blob" })
+			return { blob, timestampISO }
+		},
+		[manifest]
+	)
+
+	const convertToCSV = useCallback(async () => {
+		if (csvDownloading) return
+		setCsvDownloading(true)
+		const csvExportStart = Date.now();
+		try {
+			const result = await buildSessionCsvZip()
+			if (!result) return
+			FileSaver.saveAs(result.blob, `${result.timestampISO}.zip`);
 			csvExportedRef.current = true
 			window.electronAPI?.logPerfEvent?.('csv_export', Date.now() - csvExportStart);
 		} finally {
 			setCsvDownloading(false)
 		}
-	}, [manifest, csvDownloading]);
+	}, [buildSessionCsvZip, csvDownloading]);
+
+	const convertToCSVWithAnnotations = useCallback(
+		async (annotations: Annotation[], labels: AnnotationLabel[]) => {
+			if (annotationsDownloading) return
+			setAnnotationsDownloading(true)
+			const exportStart = Date.now()
+			try {
+				const result = await buildSessionCsvZip(annotations, labels)
+				if (!result) return
+				FileSaver.saveAs(result.blob, `${result.timestampISO}_annotations.zip`);
+				window.electronAPI?.logPerfEvent?.('csv_annotations_export', Date.now() - exportStart);
+			} finally {
+				setAnnotationsDownloading(false)
+			}
+		},
+		[buildSessionCsvZip, annotationsDownloading]
+	)
 
 	const convertToPDF = useCallback(async () => {
 		const pdfExportStart = Date.now();
@@ -567,5 +637,5 @@ export function useSessionExport(manifest: any) {
 		window.electronAPI?.logPerfEvent?.('pdf_export', Date.now() - pdfExportStart);
 	}, [manifest])
 
-	return { csvDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToPDF }
+	return { csvDownloading, annotationsDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToCSVWithAnnotations, convertToPDF }
 }

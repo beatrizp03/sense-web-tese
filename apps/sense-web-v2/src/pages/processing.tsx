@@ -450,7 +450,8 @@ const Page = () => {
 									<SessionExportBar
 										manifest={manifest}
 										withDescriptions
-										onExportAnnotations={() => void annotations.exportCsv()}
+										annotations={annotations.annotations}
+										labels={labels}
 									/>
 								}
 								activeTab={activeSideTab}
