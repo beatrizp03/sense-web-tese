@@ -6,6 +6,7 @@ export interface PdfExportRange {
 	segment: number
 	startSec: number
 	endSec: number
+	includeAnalysis: boolean
 }
 
 interface PdfExportModalProps {
@@ -36,6 +37,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	const [segment, setSegment] = useState(defaultSegment)
 	const [startDraft, setStartDraft] = useState("0")
 	const [endDraft, setEndDraft] = useState("30")
+	const [includeAnalysis, setIncludeAnalysis] = useState(true)
 
 	const maxSeconds = segmentSeconds[segment - 1] || 0
 
@@ -123,6 +125,22 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 					{annotationCount} annotation{annotationCount === 1 ? "" : "s"} on this segment
 				</p>
 
+				<label className="mt-3 flex items-start gap-2 text-xs text-over-background-medium">
+					<input
+						type="checkbox"
+						checked={includeAnalysis}
+						onChange={e => setIncludeAnalysis(e.target.checked)}
+						className="mt-0.5 h-3.5 w-3.5 accent-primary"
+					/>
+					<span className="flex flex-col gap-1 text-xs">
+						Include analysis summary
+						<span className="block text-xs text-over-background-low">
+							Uses this window&apos;s saved analysis if available, otherwise the full-session
+							analysis. If both unavailable, basic stats are computed from the window.
+						</span>
+					</span>
+				</label>
+
 				{error && <p className="mt-2 text-xs text-red-500">{error}</p>}
 
 				<div className="mt-6 flex justify-end gap-3">
@@ -138,7 +156,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						size="base"
 						className="!text-sm"
 						disabled={!!error || generating}
-						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd })}
+						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd, includeAnalysis })}
 					>
 						{generating ? "Generating…" : "Generate PDF"}
 					</TextButton>

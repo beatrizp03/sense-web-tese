@@ -100,6 +100,38 @@ function formatClock(seconds: number): string {
 	return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`
 }
 
+interface SummaryStats {
+	mean: number
+	median: number
+	std: number
+	min: number
+	max: number
+}
+
+function statsOf(values: number[]): SummaryStats {
+	const v = values.filter(x => Number.isFinite(x))
+	const n = v.length
+	if (n === 0) return { mean: NaN, median: NaN, std: NaN, min: NaN, max: NaN }
+	let sum = 0
+	let min = Infinity
+	let max = -Infinity
+	for (const x of v) {
+		sum += x
+		if (x < min) min = x
+		if (x > max) max = x
+	}
+	const mean = sum / n
+	let sq = 0
+	for (const x of v) sq += (x - mean) ** 2
+	const std = n > 1 ? Math.sqrt(sq / (n - 1)) : 0
+	const sorted = [...v].sort((a, b) => a - b)
+	const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+	return { mean, median, std, min, max }
+}
+
+const fmtStat = (v: unknown): string =>
+	typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "--"
+
 /**
  * Session export logic shared by the acquisition summary page and the processing
  * page. CSV streams every chunk file into one CSV per segment (zipped); PDF
@@ -698,6 +730,8 @@ export function useSessionExport(manifest: any) {
 			channelNames?: Record<string, string>
 			annotations: Annotation[]
 			labels: AnnotationLabel[]
+			sessionFolder?: string
+			includeAnalysis?: boolean
 		}) => {
 			if (annotatedPdfDownloading) return
 			setAnnotatedPdfDownloading(true)
@@ -1084,6 +1118,123 @@ export function useSessionExport(manifest: any) {
 						ty += rowH
 						pdf.setDrawColor(238, 238, 238)
 						pdf.line(DOCUMENT_MARGIN, ty - 1.5, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ty - 1.5)
+					}
+				}
+
+				// ---- Analysis summary ----
+				if (opts.includeAnalysis !== false) {
+					// Prefer this window's saved analysis, then the full-session
+					// analysis, then descriptive stats computed from the window.
+					let analysisSrc: any = null
+					let analysisOrigin = ""
+					const folder = opts.sessionFolder || ""
+					const windowSub = `seg${segment}-analysis-window-${Math.round(startSec)}-${Math.round(endSec)}`
+					if (folder && window.electronAPI?.readPostHocAnalysisResult) {
+						try { analysisSrc = await window.electronAPI.readPostHocAnalysisResult(folder, windowSub) } catch { /* ignore */ }
+						if (analysisSrc) {
+							analysisOrigin = `from window analysis (${windowSub})`
+						} else {
+							try { analysisSrc = await window.electronAPI.readPostHocAnalysisResult(folder, "full-session-analysis") } catch { /* ignore */ }
+							if (analysisSrc) analysisOrigin = "from full-session analysis"
+						}
+					}
+					if (!analysisSrc && manifest?.analysis) {
+						analysisSrc = manifest.analysis
+						analysisOrigin = "from saved full-session analysis"
+					}
+
+					let rows: { channel: string; kind: string; summary: SummaryStats }[] = []
+					let sourceLabel = ""
+					const segArr = Array.isArray(analysisSrc?.segments) ? analysisSrc.segments : []
+					if (segArr.length > 0) {
+						const matching = segArr.filter((s: any) => Number(s?.segment) === segment)
+						const useSegs = matching.length > 0 ? matching : segArr
+						rows = useSegs.flatMap((s: any) =>
+							(Array.isArray(s?.channels) ? s.channels : []).map((ch: any) => ({
+								channel: String(ch?.channel ?? ""),
+								kind: typeof ch?.signalKind === "string" ? ch.signalKind : "",
+								summary: {
+									mean: Number(ch?.summary?.mean),
+									median: Number(ch?.summary?.median),
+									std: Number(ch?.summary?.std),
+									min: Number(ch?.summary?.min),
+									max: Number(ch?.summary?.max)
+								}
+							}))
+						)
+						sourceLabel = analysisOrigin || "saved analysis"
+					}
+					if (rows.length === 0) {
+						rows = channels.map(ch => ({ channel: ch, kind: "", summary: statsOf(perChannel[ch]) }))
+						sourceLabel = "computed now from this window (raw samples)"
+					}
+
+					pdf.addPage()
+					pdf.setFont("Lexend", "semibold")
+					pdf.setFontSize(12)
+					pdf.setTextColor(...TEXT_PRIMARY)
+					pdf.text("Analysis summary", DOCUMENT_MARGIN, DOCUMENT_MARGIN, { align: "left", baseline: "top" })
+					pdf.setFont("Lexend", "regular")
+					pdf.setFontSize(7)
+					pdf.setTextColor(...TEXT_SECONDARY)
+					pdf.text(
+						`Segment ${segment} · ${formatClock(startSec)}–${formatClock(endSec)} · ${sourceLabel}`,
+						DOCUMENT_MARGIN,
+						DOCUMENT_MARGIN + 6,
+						{ align: "left", baseline: "top" }
+					)
+
+					let ay = DOCUMENT_MARGIN + 12
+					const acols = {
+						channel: DOCUMENT_MARGIN,
+						kind: DOCUMENT_MARGIN + 50,
+						mean: DOCUMENT_MARGIN + 82,
+						median: DOCUMENT_MARGIN + 112,
+						std: DOCUMENT_MARGIN + 142,
+						min: DOCUMENT_MARGIN + 172,
+						max: DOCUMENT_MARGIN + 202
+					}
+					const drawAHeader = () => {
+						pdf.setFont("Lexend", "semibold")
+						pdf.setFontSize(7)
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text("CHANNEL", acols.channel, ay, { align: "left", baseline: "top" })
+						pdf.text("KIND", acols.kind, ay, { align: "left", baseline: "top" })
+						pdf.text("MEAN", acols.mean, ay, { align: "left", baseline: "top" })
+						pdf.text("MEDIAN", acols.median, ay, { align: "left", baseline: "top" })
+						pdf.text("STD", acols.std, ay, { align: "left", baseline: "top" })
+						pdf.text("MIN", acols.min, ay, { align: "left", baseline: "top" })
+						pdf.text("MAX", acols.max, ay, { align: "left", baseline: "top" })
+						ay += 4
+						pdf.setDrawColor(210, 210, 210)
+						pdf.line(DOCUMENT_MARGIN, ay, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay)
+						ay += 3
+					}
+					drawAHeader()
+
+					for (const row of rows) {
+						if (ay + 6 > DOCUMENT_HEIGHT - DOCUMENT_MARGIN) {
+							pdf.addPage()
+							ay = DOCUMENT_MARGIN
+							drawAHeader()
+						}
+						const chLabel = storedChannelNames[row.channel]
+							? `${storedChannelNames[row.channel]} (${row.channel})`
+							: row.channel
+						pdf.setFont("Lexend", "regular")
+						pdf.setFontSize(7.5)
+						pdf.setTextColor(...TEXT_PRIMARY)
+						pdf.text(chLabel, acols.channel, ay, { align: "left", baseline: "top" })
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text(row.kind ? row.kind.toUpperCase() : "—", acols.kind, ay, { align: "left", baseline: "top" })
+						pdf.text(fmtStat(row.summary.mean), acols.mean, ay, { align: "left", baseline: "top" })
+						pdf.text(fmtStat(row.summary.median), acols.median, ay, { align: "left", baseline: "top" })
+						pdf.text(fmtStat(row.summary.std), acols.std, ay, { align: "left", baseline: "top" })
+						pdf.text(fmtStat(row.summary.min), acols.min, ay, { align: "left", baseline: "top" })
+						pdf.text(fmtStat(row.summary.max), acols.max, ay, { align: "left", baseline: "top" })
+						ay += 6
+						pdf.setDrawColor(238, 238, 238)
+						pdf.line(DOCUMENT_MARGIN, ay - 2, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay - 2)
 					}
 				}
 

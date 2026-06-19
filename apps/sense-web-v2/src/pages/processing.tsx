@@ -450,6 +450,7 @@ const Page = () => {
 									<SessionExportBar
 										manifest={manifest}
 										withDescriptions
+										sessionFolder={sessionFolder}
 										annotations={annotations.annotations}
 										labels={labels}
 										defaultSegment={selectedSegment}

@@ -10,6 +10,7 @@ import PdfExportModal, { PdfExportRange } from "./PdfExportModal"
 interface SessionExportBarProps {
 	manifest: any
 	withDescriptions?: boolean
+	sessionFolder?: string
 	annotations?: Annotation[]
 	labels?: AnnotationLabel[]
 	defaultSegment?: number
@@ -23,6 +24,7 @@ interface SessionExportBarProps {
 const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	manifest,
 	withDescriptions = false,
+	sessionFolder = "",
 	annotations = [],
 	labels = [],
 	defaultSegment = 1,
@@ -53,7 +55,7 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	).length
 
 	const handleGenerate = async (range: PdfExportRange) => {
-		await convertToAnnotatedPDF({ ...range, channels, channelNames, annotations, labels })
+		await convertToAnnotatedPDF({ ...range, sessionFolder, channels, channelNames, annotations, labels })
 		setPdfModalOpen(false)
 	}
 

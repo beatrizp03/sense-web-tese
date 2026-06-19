@@ -96,6 +96,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 
 	const listRef = useRef<HTMLDivElement>(null)
 	const selectedRowRef = useRef<HTMLDivElement>(null)
+	const noteInputRef = useRef<HTMLInputElement>(null)
 	const [maxHeight, setMaxHeight] = useState<number>()
 
 	useEffect(() => {
@@ -112,7 +113,16 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	}, [items, selectedId])
 
 	useEffect(() => {
-		if (selectedId) selectedRowRef.current?.scrollIntoView({ block: "nearest" })
+		if (!selectedId) return
+		const list = listRef.current
+		const row = selectedRowRef.current
+		if (list && row) {
+			const lr = list.getBoundingClientRect()
+			const rr = row.getBoundingClientRect()
+			if (rr.top < lr.top) list.scrollTop -= lr.top - rr.top
+			else if (rr.bottom > lr.bottom) list.scrollTop += rr.bottom - lr.bottom
+		}
+		noteInputRef.current?.focus({ preventScroll: true })
 	}, [selectedId])
 
 	const channelLabels = labels.filter(label => label.appliesTo === "channel" && !label.retired)
@@ -260,6 +270,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 
 											{/* Description */}
 											<input
+												ref={noteInputRef}
 												type="text"
 												value={item.note}
 												onChange={event => onSetNote?.(item.id, event.target.value)}
@@ -273,7 +284,6 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 													}
 												}}
 												placeholder="Add a description…"
-												autoFocus
 												className="w-full rounded border border-background-accent bg-background py-1 pl-3 pr-3 text-xs text-over-background-highest outline-none focus:border-primary"
 											/>
 										</div>
