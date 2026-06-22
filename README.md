@@ -10,6 +10,10 @@
     -   [Running the Development Environment](#running-the-development-environment)
     -   [Building the Repository](#building-the-repository)
 -   [sense-desktop (Electron Desktop App)](#sense-desktop)
+    -   [Quick Start](#quick-start)
+    -   [Troubleshooting](#troubleshooting)
+        -   [Linux (Ubuntu)](#linux-ubuntu)
+        -   [Windows](#windows)
 -   [Contributing](#contributing)
 -   [Disclaimer](#disclaimer)
 -   [Acknowledgements](#acknowledgements)
@@ -183,103 +187,176 @@ package.
 
 # sense-desktop
 
-## Overview
-
-`sense-desktop` is the Electron-based desktop version of SENSE WEB. It wraps the `sense-web-v2` Next.js app, providing a native desktop experience for data acquisition, export, and device integration.
+`sense-desktop` is the Electron-based desktop version of SENSE WEB. It wraps the
+`sense-web-v2` Next.js app in a native window for data acquisition, export, and
+device integration. You do **not** need to run `sense-web-v2` separately,  the
+desktop app handles everything.
 
 ## Requirements
 
 -   Node.js v20.20.0 or higher
 -   pnpm v10.30.1 or higher
--   Python **3.11 or 3.12** (for the post-hoc analysis worker; required only if you want signal processing features such as ECG/EDA/PPG/RSP/PCG/ACC analysis)
--   Windows, macOS, or Linux (tested on Windows)
+-   Python **3.11 or 3.12** - only needed for the post-hoc analysis worker
+    (ECG/EDA/PPG/RSP/PCG/ACC).
+-   Windows, macOS, or Linux (tested mainly on Windows; see
+    [Running on Linux (Ubuntu)](#running-on-linux-ubuntu) for extra Linux steps)
 
-## Setup & Installation
+## Quick Start
 
-1. **Clone the repository and install dependencies:**
+```bash
+# 1. Install dependencies (on Windows run from Git Bash)
+git clone <repo-url>
+cd sense-web-tese
+git checkout electron-version
+pnpm install
 
-   _Note:_ install using Git Bash
-   ```bash
-   git clone <repo-url>
-   cd sense-web-tese
-   git checkout electron-version
-   pnpm install
-   ```
+# 2. Install the Python analysis packages (skip if you don't need analysis)
+pip install -r apps/sense-desktop/python/requirements.txt
 
-2. **Install the Python packages used for signal analysis:**
+# 3. Build and launch the desktop app
+pnpm build:desktop
+pnpm start:desktop
+```
 
-   The desktop app uses Python to analyze recorded sessions (ECG, EDA, PPG, etc.). Install the required packages with:
+That's it! `start:desktop` opens the Electron window automatically.
 
-   ```bash
-   pip install -r apps/sense-desktop/python/requirements.txt
-   ```
-   Then close and reopen the terminal window. 
-   
-   Make sure you're using Python 3.11 or 3.12. To check, run `python --version`. If you skip this step, analysis won't work and you'll see warnings like `BioSPPy module ... is unavailable`.
+**Good to know:**
 
-3. **Build and run the Electron desktop app:**
-
-   ```bash
-   pnpm build:desktop
-   pnpm start:desktop
-   ```
-
-   `build:desktop` creates the production build of `sense-web-v2`; `start:desktop`
-   serves it and launches the Electron window automatically. You only need to
-   re-run `build:desktop` after changing the web app.
-
-   > Prefer hot-reload while developing? Use `pnpm dev:desktop` instead — it runs
-   > the Next.js dev server and Electron together, with no separate build step.
+-   Re-run `pnpm build:desktop` only after changing the web app.
+-   Developing? Use `pnpm dev:desktop` instead for hot-reload (Next.js dev server
+    + Electron together, no separate build step).
+-   After installing the Python packages, close and reopen your terminal. Check
+    your version with `python --version`; if analysis is skipped you'll see
+    `BioSPPy module ... is unavailable` warnings.
 
 ## Troubleshooting
 
-### `Electron failed to install correctly`
+Pick your platform: [Linux (Ubuntu)](#linux-ubuntu) or [Windows](#windows). Each
+entry below shows the error (or symptom) and how to fix it.
 
-If you see this error when running `pnpm start:desktop`:
+### Linux (Ubuntu) Troubleshooting
+---
+Do the [Quick Start](#quick-start) first. On Linux you'll likely hit the issues
+below.
+
+#### Electron exits immediately with a sandbox error
+
+```
+[FATAL:setuid_sandbox_host.cc] The SUID sandbox helper binary was found, but is
+not configured correctly. Rather than run without sandboxing I'm aborting now.
+You need to make sure that chrome-sandbox is owned by root and has mode 4755.
+```
+
+`chrome-sandbox` must be root-owned and setuid. Re-run this after any fresh
+`pnpm install`; adjust the version in the path if your Electron differs:
+
+```bash
+SANDBOX=node_modules/.pnpm/electron@40.6.1/node_modules/electron/dist/chrome-sandbox
+sudo chown root:root "$SANDBOX"
+sudo chmod 4755 "$SANDBOX"
+```
+
+#### The app starts but no window appears
+
+With hardware acceleration disabled, Electron's `ready-to-show` event never
+fires, so the window stays hidden even though the process is running. In
+`apps/sense-desktop/main.js`, find the `createWindow()` function (around line
+431) and change `show: false` to `show: true`:
+
+```js
+const win = new BrowserWindow({
+  width: 1200,
+  height: 800,
+  show: true,   // ← previously: show: false
+  ...
+});
+```
+
+With `show: true`, the `ready-to-show` handler further down
+(`win.once("ready-to-show", () => win.show())`) is no longer needed, you can
+leave it or remove it.
+
+#### The device never shows up in the app
+
+The app's Bluetooth discovery is Windows-only (it uses PowerShell), so on Linux
+you must expose the device as a serial port yourself. Pair it and bind an rfcomm
+port (replace the MAC address with your device's):
+
+Your board's address is printed on the board itself (e.g. `C0:49:EF:A3:29:9A`).
+Use it in place of the example address below:
+
+```bash
+bluetoothctl
+# in the bluetoothctl prompt, type these one at a time:
+#   scan on
+#   pair C0:49:EF:A3:29:9A
+#   trust C0:49:EF:A3:29:9A
+#   exit
+
+# back in your normal terminal:
+sudo rfcomm bind 0 C0:49:EF:A3:29:9A
+sudo chmod 666 /dev/rfcomm0   # creates /dev/rfcomm0, the serial port the app reads
+```
+
+#### `pip install` fails with "externally-managed-environment"
+
+```
+error: externally-managed-environment
+× This environment is externally managed
+```
+
+Ubuntu blocks system-wide pip installs (PEP 668). Install the analysis packages
+into a virtual environment instead, and keep it activated when running analysis
+(otherwise you'll get `BioSPPy module ... is unavailable` warnings):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r apps/sense-desktop/python/requirements.txt
+```
+
+### Windows Troubleshooting
+---
+#### `Electron failed to install correctly`
+
+If `pnpm start:desktop` fails with:
 
 ```
 Error: Electron failed to install correctly, please delete node_modules/electron and try installing again
     at getElectronPath (.../node_modules/.pnpm/electron@40.6.1/node_modules/electron/index.js:17:11)
 ```
 
-This means the Electron binary was not downloaded or extracted successfully. The most common cause on Windows is **Windows Defender (or another antivirus) silently blocking the extraction** of `electron.exe`. The download completes, but Defender quarantines or interrupts the file write, leaving the install incomplete.
+the Electron binary didn't extract successfully. On Windows this is usually
+**Windows Defender (or another antivirus) silently blocking the extraction** of
+`electron.exe`,  the download completes but the file write is quarantined,
+leaving the install incomplete.
 
-#### Install Electron manually (no Defender changes)
+**Fix: install Electron manually** (no Defender changes needed). Downloading via
+the browser and extracting in File Explorer triggers different Defender
+behaviour than the Node.js postinstall, so it usually works:
 
-If you cannot or do not want to add Defender exclusions, you can download and extract Electron by hand. The browser and File Explorer trigger different Defender behaviour than the Node.js postinstall, so this often works where the automated install does not.
-
-1. **Download the Electron zip** from the browser:
-```
+1. **Download the Electron zip** in your browser:
+   ```
    https://github.com/electron/electron/releases/download/v40.6.1/electron-v40.6.1-win32-x64.zip
-```
+   ```
 
 2. **Delete the broken `dist` folder:**
-```bash
+   ```bash
    rm -rf node_modules/.pnpm/electron@40.6.1/node_modules/electron/dist
-```
+   ```
 
-3. **Extract the zip contents into a new `dist` folder.** In File Explorer, navigate to:
-```
-   <path-to-project>\node_modules\.pnpm\electron@40.6.1\node_modules\electron\
-```
-   Create a folder named `dist` there, then extract **the contents of the zip** (not the zip file itself) into it. You should end up with `electron.exe` directly inside `...\electron\dist\electron.exe`.
+3. **Extract the zip contents into a new `dist` folder.** In File Explorer, go to
+   `<path-to-project>\node_modules\.pnpm\electron@40.6.1\node_modules\electron\`,
+   create a `dist` folder, and extract **the contents of the zip** (not the zip
+   itself) into it,  you should end up with `...\electron\dist\electron.exe`.
 
-4. **Create the `path.txt` file** in the `electron` folder (one level above `dist`), containing exactly this single line:
-```
+4. **Create a `path.txt` file** in the `electron` folder (one level above
+   `dist`) containing exactly one line:
+   ```
    electron.exe
-```
+   ```
 
-5. **Run the app:**
-```bash
-   pnpm start:desktop
-```
-
-## Notes
-
--   You do **not** need to run `sense-web-v2` separately; the desktop app handles everything.
--   All development and production builds are managed via pnpm scripts.
--   For production builds, refer to the Electron and Next.js documentation for packaging and distribution.
--   The Python analysis worker is only invoked when you trigger post-hoc analysis on a recorded session. Acquisition itself does not depend on Python.
+5. **Run the app** again with `pnpm start:desktop`.
 
 # Contributing
 
