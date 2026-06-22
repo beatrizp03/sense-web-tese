@@ -620,14 +620,15 @@ const Page = () => {
 											>
 												Reset History
 											</TextButton>
-											<TextButton
-												size={"base"}
+											<button
+												type="button"
 												onClick={() => {
 													setShowHistoryModal(false)
 												}}
+												className="rounded-lg border border-white/70 bg-transparent px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10"
 											>
 												Close
-											</TextButton>
+											</button>
 										</div>
 									</div>
 								</div>
