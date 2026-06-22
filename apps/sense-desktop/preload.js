@@ -321,6 +321,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadAllChunks: async () => {
     return await ipcRenderer.invoke('load-all-chunks');
   },
+  getCurrentSessionFolder: async () => {
+    return await ipcRenderer.invoke('get-current-session-folder');
+  },
   loadPreviewFrames: async (sampleNum, frameCount) => {
     return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
   },

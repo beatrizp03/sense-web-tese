@@ -250,6 +250,16 @@ const Page = () => {
 		})
 	}, [loadSessionBundle, requestDiscard])
 
+	// Auto-import when arriving from the summary page with ?session=<folder>.
+	useEffect(() => {
+		if (!hydrated || !router.isReady) return
+		const q = router.query.session
+		const folder = Array.isArray(q) ? q[0] : q
+		if (folder && folder !== sessionFolder) {
+			void loadSessionBundle(folder)
+		}
+	}, [hydrated, router.isReady, router.query.session, sessionFolder, loadSessionBundle])
+
 	const chunkCount = Array.isArray(manifest?.chunks) ? manifest.chunks.length : 0
 	const segments = useMemo(() => (Array.isArray(manifest?.segments) ? manifest.segments : []), [manifest])
 	const hasSession = channels.length > 0 && chunkCount > 0

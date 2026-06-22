@@ -851,6 +851,10 @@ ipcMain.on('port-selected', (_event, portEntry) => {
   }
 });
 
+ipcMain.handle('get-current-session-folder', async () => {
+  return sessionFolder || lastSessionFolder || null;
+});
+
 // Handler to load manifest for summary page — no frame data, just session.json
 ipcMain.handle('load-all-chunks', async () => {
   const folder = sessionFolder || lastSessionFolder;

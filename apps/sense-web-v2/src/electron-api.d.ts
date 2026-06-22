@@ -30,6 +30,7 @@ declare global {
       setChannelNames?: (names: Record<string, string>) => Promise<void>;
       readChunkFile?: (filePath: string) => Promise<any>;
       loadAllChunks?: () => Promise<{ meta: any }>;
+      getCurrentSessionFolder?: () => Promise<string | null>;
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;
       decimateSession?: (
         sessionFolder: string,

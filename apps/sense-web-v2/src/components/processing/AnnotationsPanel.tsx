@@ -283,7 +283,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 														onRemoveAnnotation?.(item.id)
 													}
 												}}
-												placeholder="Add a description…"
+												placeholder="Add a note..."
 												className="w-full rounded border border-background-accent bg-background py-1 pl-3 pr-3 text-xs text-over-background-highest outline-none focus:border-primary"
 											/>
 										</div>
