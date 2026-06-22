@@ -5,6 +5,7 @@ import { useRouter } from "next/router"
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
+import PdfExportModal, { PdfExportRange } from "../components/processing/PdfExportModal"
 import { useSessionExport } from "../hooks/useSessionExport"
 
 const Page = () => {
@@ -12,7 +13,8 @@ const Page = () => {
 	const [manifest, setManifest] = useState<any>({});
 	const [loading, setLoading] = useState(true);
 	const [loadAttempts, setLoadAttempts] = useState(0);
-	const { csvDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToPDF } = useSessionExport(manifest)
+	const [pdfModalOpen, setPdfModalOpen] = useState(false);
+	const { csvDownloading, annotatedPdfDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToRangePDF } = useSessionExport(manifest)
 	const MAX_ATTEMPTS = 8;
 
 	useEffect(() => {
@@ -83,60 +85,113 @@ const Page = () => {
 		return warnings;
 	}, [manifest]);
 
+	const channels = useMemo<string[]>(
+		() => (Array.isArray(manifest?.channels) ? manifest.channels.map(String) : []),
+		[manifest]
+	);
+	const channelNames = (manifest?.channelNames && typeof manifest.channelNames === "object")
+		? (manifest.channelNames as Record<string, string>)
+		: {};
+	const segmentSeconds = useMemo<number[]>(() => {
+		const segs = Array.isArray(manifest?.segments) ? manifest.segments : [];
+		return segs.map((s: any) => {
+			const d = (Number(s?.endedAt) - Number(s?.startedAt)) / 1000;
+			return Number.isFinite(d) && d > 0 ? d : 0;
+		});
+	}, [manifest]);
 
+	const handleGeneratePdf = async (range: PdfExportRange) => {
+		await convertToRangePDF({
+			segment: range.segment,
+			startSec: range.startSec,
+			endSec: range.endSec,
+			channels,
+			channelNames
+		});
+		setPdfModalOpen(false);
+	};
 
-		return (
-			<SenseLayout
-				title="Summary"
-				returnHref="/live"
-				className="flex w-[480px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[640px]"
-			>
-				{loading ? (
-					<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
-				) : noData ? (
-					<div className="text-red-600 text-center text-base border border-red-300 rounded p-4 bg-red-50 max-w-full">
-						<b>No valid acquisition data found.</b>
-						<div className="mt-2 text-xs">No chunk files with data were found for this session. Please check your acquisition and try again.</div>
+	const goToProcessing = async () => {
+		const folder = await window.electronAPI?.getCurrentSessionFolder?.();
+		if (!folder) {
+			alert("Could not locate the session folder for this acquisition.");
+			return;
+		}
+		router.push({ pathname: "/processing", query: { session: folder } });
+	};
+
+	return (
+		<SenseLayout
+			title="Summary"
+			returnHref="/live"
+			className="flex w-[560px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[820px]"
+		>
+			{loading ? (
+				<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
+			) : noData ? (
+				<div className="text-red-600 text-center text-base border border-red-300 rounded p-4 bg-red-50 max-w-full">
+					<b>No valid acquisition data found.</b>
+					<div className="mt-2 text-xs">No chunk files with data were found for this session. Please check your acquisition and try again.</div>
+				</div>
+			) : (
+				<>
+					<span>End of acquisition!</span>
+					{mappingWarnings.length > 0 && (
+						<div className="text-red-600 text-xs whitespace-pre-line border border-red-300 rounded p-2 bg-red-50 max-w-full">
+							<b>Session Data Warnings:</b>
+							<ul className="list-disc ml-4">
+								{mappingWarnings.map((w, i) => (
+									<li key={i}>{w}</li>
+								))}
+							</ul>
+						</div>
+					)}
+					<div className="flex w-full flex-row justify-center gap-4">
+						<TextButton
+							size="base"
+							className="flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+							disabled={csvDownloading}
+							onClick={convertToCSV}
+						>
+							Download as CSV
+						</TextButton>
+						<TextButton
+							size="base"
+							className="flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+							disabled={annotatedPdfDownloading}
+							onClick={() => setPdfModalOpen(true)}
+						>
+							{annotatedPdfDownloading ? "Generating…" : "Download as PDF"}
+						</TextButton>
+						<TextButton
+							size="base"
+							className="flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+							onClick={goToProcessing}
+						>
+							Process Session
+						</TextButton>
 					</div>
-				) : (
-					<>
-						<span>End of acquisition!</span>
-						{mappingWarnings.length > 0 && (
-							<div className="text-red-600 text-xs whitespace-pre-line border border-red-300 rounded p-2 bg-red-50 max-w-full">
-								<b>Session Data Warnings:</b>
-								<ul className="list-disc ml-4">
-									{mappingWarnings.map((w, i) => (
-										<li key={i}>{w}</li>
-									))}
-								</ul>
-							</div>
+
+					<PdfExportModal
+						open={pdfModalOpen}
+						onClose={() => setPdfModalOpen(false)}
+						segmentSeconds={segmentSeconds}
+						generating={annotatedPdfDownloading}
+						onGenerate={handleGeneratePdf}
+						title="Export PDF"
+						description="Choose the segment and time span to render. Each channel is drawn for the selected seconds."
+						showAnnotationInfo={false}
+						showAnalysisToggle={false}
+					/>
+					<div className="text-xs text-gray-500">
+						{csvDownloading && (
+							<span>Downloading CSV ...</span>
 						)}
-						<div className="justify-cenPDF flex flex-row gap-4">
-							<TextButton
-								size="base"
-								className="flex-grow"
-								disabled={csvDownloading}
-								onClick={convertToCSV}
-							>
-								Download as CSV
-							</TextButton>
-							<TextButton
-								size="base"
-								className="flex-grow"
-								onClick={convertToPDF}
-							>
-								Download as PDF
-							</TextButton>
-						</div>
-						<div className="text-xs text-gray-500">
-							{csvDownloading && (
-								<span>Downloading CSV ...</span>
-							)}
-						</div>
-					</>
-				)}
-			</SenseLayout>
-		);
+					</div>
+				</>
+			)}
+		</SenseLayout>
+	);
 }
 
 export default Page

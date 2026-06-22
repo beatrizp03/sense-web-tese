@@ -18,6 +18,10 @@ interface PdfExportModalProps {
 	annotationCount?: number
 	generating?: boolean
 	onGenerate: (range: PdfExportRange) => void
+	title?: string
+	description?: string
+	showAnnotationInfo?: boolean
+	showAnalysisToggle?: boolean
 }
 
 /**
@@ -31,7 +35,11 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	defaultRange,
 	annotationCount = 0,
 	generating = false,
-	onGenerate
+	onGenerate,
+	title = "Export annotated PDF",
+	description = "Choose the time span to draw. Annotations inside the span are overlaid on the charts and listed in a table.",
+	showAnnotationInfo = true,
+	showAnalysisToggle = true
 }) => {
 	const segmentCount = Math.max(1, segmentSeconds.length)
 	const [segment, setSegment] = useState(defaultSegment)
@@ -59,6 +67,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 		if (start < 0) return "Start must be ≥ 0."
 		if (end <= start) return "End must be after start."
 		if (maxSeconds > 0 && start >= maxSeconds) return "Start is past the end of the segment."
+		if (maxSeconds > 0 && end > maxSeconds) return `End must be within the acquisition length (${maxSeconds.toFixed(1)} s).`
 		return null
 	}, [start, end, maxSeconds])
 
@@ -69,11 +78,8 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
 			<div className="w-full max-w-md rounded-xl border border-background-accent bg-background p-6 shadow-2xl">
-				<h2 className="text-lg font-bold text-over-background-highest">Export annotated PDF</h2>
-				<p className="mt-1 text-xs text-over-background-medium">
-					Choose the time span to draw. Annotations inside the span are overlaid on the
-					charts and listed in a table.
-				</p>
+				<h2 className="text-lg font-bold text-over-background-highest">{title}</h2>
+				<p className="mt-1 text-xs text-over-background-medium">{description}</p>
 
 				{segmentCount > 1 && (
 					<div className="mt-4">
@@ -121,10 +127,13 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 				</div>
 
 				<p className="mt-2 text-[11px] text-over-background-low">
-					{maxSeconds > 0 ? `Segment length: ${maxSeconds.toFixed(1)} s · ` : ""}
-					{annotationCount} annotation{annotationCount === 1 ? "" : "s"} on this segment
+					{maxSeconds > 0 ? `Segment length: ${maxSeconds.toFixed(1)} s` : ""}
+					{showAnnotationInfo
+						? `${maxSeconds > 0 ? " · " : ""}${annotationCount} annotation${annotationCount === 1 ? "" : "s"} on this segment`
+						: ""}
 				</p>
 
+				{showAnalysisToggle && (
 				<label className="mt-3 flex items-start gap-2 text-xs text-over-background-medium">
 					<input
 						type="checkbox"
@@ -140,6 +149,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						</span>
 					</span>
 				</label>
+				)}
 
 				{error && <p className="mt-2 text-xs text-red-500">{error}</p>}
 
