@@ -2444,8 +2444,7 @@ def append_features_readme_section(output_folder: Path) -> None:
     except Exception:
         pass
 
-    # Collect features per library
-    libs: Dict[str, set] = {}
+    by_kind: Dict[str, Dict[str, set]] = {}
     try:
         with features_path.open("r", encoding="utf-8") as fh:
             reader = csv.reader(fh)
@@ -2453,6 +2452,7 @@ def append_features_readme_section(output_folder: Path) -> None:
             for row in reader:
                 if len(row) < 6:
                     continue
+                kind = (row[3] or "").strip().lower() or "unknown"
                 lib = row[4] or "unknown"
                 feat = (row[5] or "").strip()
                 # Exclude time-axis ('ts') columns, incl. mid-name variants like
@@ -2461,12 +2461,11 @@ def append_features_readme_section(output_folder: Path) -> None:
                     continue
                 if "ts" in feat.split("_"):
                     continue
-                libs.setdefault(lib, set()).add(feat)
+                by_kind.setdefault(kind, {}).setdefault(lib, set()).add(feat)
     except Exception:
         return
 
-    # Known feature descriptions (concise)
-    known: Dict[str, str] = {
+    common: Dict[str, str] = {
         # NeuroKit2 HRV metrics (common)
         "HRV_RMSSD": "Root Mean Square of Successive Differences of RR intervals (ms) - short-term HRV.",
         "HRV_SDNN": "Standard deviation of NN intervals (ms) - HRV overall variability.",
@@ -2525,13 +2524,8 @@ def append_features_readme_section(output_folder: Path) -> None:
         "SCR_Recovery": "Sample indices of SCR half-recovery points.",
         "sampling_rate": "Sampling rate used for the analysis (Hz).",
 
-        # BioSPPy PPG outputs
-        "peaks": "Indices of detected PPG pulse peaks.",
-        "templates_ts": "Time axis for PPG pulse templates (seconds).",
-        "templates": "Extracted PPG pulse templates aligned on systolic peaks.",
-        "onsets": "PPG pulse onset indices (start of beats).",
-        "segments_loc": "Start/end indices for each PPG pulse segment.",
-        "params": "Auxiliary parameters returned by some peak/onset functions.",
+        # (PPG-specific outputs — peaks/onsets/templates/segments_loc/params —
+        # live in `by_kind_desc["ppg"]` because their names collide with EDA/PCG.)
 
         # BioSPPy Respiration outputs
         "zeros": "Indices of respiration zero-crossings (cycle boundaries).",
@@ -2547,7 +2541,7 @@ def append_features_readme_section(output_folder: Path) -> None:
         "gamma": "Gamma-band (25-40 Hz) power over time windows.",
         "plf": "Phase-Locking Factor between EEG channel pairs.",
         "plf_pairs": "Channel index pairs used for the phase-locking factor.",
-        "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
+        # (EEG-specific 'filtered' override lives in by_kind_desc["eeg"].)
 
         # NeuroKit2 EEG band powers (nk.eeg_power, per channel)
         "EEG_Power_Delta": "NeuroKit2 EEG power in the delta band (0.5-4 Hz).",
@@ -2603,29 +2597,56 @@ def append_features_readme_section(output_folder: Path) -> None:
         "RRV_SampEn": "Sample entropy of respiratory rate variability.",
     }
 
+    by_kind_desc: Dict[str, Dict[str, str]] = {
+        "ppg": {
+            "peaks": "Indices of detected PPG pulse (systolic) peaks.",
+            "onsets": "PPG pulse onset indices (start of beats).",
+            "templates": "Extracted PPG pulse templates aligned on systolic peaks.",
+            "segments_loc": "Start/end indices for each PPG pulse segment.",
+            "params": "Auxiliary parameters returned by some peak/onset functions.",
+        },
+        "pcg": {
+            "peaks": "Indices of detected heart sound peaks.",
+            "heart_sounds": "Classified heart sounds (e.g. S1/S2).",
+        },
+        "eeg": {
+            "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
+        },
+    }
+
     stat_suffixes = ("_mean", "_std", "_median", "_min", "_max", "_count")
 
-    def describe(feature: str, lib: str) -> str:
-        if feature in known:
-            return known[feature]
+    def describe(feature: str, kind: str) -> str:
+        kind_map = by_kind_desc.get(kind, {})
+
+        def lookup(name: str) -> Optional[str]:
+            if name in kind_map:
+                return kind_map[name]
+            return common.get(name)
+
+        direct = lookup(feature)
+        if direct is not None:
+            return direct
         for suffix in stat_suffixes:
             if feature.endswith(suffix):
                 base = feature[: -len(suffix)]
-                if base in known:
-                    stat = suffix[1:]
-                    return f"{stat.capitalize()} of: {known[base]}"
+                base_desc = lookup(base)
+                if base_desc is not None:
+                    return f"{suffix[1:].capitalize()} of: {base_desc}"
         return "See NeuroKit2 or BioSPPy docs."
 
     lines: List[str] = []
     lines.append("## Features extracted by analysis\n")
-    lines.append("This section lists the features written to `features.csv` during analysis, grouped by the library that produced them. Short descriptions are provided where available.\n")
+    lines.append("This section lists the features written to `features.csv` during analysis, grouped by signal kind and the library that produced them. Short descriptions are provided where available.\n")
 
-    for lib, feats in sorted(libs.items()):
-        lines.append(f"### {lib}\n")
-        for feat in sorted(feats):
-            desc = describe(feat, lib)
-            lines.append(f"- **{feat}**: {desc}\n")
-        lines.append("\n")
+    for kind in sorted(by_kind.keys()):
+        lines.append(f"### {kind.upper()}\n")
+        for lib, feats in sorted(by_kind[kind].items()):
+            lines.append(f"#### {lib}\n")
+            for feat in sorted(feats):
+                desc = describe(feat, kind)
+                lines.append(f"- **{feat}**: {desc}\n")
+            lines.append("\n")
 
     try:
         # Append to README (create if missing)
