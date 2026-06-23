@@ -344,19 +344,38 @@ LAYOUTS: dict[str, dict[str, str]] = {
         "AI5": "pcg",
         "AI6": "acc",
     },
+    # Layout used for the usability-test recording: ECG on AI1, EMG on AI3, EDA on AI5
+    "usertest": {
+        "AI1": "ecg",
+        "AI3": "emg",
+        "AI5": "eda",
+    },
 }
 
 
 def make_multi_session(
     layout_name: str, duration: int, sample_rate: int, base_dir: Path, name: str | None,
-    chunk_size: int,
+    chunk_size: int, unmapped: bool = False, only_layout_channels: bool = False,
 ) -> Path:
-    """Pack one signal kind per channel in a single session, per the named layout."""
+    """Pack one signal kind per channel in a single session, per the named layout.
+
+    When `unmapped` is True the waveforms are still simulated per the layout, but
+    the manifest's channelSignalKinds is left empty so the channels arrive without
+    a signal kind — useful for usability tests where mapping is one of the tasks.
+
+    When `only_layout_channels` is True only the layout's channels are written
+    (manifest + chunk frames); the unused AIx channels are omitted entirely
+    instead of being padded with a flat zero signal.
+    """
     layout = LAYOUTS[layout_name]
     folder_name = name or f"synthetic-{layout_name}"
     session_dir = base_dir / folder_name
 
-    all_channels = ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"]
+    all_channels = (
+        list(layout.keys())
+        if only_layout_channels
+        else ["AI1", "AI2", "AI3", "AI4", "AI5", "AI6"]
+    )
     sim_per_channel = {ch: simulate(kind, duration, sample_rate) for ch, kind in layout.items()}
     n = min(len(s) for s in sim_per_channel.values())
 
@@ -373,11 +392,13 @@ def make_multi_session(
         session_id=f"synthetic-{layout_name}",
         sample_rate=sample_rate,
         channels=all_channels,
-        channel_signal_kinds=dict(layout),
+        channel_signal_kinds={} if unmapped else dict(layout),
         signals=signals,
         chunk_size=chunk_size,
     )
     mapping = ", ".join(f"{ch}={kind}" for ch, kind in layout.items())
+    if unmapped:
+        mapping += "  (waveforms only; channelSignalKinds left empty for manual mapping)"
     print(f"  layout: {mapping}")
     print(f"  wrote {chunk_count} chunk file(s) covering {frame_count} frames")
     print(f"  session folder: {session_dir}")
@@ -396,6 +417,18 @@ def main() -> int:
         help=f"Frames per chunk file, mirroring BufferManager.storageChunkThreshold (default: {DEFAULT_CHUNK_SIZE})",
     )
     parser.add_argument("--name", default=None, help="Override the session folder name")
+    parser.add_argument(
+        "--unmapped",
+        action="store_true",
+        help="Simulate the layout's waveforms but leave channelSignalKinds empty "
+             "so channels arrive unmapped (for usability tests). Layouts only.",
+    )
+    parser.add_argument(
+        "--only-layout-channels",
+        action="store_true",
+        help="Write only the layout's channels (manifest + frames); omit the unused "
+             "AIx channels instead of padding them with a flat signal. Layouts only.",
+    )
     args = parser.parse_args()
 
     if args.chunk_size <= 0:
@@ -412,8 +445,11 @@ def main() -> int:
     if args.kind in LAYOUTS:
         make_multi_session(
             args.kind, args.duration, args.sample_rate, base_dir, args.name, args.chunk_size,
+            unmapped=args.unmapped, only_layout_channels=args.only_layout_channels,
         )
     else:
+        if args.unmapped or args.only_layout_channels:
+            parser.error("--unmapped/--only-layout-channels only apply to multi-channel layouts, not single kinds")
         make_single_kind_session(
             args.kind, args.duration, args.sample_rate, base_dir, args.name, args.chunk_size,
         )
