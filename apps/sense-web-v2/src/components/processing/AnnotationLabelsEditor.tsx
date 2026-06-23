@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import {
@@ -44,10 +44,27 @@ const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
  */
 const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave }) => {
 	const [draft, setDraft] = useState<AnnotationLabel[]>([])
+	const [lastAddedId, setLastAddedId] = useState<number | null>(null)
+
+	const listRef = useRef<HTMLDivElement>(null)
+	const newRowRef = useRef<HTMLDivElement>(null)
+	const newNameInputRef = useRef<HTMLInputElement>(null)
 
 	useEffect(() => {
-		if (open) setDraft((value ?? getAnnotationLabels()).map(label => ({ ...label })))
+		if (open) {
+			setDraft((value ?? getAnnotationLabels()).map(label => ({ ...label })))
+			setLastAddedId(null)
+		}
 	}, [open])
+
+	// When a label is added, scroll it into view and focus its name field
+	// (mirrors how the annotations list focuses the newest annotation).
+	useEffect(() => {
+		if (lastAddedId == null) return
+		newRowRef.current?.scrollIntoView({ block: "nearest" })
+		newNameInputRef.current?.focus({ preventScroll: true })
+		newNameInputRef.current?.select()
+	}, [lastAddedId])
 
 	useEffect(() => {
 		if (!open) return
@@ -80,19 +97,20 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 	const removeDraft = (id: number) =>
 		setDraft(current => current.map(label => (label.id === id ? { ...label, retired: true } : label)))
 
-	const addDraft = () =>
-		setDraft(current => {
-			if (activeChannelCount(current) >= MAX_CHANNEL_LABELS) {
-				return current
-			}
-			const id = nextLabelId(current)
-			return [
-				...current,
-				{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel", predefined: false, retired: false }
-			]
-		})
+	const addDraft = () => {
+		if (activeChannelCount(draft) >= MAX_CHANNEL_LABELS) return
+		const id = nextLabelId(draft)
+		setDraft(current => [
+			...current,
+			{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel", predefined: false, retired: false }
+		])
+		setLastAddedId(id)
+	}
 
-	const resetDraft = () => setDraft(DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label })))
+	const resetDraft = () => {
+		setDraft(DEFAULT_ANNOTATION_LABELS.map(label => ({ ...label })))
+		setLastAddedId(null)
+	}
 
 	const save = () => {
 		if (onSave) onSave(draft)
@@ -145,10 +163,11 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 					</button>
 				</div>
 
-				<div className="mt-4 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+				<div ref={listRef} className="mt-4 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
 					{visible.map(label => (
 						<div
 							key={label.id}
+							ref={label.id === lastAddedId ? newRowRef : undefined}
 							className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-2.5 dark:bg-background-accent-dark"
 						>
 							<div className="flex items-end gap-2">
@@ -166,6 +185,7 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 								<label className="flex flex-1 flex-col gap-1">
 									<span className={fieldLabelClasses}>Label</span>
 									<input
+										ref={label.id === lastAddedId ? newNameInputRef : undefined}
 										type="text"
 										value={label.name}
 										onChange={event => updateDraft(label.id, { name: event.target.value })}
