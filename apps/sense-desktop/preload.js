@@ -381,6 +381,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose),
   resetSession: () => ipcRenderer.send('reset-session'),
   logPerfEvent: (name, durationMs) => ipcRenderer.send('log-perf-event', { name, durationMs }),
+  logAnnotationEvent: (payload) => ipcRenderer.send('log-annotation-event', payload),
   stopPerfLoggerIfPending: (status) => ipcRenderer.invoke('stop-perf-logger-if-pending', status),
   loadSessionSettingsHistory: () => ipcRenderer.invoke('load-session-settings-history'),
   saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot),

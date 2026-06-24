@@ -28,6 +28,28 @@ export const annotationKind = (a: { t0: number; t1: number }): AnnotationType =>
 const CREATOR = "user"
 const nowIso = () => new Date().toISOString()
 
+const commitTagToAction = (tag: string): string => {
+	switch (tag.split(":")[0]) {
+		case "add":
+			return "create"
+		case "del":
+			return "remove"
+		case "clear":
+			return "clear"
+		case "note":
+			return "note"
+		case "label":
+			return "relabel"
+		case "bounds":
+		case "move":
+			return "edit"
+		default:
+			return "edit"
+	}
+}
+
+const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now())
+
 function makeAnnotation(segment: number, t0: number, t1: number, labelId: number): Annotation {
 	const now = nowIso()
 	return {
@@ -153,8 +175,27 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		[sampleRate]
 	)
 
+	const logAnnotationEvent = useCallback(
+		(action: string, durationMs: number, opts?: { count?: number; detail?: Record<string, unknown> }) => {
+			if (!sessionFolder) return
+			try {
+				window.electronAPI?.logAnnotationEvent?.({
+					sessionFolder,
+					action,
+					durationMs,
+					annotationCount: opts?.count ?? annotationsRef.current.length,
+					detail: opts?.detail
+				})
+			} catch {
+				/* logging must never break annotation editing */
+			}
+		},
+		[sessionFolder]
+	)
+
 	const HISTORY_LIMIT = 100
 	const commit = useCallback((tag: string, updater: (list: Annotation[]) => Annotation[]) => {
+		const t0 = nowMs()
 		const prev = annotationsRef.current
 		const next = updater(prev)
 		if (next === prev) return
@@ -173,7 +214,19 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		setDirty(true)
 		setCanUndo(true)
 		setCanRedo(false)
-	}, [])
+		const action = commitTagToAction(tag)
+		const prefix = tag.split(":")[0]
+		const id = tag.includes(":") ? tag.slice(tag.indexOf(":") + 1) : ""
+		let detail: Record<string, unknown> | undefined
+		if (action === "clear") {
+			detail = { removed: prev.length - next.length }
+		} else if (id) {
+			const ann = next.find(a => a.id === id) ?? prev.find(a => a.id === id)
+			detail = ann ? { id: ann.id, labelId: ann.labelId, segment: ann.segment } : { id }
+			if (action === "edit") detail.op = prefix === "move" ? "move" : "resize"
+		}
+		logAnnotationEvent(action, nowMs() - t0, { count: next.length, detail })
+	}, [logAnnotationEvent])
 
 	const undo = useCallback(() => {
 		const h = historyRef.current
@@ -257,11 +310,18 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		if (!sessionFolder || !window.electronAPI?.readSessionAnnotations) return
 		void (async () => {
 			try {
+				const t0 = nowMs()
 				const { data, labelsFile } = await readSidecars(sessionFolder)
 				if (cancelled) return
-				setAnnotations(sanitizeAnnotations(data?.annotations))
+				const loaded = sanitizeAnnotations(data?.annotations)
+				setAnnotations(loaded)
 				applyFileMeta(data, labelsFile)
 				setDirty(false)
+				if (data)
+					logAnnotationEvent("import", nowMs() - t0, {
+						count: loaded.length,
+						detail: { version: data.version ?? null, labels: data.labels?.length ?? 0 }
+					})
 			} catch {
 				if (!cancelled) setAnnotations([])
 			}
@@ -269,7 +329,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		return () => {
 			cancelled = true
 		}
-	}, [sessionFolder, applyFileMeta, readSidecars, resetHistory])
+	}, [sessionFolder, applyFileMeta, readSidecars, resetHistory, logAnnotationEvent])
 
 	// Discard unsaved edits by reloading the last saved annotations from disk.
 	const discardChanges = useCallback(async () => {
@@ -502,6 +562,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 	const save = useCallback(async () => {
 		if (!sessionFolder || !window.electronAPI?.writeSessionAnnotations) return
 		setSaving(true)
+		const t0 = nowMs()
 		try {
 			const rate = Number(sampleRate) > 0 ? Number(sampleRate) : 1000
 			const segStartMs = new Map((segments ?? []).map(s => [s.index, s.startedAt]))
@@ -530,16 +591,26 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 				labels: effectiveLabels
 			})
 			setDirty(false)
+			logAnnotationEvent("save", nowMs() - t0, {
+				count: anchored.length,
+				detail: { labels: effectiveLabels.length, segmentLabels: Object.keys(segmentLabels).length }
+			})
 		} finally {
 			setSaving(false)
 		}
-	}, [sessionFolder, annotations, effectiveLabels, segmentLabels, sampleRate, segments])
+	}, [sessionFolder, annotations, effectiveLabels, segmentLabels, sampleRate, segments, logAnnotationEvent])
 
 	const exportCsv = useCallback(async () => {
 		await save()
 		if (!sessionFolder || !window.electronAPI?.exportAnnotationsCsv) return null
-		return window.electronAPI.exportAnnotationsCsv(sessionFolder)
-	}, [save, sessionFolder])
+		const t0 = nowMs()
+		const result = await window.electronAPI.exportAnnotationsCsv(sessionFolder)
+		logAnnotationEvent("export", nowMs() - t0, {
+			count: annotationsRef.current.length,
+			detail: { ok: (result as { ok?: boolean } | null)?.ok ?? null }
+		})
+		return result
+	}, [save, sessionFolder, logAnnotationEvent])
 
 	return {
 		annotations,
