@@ -52,9 +52,18 @@ try:
         SUPPORTED_SIGNAL_KINDS as BIOSPPY_SUPPORTED_SIGNAL_KINDS,
         process_signal as process_biosppy_signal,
     )
-except Exception:  
+except Exception:
     BIOSPPY_SUPPORTED_SIGNAL_KINDS = set()
     process_biosppy_signal = None
+
+try:
+    from preprocessing_metadata import (
+        build_preprocessing_block,
+        get_preprocessing_metadata,
+    )
+except Exception:
+    build_preprocessing_block = None
+    get_preprocessing_metadata = None
 
 RESERVED_FRAME_KEYS = {
     "__seq",
@@ -411,6 +420,20 @@ def build_library_policy_manifest() -> Dict[str, Any]:
         "secondaryLibrary": SECONDARY_LIBRARY,
         "signalPolicies": signal_policies,
     }
+
+
+def detect_library_versions() -> Dict[str, Optional[str]]:
+    """Best-effort capture of the installed library versions so the preprocessing
+    reference in analysis.json is pinned to what actually ran."""
+    versions: Dict[str, Optional[str]] = {"biosppy": None, "neurokit2": None}
+    try:
+        import biosppy  # local import: BioSPPy isn't imported at module load
+        versions["biosppy"] = getattr(biosppy, "__version__", None)
+    except Exception:
+        pass
+    if nk is not None:
+        versions["neurokit2"] = getattr(nk, "__version__", None)
+    return versions
 
 
 def normalize_channel_list(value: Any) -> List[str]:
@@ -2243,6 +2266,19 @@ def build_result(
     biosppy_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"]
     neurokit2_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "hrv"]
 
+    library_versions = detect_library_versions()
+    preprocessing_block: Optional[Dict[str, Any]] = None
+    if build_preprocessing_block is not None:
+        present_kinds = sorted(k for k in signal_kind_counts if k and k != "generic")
+        try:
+            preprocessing_block = build_preprocessing_block(
+                library_versions.get("biosppy"),
+                library_versions.get("neurokit2"),
+                signal_kinds=present_kinds or None,
+            )
+        except Exception:
+            preprocessing_block = None
+
     return {
         "sessionId": manifest.get("sessionId"),
         "sessionFolder": str(session_folder),
@@ -2260,6 +2296,7 @@ def build_result(
             },
         },
         "analysisPolicy": library_policy,
+        **({"preprocessing": preprocessing_block} if preprocessing_block is not None else {}),
         "analysisConfig": {
             "batchMode": "load-session-process-entire-dataset-store-features",
             "channelSignalKinds": analysis_manifest.get("channelSignalKinds", {}),
@@ -2429,6 +2466,157 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                                 serialized,
                             ]
                         )
+
+
+def _signal_kinds_in_features(output_folder: Path) -> List[str]:
+    """Read the distinct signal kinds present in features.csv (column index 3)."""
+    features_path = output_folder / "features.csv"
+    if not features_path.exists():
+        return []
+    try:
+        csv.field_size_limit(10 ** 7)
+    except Exception:
+        pass
+    kinds: set = set()
+    try:
+        with features_path.open("r", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)
+            for row in reader:
+                if len(row) < 4:
+                    continue
+                kind = (row[3] or "").strip().lower()
+                if kind:
+                    kinds.add(kind)
+    except Exception:
+        return []
+    return sorted(kinds)
+
+
+def _describe_pp_filter(value: Any) -> str:
+    """Render a filter spec from preprocessing_metadata into a readable phrase."""
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return str(value)
+    if "stages" in value:
+        stage_text = "; then ".join(_describe_pp_filter(stage) for stage in value["stages"])
+        if value.get("zero_phase"):
+            stage_text += " (zero-phase)"
+        return stage_text
+    parts: List[str] = []
+    if value.get("type"):
+        parts.append(str(value["type"]))
+    if value.get("band"):
+        parts.append(str(value["band"]))
+    descriptor = " ".join(parts)
+    extras: List[str] = []
+    if value.get("order") is not None:
+        extras.append(f"order {value['order']}")
+    cutoff = value.get("cutoff_hz")
+    if cutoff is not None:
+        if isinstance(cutoff, (list, tuple)):
+            extras.append(f"{cutoff[0]}-{cutoff[1]} Hz")
+        else:
+            extras.append(f"{cutoff} Hz")
+    if value.get("split_cutoff_hz") is not None:
+        extras.append(f"split at {value['split_cutoff_hz']} Hz")
+    text = descriptor
+    if extras:
+        text = f"{descriptor}, {', '.join(extras)}" if descriptor else ", ".join(extras)
+    return text or "see library defaults"
+
+
+def _format_pp_value(key: str, value: Any) -> str:
+    if key == "filter":
+        return _describe_pp_filter(value)
+    if isinstance(value, dict):
+        bits: List[str] = []
+        for k, v in value.items():
+            if k == "filter":
+                bits.append(_describe_pp_filter(v))
+            elif isinstance(v, (list, tuple)):
+                bits.append(f"{k}: {', '.join(str(x) for x in v)}")
+            elif isinstance(v, dict):
+                bits.append(f"{k}: {_format_pp_value(k, v)}")
+            else:
+                bits.append(f"{k}: {v}")
+        return "; ".join(bits)
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(x) for x in value)
+    return str(value)
+
+
+def append_preprocessing_readme_section(output_folder: Path) -> None:
+    """Append a 'Preprocessing' section to README.md spelling out what BioSPPy and
+    NeuroKit2 do, by default, before extracting features."""
+    if get_preprocessing_metadata is None:
+        return
+    readme_path = output_folder / "README.md"
+    kinds = _signal_kinds_in_features(output_folder)
+    if not kinds:
+        return
+
+    versions = detect_library_versions()
+    bv, nv = versions.get("biosppy"), versions.get("neurokit2")
+
+    rendered: List[str] = []
+    _base_keys = {
+        "library", "requested_version", "reference_version",
+        "exact_version_match", "signal_kind", "status",
+    }
+    label_map = {"biosppy": "BioSPPy", "neurokit2": "NeuroKit2"}
+
+    for kind in kinds:
+        kind_blocks: List[str] = []
+        for library, version in (("biosppy", bv), ("neurokit2", nv)):
+            meta = get_preprocessing_metadata(library, version, kind)
+            if "status" in meta:  # no documented metadata for this kind/library
+                continue
+            lines = [f"#### {label_map.get(library, library)}\n"]
+            for key, value in meta.items():
+                if key in _base_keys:
+                    continue
+                lines.append(f"- **{key}**: {_format_pp_value(key, value)}\n")
+            kind_blocks.append("".join(lines))
+        if kind_blocks:
+            rendered.append(f"### {kind.upper()}\n\n" + "\n".join(kind_blocks))
+
+    if not rendered:
+        return
+
+    version_note_parts = []
+    if bv:
+        version_note_parts.append(f"BioSPPy {bv}")
+    if nv:
+        version_note_parts.append(f"NeuroKit2 {nv}")
+    version_note = f" ({', '.join(version_note_parts)})" if version_note_parts else ""
+
+    header = [
+        "## Preprocessing (what the libraries do by default)\n",
+        "Before any feature is extracted, each signal is filtered/cleaned by the "
+        "analysis libraries using their **default** routines" + version_note + ". "
+        "The worker does not override those internal pipelines (only EDA's cleaning "
+        "method is configurable via `--eda-method`). The exact methods and filter "
+        "parameters per library, per signal kind, are listed below and recorded "
+        "machine-readably in `analysis.json` under `preprocessing`.\n",
+        "**Ordering.** The worker first drops non-finite samples and, for "
+        "ECG/EDA/PPG/EMG/RSP/EOG, applies the NeuroKit2 `<kind>_clean` default once; "
+        "that cleaned series is then passed to **both** libraries, each of which "
+        "filters again internally. EEG/PCG/ACC receive only finite-value "
+        "sanitization. The per-channel steps actually run are recorded in each "
+        "channel's `preprocessing.steps` field in `analysis.json`.\n",
+    ]
+
+    try:
+        with readme_path.open("a", encoding="utf-8") as rh:
+            rh.write("\n".join(header))
+            rh.write("\n")
+            rh.write("\n".join(rendered))
+            rh.write("\n")
+    except Exception:
+        # Non-fatal: don't break analysis if README append fails
+        pass
 
 
 def append_features_readme_section(output_folder: Path) -> None:
@@ -2610,7 +2798,7 @@ def append_features_readme_section(output_folder: Path) -> None:
             "heart_sounds": "Classified heart sounds (e.g. S1/S2).",
         },
         "eeg": {
-            "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
+            "filtered": "Band-pass filtered EEG signal (~4-40 Hz by default: 4 Hz high-pass order-8 + 40 Hz low-pass order-16 Butterworth).",
         },
     }
 
@@ -3021,6 +3209,10 @@ CSV export is performed after analysis completes.
             result_path = output_folder / "analysis.json"
             write_summary_csv(output_folder, result)
             write_features_csv(output_folder, result)
+            try:
+                append_preprocessing_readme_section(output_folder)
+            except Exception:
+                pass
             try:
                 append_features_readme_section(output_folder)
             except Exception:
