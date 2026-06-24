@@ -9,11 +9,25 @@ const { BufferManager } = require('./dist/BufferManager.js');
 const { onChunkReady } = require('./dist/StorageSubscriber.js');
 const { SessionManager } = require('./src/SessionManager.js');
 const PerformanceLogger = require('./src/PerformanceLogger.js');
+const AnnotationLogger = require('./src/AnnotationLogger.js');
+
 const SESSION_SETTINGS_HISTORY_FILE = 'session-settings-history.json';
 const MAX_SESSION_SETTINGS_HISTORY = 5;
 const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.py');
 
 let busyReason = null;
+
+// One annotation event-log per session folder, created lazily on first event.
+const annotationLoggers = new Map();
+function getAnnotationLogger(sessionFolder) {
+  if (!sessionFolder || typeof sessionFolder !== 'string') return null;
+  let logger = annotationLoggers.get(sessionFolder);
+  if (!logger) {
+    logger = new AnnotationLogger(path.join(sessionFolder, 'annotation-log.csv'));
+    annotationLoggers.set(sessionFolder, logger);
+  }
+  return logger;
+}
 
 function getSessionSettingsHistoryPath() {
   return path.join(app.getPath('userData'), SESSION_SETTINGS_HISTORY_FILE);
@@ -573,6 +587,15 @@ app.whenReady().then(() => {
     if (exportEventsCompleted.csv && exportEventsCompleted.pdf) {
       perfLogger.stop();
       perfLogger = null;
+    }
+  });
+
+  ipcMain.on('log-annotation-event', (_event, payload = {}) => {
+    try {
+      const logger = getAnnotationLogger(payload.sessionFolder);
+      if (logger) logger.logEvent(payload);
+    } catch (err) {
+      console.error('[log-annotation-event] Failed:', err);
     }
   });
 

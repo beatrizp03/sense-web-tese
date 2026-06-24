@@ -63,6 +63,7 @@ declare global {
       confirmClose?: (shouldClose: boolean) => void;
       resetSession?: () => void;
       logPerfEvent?: (name: string, durationMs?: number) => void;
+      logAnnotationEvent?: (payload: { sessionFolder: string; action: string; durationMs?: number; annotationCount?: number; detail?: unknown }) => void;
       stopPerfLoggerIfPending?: (status: { csvExported?: boolean; pdfExported?: boolean }) => Promise<{ stopped: boolean }>;
       loadSessionSettingsHistory?: () => Promise<SessionSettingsSnapshot[]>;
       saveSessionSettingsSnapshot?: (snapshot: SessionSettingsSnapshot) => Promise<SessionSettingsSnapshot[]>;
