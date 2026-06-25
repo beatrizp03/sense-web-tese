@@ -299,17 +299,17 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						type="button"
 						onClick={onClearAll}
 						disabled={items.length === 0}
-						className="flex h-12 flex-1 basis-0 items-center justify-center rounded-lg bg-over-background-low px-4 text-xs text-background-white transition hover:opacity-80 disabled:opacity-40"
+						className="flex h-12 flex-1 uppercase pl-2 pr-2 basis-0 min-w-0 px-6 items-center justify-center rounded-lg bg-over-background-low px-2 text-center text-xs leading-tight text-background-white transition hover:opacity-80 disabled:opacity-40"
 					>
-						Clear window's annotations
+						Clear window annotations
 					</button>
 					<TextButton
 						size="base"
 						onClick={onSave}
 						disabled={saving || !dirty}
-						className="flex h-12 flex-1 basis-0 items-center justify-center px-4 !text-xs motion-safe:hover:!scale-95"
+						className="flex h-12 flex-1 basis-0 pl-2 pr-2 min-w-0 items-center justify-center px-4 text-center !text-xs leading-tight motion-safe:hover:!scale-95"
 					>
-						{saving ? "Saving…" : "Save annotations"}
+						{saving ? "Saving…" : "Save session annotations"}
 					</TextButton>
 				</div>
 			</div>

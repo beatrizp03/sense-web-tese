@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
+import LoadingDots, { LOADING_BUTTON_CLASS } from "./LoadingDots"
+
 export interface PdfExportRange {
 	segment: number
 	startSec: number
@@ -158,17 +160,20 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						type="button"
 						onClick={onClose}
 						disabled={generating}
-						className="rounded-lg border border-background-accent px-4 py-2 text-sm text-over-background-medium hover:bg-background-accent disabled:opacity-40"
+						className="rounded-lg border border-background-accent px-4 py-2 text-sm text-over-background-medium hover:bg-background-accent disabled:opacity-5"
 					>
 						Cancel
 					</button>
 					<TextButton
 						size="base"
-						className="!text-sm"
+						className={`!text-sm${generating ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 						disabled={!!error || generating}
 						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd, includeAnalysis })}
 					>
-						{generating ? "Generating…" : "Generate PDF"}
+						<span className="inline-flex items-center justify-center gap-2">
+							{generating && <LoadingDots />}
+							{generating ? "Downloading" : "Download PDF"}
+						</span>
 					</TextButton>
 				</div>
 			</div>

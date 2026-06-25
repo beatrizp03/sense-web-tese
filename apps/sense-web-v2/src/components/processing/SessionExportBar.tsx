@@ -6,6 +6,7 @@ import { useSessionExport } from "../../hooks/useSessionExport"
 import { Annotation } from "../../hooks/useAnnotations"
 import { AnnotationLabel } from "../../utils/annotationLabels"
 import PdfExportModal, { PdfExportRange } from "./PdfExportModal"
+import LoadingDots, { LOADING_BUTTON_CLASS } from "./LoadingDots"
 
 interface SessionExportBarProps {
 	manifest: any
@@ -62,27 +63,31 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	const options = [
 		{
 			id: "csv",
-			label: csvDownloading ? "Downloading..." : "Download as CSV",
+			label: csvDownloading ? "Downloading CSV" : "Download as CSV",
 			description: "Raw signal samples for the whole acquired session. Depending on the session length, this file may be very large and take a while to download.",
 			onClick: convertToCSV,
-			disabled: !hasSession || csvDownloading
+			disabled: !hasSession || csvDownloading,
+			loading: csvDownloading
 		},
 		{
 			id: "csv-annotations",
-			label: annotationsDownloading ? "Downloading..." : "Download as CSV with Annotations",
+			label: annotationsDownloading ? "Downloading CSV w/ Annotations" : "Download as CSV w/ Annotations",
 			description: "The raw signal samples with an extra annotation column, where each annotation is aligned to the frame it was placed on. One CSV per segment, bundled in a zip.",
 			onClick: () => convertToCSVWithAnnotations(annotations, labels),
-			disabled: !hasSession || annotationsDownloading
+			disabled: !hasSession || annotationsDownloading,
+			loading: annotationsDownloading
 		},
 		{
 			id: "pdf",
-			label: annotatedPdfDownloading ? "Generating…" : "Download as PDF",
+			label: annotatedPdfDownloading ? "Downloading PDF" : "Download as PDF",
 			description: "Pick a time span to render: the branded report draws each channel with its annotations overlaid, followed by a table of the annotations and their descriptions.",
 			onClick: () => setPdfModalOpen(true),
-			disabled: !hasSession || annotatedPdfDownloading
+			disabled: !hasSession || annotatedPdfDownloading,
+			loading: annotatedPdfDownloading
 		}
 	]
 
+	const loadingClass = LOADING_BUTTON_CLASS
 	const buttonClass = "text-xs flex-grow motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
 
 	return (
@@ -93,11 +98,14 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 						<div key={option.id} className="space-y-1">
 							<TextButton
 								size="base"
-								className="text-sm w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+								className={`text-sm w-full motion-safe:hover:!scale-95 motion-safe:active:!scale-95${option.loading ? ` ${loadingClass}` : ""}`}
 								disabled={option.disabled}
 								onClick={option.onClick}
 							>
-								{option.label}
+								<span className="text-sm inline-flex items-center justify-center gap-2">
+									{option.loading && <LoadingDots />}
+									{option.label}
+								</span>
 							</TextButton>
 							<p className="text-xs text-over-background-medium">{option.description}</p>
 						</div>
@@ -109,11 +117,14 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 						<TextButton
 							key={option.id}
 							size="base"
-							className={buttonClass}
+							className={`${buttonClass}${option.loading ? ` ${loadingClass}` : ""}`}
 							disabled={option.disabled}
 							onClick={option.onClick}
 						>
-							{option.label}
+							<span className="text-sm inline-flex items-center justify-center gap-2">
+								{option.loading && <LoadingDots />}
+								{option.label}
+							</span>
 						</TextButton>
 					))}
 				</div>
