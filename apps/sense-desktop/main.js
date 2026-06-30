@@ -29,6 +29,15 @@ function getAnnotationLogger(sessionFolder) {
   return logger;
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch =>
+    ch === '&' ? '&amp;' :
+    ch === '<' ? '&lt;' :
+    ch === '>' ? '&gt;' :
+    ch === '"' ? '&quot;' : '&#39;'
+  );
+}
+
 function getSessionSettingsHistoryPath() {
   return path.join(app.getPath('userData'), SESSION_SETTINGS_HISTORY_FILE);
 }
@@ -553,13 +562,113 @@ app.whenReady().then(() => {
 
   // show a simple chooser dialog for ports
   ipcMain.handle("show-port-dialog", async (_event, buttons) => {
-    const { response } = await dialog.showMessageBox({
-      type: "question",
-      message: "Select a connection (Bluetooth/serial)",
-      buttons,
-      cancelId: -1
+    const labels = Array.isArray(buttons) ? buttons.map(b => String(b)) : [];
+    const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+    const items = labels
+      .map((label, i) => `<div class="item" data-index="${i}">${escapeHtml(label)}</div>`)
+      .join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>port-chooser</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; box-sizing: border-box; background: #1c1c1e; color: #f2f2f7; display: flex; flex-direction: column; }
+  h1 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  #filter { width: 100%; box-sizing: border-box; padding: 8px 10px; margin-bottom: 10px; border: 1px solid #3a3a3c; border-radius: 8px; background: #2c2c2e; color: #f2f2f7; font-size: 13px; outline: none; }
+  #filter:focus { border-color: #0a84ff; }
+  #list { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid #3a3a3c; border-radius: 8px; }
+  .item { padding: 10px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #2c2c2e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item:last-child { border-bottom: none; }
+  .item:hover { background: #0a84ff; color: #fff; }
+  .empty { padding: 10px 12px; font-size: 13px; color: #8e8e93; }
+  .actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+  button.cancel { padding: 8px 14px; border: 1px solid #3a3a3c; border-radius: 8px; background: #2c2c2e; color: #f2f2f7; font-size: 13px; cursor: pointer; }
+  button.cancel:hover { background: #3a3a3c; }
+</style></head>
+<body>
+  <h1>Select a connection (Bluetooth / serial)</h1>
+  <input id="filter" type="text" placeholder="Filter…" autofocus>
+  <div id="list">${items || '<div class="empty">No connections found.</div>'}</div>
+  <div class="actions"><button class="cancel" id="cancel">Cancel</button></div>
+  <script>
+    var list = document.getElementById('list');
+    var filter = document.getElementById('filter');
+    function pick(i){ document.title = 'port-pick:' + i; }
+    list.addEventListener('click', function(e){
+      var el = e.target.closest && e.target.closest('.item');
+      if (el) pick(el.getAttribute('data-index'));
     });
-    return response;
+    document.getElementById('cancel').addEventListener('click', function(){ pick(-1); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') pick(-1); });
+    filter.addEventListener('input', function(){
+      var q = filter.value.toLowerCase();
+      var rows = list.getElementsByClassName('item');
+      for (var k = 0; k < rows.length; k++){
+        rows[k].style.display = rows[k].textContent.toLowerCase().indexOf(q) === -1 ? 'none' : '';
+      }
+    });
+  </script>
+</body></html>`;
+
+    let htmlPath = '';
+    try {
+      htmlPath = path.join(app.getPath('temp'), `sense-port-chooser-${process.pid}.html`);
+      fs.writeFileSync(htmlPath, html, 'utf-8');
+    } catch (e) {
+      console.error('[show-port-dialog] Failed to write chooser HTML, falling back to message box:', e);
+      const { response } = await dialog.showMessageBox(parent || undefined, {
+        type: 'question',
+        message: 'Select a connection (Bluetooth/serial)',
+        buttons: labels,
+        cancelId: -1
+      });
+      return response;
+    }
+
+    return await new Promise(resolve => {
+      const chooser = new BrowserWindow({
+        width: 440,
+        height: 480,
+        parent: parent || undefined,
+        modal: !!parent,
+        resizable: true,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        show: false,
+        title: 'Select a connection',
+        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+      });
+      chooser.setMenuBarVisibility(false);
+
+      let settled = false;
+      const finish = (index) => {
+        if (settled) return;
+        settled = true;
+        resolve(Number.isInteger(index) ? index : -1);
+        try { fs.unlinkSync(htmlPath); } catch { /* best effort */ }
+        if (!chooser.isDestroyed()) chooser.destroy();
+      };
+
+      const showOnce = () => {
+        if (!chooser.isDestroyed() && !chooser.isVisible()) {
+          chooser.show();
+          chooser.focus();
+        }
+      };
+      chooser.once('ready-to-show', showOnce);
+      chooser.webContents.once('did-finish-load', showOnce);
+
+      chooser.webContents.on('page-title-updated', (event, title) => {
+        const match = /^port-pick:(-?\d+)$/.exec(title || '');
+        if (match) {
+          event.preventDefault();
+          finish(parseInt(match[1], 10));
+        }
+      });
+      chooser.on('closed', () => finish(-1));
+
+      chooser.loadFile(htmlPath);
+    });
   });
 
   ipcMain.handle("select-analysis-session-folder", async () => {
@@ -985,13 +1094,38 @@ function readJsonOrNull(filePath) {
   }
 }
 
+function deviceTypeLabel(deviceType) {
+  if (deviceType === 'sense') return 'ScientISST Sense';
+  if (deviceType === 'maker') return 'ScientISST Maker';
+  return deviceType || '';
+}
+
+function buildSessionHeader(manifest) {
+  if (!manifest || typeof manifest !== 'object') return null;
+  const startedAt = Number(manifest.startedAt);
+  const hasStart = Number.isFinite(startedAt);
+  return {
+    sessionId: manifest.sessionId ?? null,
+    startedAt: hasStart ? startedAt : null,
+    iso8601: hasStart ? new Date(startedAt).toISOString() : '',
+    sampleRate: Number(manifest.sampleRate) || null,
+    device: {
+      name: manifest.device || '',
+      type: deviceTypeLabel(manifest.deviceType),
+      firmwareVersion: manifest.firmwareVersion || ''
+    }
+  };
+}
+
 ipcMain.handle('read-session-annotations', async (_event, sessionFolder) => {
   return readJsonOrNull(path.join(sessionFolder, 'annotations.json'));
 });
 
 ipcMain.handle('write-session-annotations', async (_event, sessionFolder, data) => {
   try {
-    atomicWriteJson(path.join(sessionFolder, 'annotations.json'), data);
+    const header = buildSessionHeader(readJsonOrNull(path.join(sessionFolder, 'session.json')));
+    const payload = header ? { session: header, ...data } : data;
+    atomicWriteJson(path.join(sessionFolder, 'annotations.json'), payload);
     return { ok: true };
   } catch (e) {
     console.error('[write-session-annotations] Failed to write annotations:', e);
@@ -1053,8 +1187,8 @@ ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
     let annTotal = 0;
     for (const a of ann.annotations) {
       const seg = Number(a.segment) || 1;
-      const sRaw = Number.isFinite(Number(a.sample)) ? Number(a.sample) : Math.round(Number(a.t0) * sampleRate);
-      const eRaw = Number.isFinite(Number(a.sampleEnd)) ? Number(a.sampleEnd) : Math.round(Number(a.t1) * sampleRate);
+      const sRaw = Number.isFinite(Number(a.sample)) ? Number(a.sample) : Math.round(Number(a.ti ?? a.t0) * sampleRate);
+      const eRaw = Number.isFinite(Number(a.sampleEnd)) ? Number(a.sampleEnd) : Math.round(Number(a.tf ?? a.t1) * sampleRate);
       const label = labelById.get(a.labelId);
       const name = label ? label.name : (a.labelId != null ? String(a.labelId) : '');
       const text = a.note ? `${name} (${a.note})` : name;
@@ -1073,9 +1207,9 @@ ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
       const segMeta = segmentsMeta.find(s => Number(s.index) === seg) || segmentsMeta[seg - 1];
       const startedAt = Number(segMeta && segMeta.startedAt) || 0;
       const metadata = {
-        Device: manifest.deviceType === 'sense' ? 'ScientISST Sense'
-          : manifest.deviceType === 'maker' ? 'ScientISST Maker'
-          : (manifest.deviceType || ''),
+        Device: deviceTypeLabel(manifest.deviceType),
+        'Device name': manifest.device || '',
+        Firmware: manifest.firmwareVersion || '',
         Channels: channels,
         'Sampling rate (Hz)': sampleRate,
         Segment: seg,

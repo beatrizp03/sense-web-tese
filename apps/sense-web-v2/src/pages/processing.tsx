@@ -25,6 +25,8 @@ const backgroundDarkColor =
 
 type AnalysisRange = { startSec: number; endSec: number }
 
+type ConfirmLeave = { title: string; body: string; confirmLabel: string; onConfirm: () => void }
+
 function hexToRgba(hex: string, alpha: number): string {
 	const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
 	if (!match) return hex
@@ -41,6 +43,7 @@ const Page = () => {
 	const [error, setError] = useState("")
 	const [hydrated, setHydrated] = useState(false)
 	const [analysisBusy, setAnalysisBusy] = useState(false)
+	const [exportBusy, setExportBusy] = useState(false)
 	const [windowRange, setWindowRange] = useState<AnalysisRange | null>(null)
 	const [selectedSegment, setSelectedSegment] = useState(1)
 	const [activeSideTab, setActiveSideTab] = useState<SidePanelTab>("analysis")
@@ -60,12 +63,37 @@ const Page = () => {
 	useBusyGuard(
 		loading || analysisBusy
 			? "Analysis"
-			: annotations.dirty
-				? "You have unsaved annotations."
-				: null
+			: exportBusy
+				? "Exporting a file"
+				: annotations.dirty
+					? "You have unsaved annotations."
+					: null
 	)
 
-	const [discardAction, setDiscardAction] = useState<(() => void) | null>(null)
+	const [confirmLeave, setConfirmLeave] = useState<ConfirmLeave | null>(null)
+
+	const buildDiscardLeave = useCallback(
+		(onConfirm: () => void): ConfirmLeave => ({
+			title: "Unsaved Annotations",
+			body: "You have unsaved annotations. Do you want to proceed and discard them?",
+			confirmLabel: "Proceed",
+			onConfirm: () => {
+				void annotations.discardChanges()
+				onConfirm()
+			}
+		}),
+		[annotations.discardChanges]
+	)
+
+	const buildExportLeave = useCallback(
+		(onConfirm: () => void): ConfirmLeave => ({
+			title: "Export in progress",
+			body: "A file is still being exported. If you leave now it may not finish. Do you want to proceed?",
+			confirmLabel: "Proceed",
+			onConfirm
+		}),
+		[]
+	)
 
 	const requestDiscard = useCallback(
 		(onConfirm: () => void) => {
@@ -73,20 +101,30 @@ const Page = () => {
 				onConfirm()
 				return
 			}
-			setDiscardAction(() => onConfirm)
+			setConfirmLeave(buildDiscardLeave(onConfirm))
 		},
-		[annotations.dirty]
+		[annotations.dirty, buildDiscardLeave]
+	)
+
+	const guardLeave = useCallback(
+		(onConfirm: () => void) => {
+			if (annotations.dirty) {
+				setConfirmLeave(buildDiscardLeave(onConfirm))
+			} else if (exportBusy) {
+				setConfirmLeave(buildExportLeave(onConfirm))
+			} else {
+				onConfirm()
+			}
+		},
+		[annotations.dirty, exportBusy, buildDiscardLeave, buildExportLeave]
 	)
 
 	const handleTabChange = useCallback(
 		(to: SidePanelTab) => {
-			if (activeSideTab === "annotations" && to !== "annotations") {
-				requestDiscard(() => setActiveSideTab(to))
-			} else {
-				setActiveSideTab(to)
-			}
+			if (to === activeSideTab) return
+			guardLeave(() => setActiveSideTab(to))
 		},
-		[activeSideTab, requestDiscard]
+		[activeSideTab, guardLeave]
 	)
 
 	const router = useRouter()
@@ -97,13 +135,16 @@ const Page = () => {
 	useEffect(() => {
 		if (!window.electronAPI?.onShowCloseWarning) return
 		return window.electronAPI.onShowCloseWarning(() => {
+			const confirmClose = () => window.electronAPI?.confirmClose?.(true)
 			if (annotations.dirty) {
-				setDiscardAction(() => () => window.electronAPI?.confirmClose?.(true))
+				setConfirmLeave(buildDiscardLeave(confirmClose))
+			} else if (exportBusy) {
+				setConfirmLeave(buildExportLeave(confirmClose))
 			} else if (!loading && !analysisBusy) {
-				window.electronAPI?.confirmClose?.(true)
+				confirmClose()
 			}
 		})
-	}, [annotations.dirty, loading, analysisBusy])
+	}, [annotations.dirty, exportBusy, loading, analysisBusy, buildDiscardLeave, buildExportLeave])
 
 	// Client-side navigation (Home/return button, links): same modal guard.
 	useEffect(() => {
@@ -112,20 +153,19 @@ const Page = () => {
 				allowNavRef.current = false
 				return
 			}
-			if (annotations.dirty) {
-				setDiscardAction(() => () => {
+			if (annotations.dirty || exportBusy) {
+				const proceed = () => {
 					allowNavRef.current = true
 					void router.push(url)
-				})
+				}
+				setConfirmLeave(annotations.dirty ? buildDiscardLeave(proceed) : buildExportLeave(proceed))
 				router.events.emit("routeChangeError", "aborted", url)
-				// Throwing aborts the in-flight navigation (Next.js pattern).
-				// eslint-disable-next-line no-throw-literal
-				throw "Navigation blocked: unsaved annotations."
+				throw "Navigation blocked: unfinished work."
 			}
 		}
 		router.events.on("routeChangeStart", handler)
 		return () => router.events.off("routeChangeStart", handler)
-	}, [annotations.dirty, router])
+	}, [annotations.dirty, exportBusy, router, buildDiscardLeave, buildExportLeave])
 
 	const labels = annotations.labels
 	const labelById = useMemo(() => new Map(labels.map(l => [l.id, l])), [labels])
@@ -465,6 +505,7 @@ const Page = () => {
 										labels={labels}
 										defaultSegment={selectedSegment}
 										defaultRange={windowRange}
+										onBusyChange={setExportBusy}
 									/>
 								}
 								activeTab={activeSideTab}
@@ -503,20 +544,18 @@ const Page = () => {
 				)}
 			</div>
 
-			{discardAction && (
+			{confirmLeave && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
 					<div
 						className="w-full max-w-md rounded-lg p-8 text-white shadow-lg"
 						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
 					>
-						<h2 className="mb-4 text-xl font-bold text-red-600">Unsaved Annotations</h2>
-						<p className="mb-4">
-							You have unsaved annotations. Do you want to proceed and discard them?
-						</p>
+						<h2 className="mb-4 text-xl font-bold text-red-600">{confirmLeave.title}</h2>
+						<p className="mb-4">{confirmLeave.body}</p>
 						<div className="flex justify-end gap-4">
 							<button
 								type="button"
-								onClick={() => setDiscardAction(null)}
+								onClick={() => setConfirmLeave(null)}
 								className="rounded-lg border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
 							>
 								Cancel
@@ -525,13 +564,12 @@ const Page = () => {
 								size="base"
 								className="!text-sm"
 								onClick={() => {
-									const run = discardAction
-									setDiscardAction(null)
-									void annotations.discardChanges()
-									run()
+									const action = confirmLeave.onConfirm
+									setConfirmLeave(null)
+									action()
 								}}
 							>
-								Proceed
+								{confirmLeave.confirmLabel}
 							</TextButton>
 						</div>
 					</div>

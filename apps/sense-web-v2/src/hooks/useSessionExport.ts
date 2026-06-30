@@ -170,20 +170,19 @@ export function useSessionExport(manifest: any) {
 
 			const withAnnotations = annotations !== undefined
 			const rate = Number(sampleRate) > 0 ? Number(sampleRate) : 1000
-			const labelById = new Map((labels ?? []).map(l => [l.id, l]))
-			const escCsv = (v: string) =>
-				/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+			const IO_PORTS = ["I1", "I2", "O1", "O2"]
 
-			const annsBySegment = new Map<number, { s: number; e: number; text: string }[]>()
+			const annsBySegment = new Map<
+				number,
+				{ startFrame: number; t0: number; t1: number; labelId: number; nseq: number | null }[]
+			>()
 			for (const a of annotations ?? []) {
 				const seg = Number(a.segment) || 1
-				const s = Math.round(Number(a.t0) * rate)
-				const e = Math.round(Number(a.t1) * rate)
-				const label = labelById.get(a.labelId)
-				const name = label ? label.name : (a.labelId != null ? String(a.labelId) : "")
-				const text = a.note ? `${name} (${a.note})` : name
+				const t0 = Math.min(Number(a.t0), Number(a.t1))
+				const t1 = Math.max(Number(a.t0), Number(a.t1))
+				const startFrame = Math.max(0, Math.round(t0 * rate))
 				if (!annsBySegment.has(seg)) annsBySegment.set(seg, [])
-				annsBySegment.get(seg)!.push({ s: Math.min(s, e), e: Math.max(s, e), text })
+				annsBySegment.get(seg)!.push({ startFrame, t0, t1, labelId: a.labelId, nseq: null })
 			}
 
 			const zip = new JSZip();
@@ -211,6 +210,8 @@ export function useSessionExport(manifest: any) {
 						deviceType === "sense"
 							? "ScientISST Sense"
 							: "ScientISST Maker",
+					"Device name": manifest.device || "",
+					Firmware: manifest.firmwareVersion || "",
 					Channels: channels,
 					"Sampling rate (Hz)": sampleRate,
 					"ISO 8601": timestamp.toISOString(),
@@ -220,6 +221,7 @@ export function useSessionExport(manifest: any) {
 				fileContent.push("#" + JSON.stringify(metadata, null, null));
 				fileContent.push(
 					"#NSeq," +
+					IO_PORTS.join(",") + "," +
 					channels
 						.map(channel => {
 							const label = storedChannelNames[channel]
@@ -227,10 +229,11 @@ export function useSessionExport(manifest: any) {
 								? `${label.trim()} - ${channel}`
 								: channel
 						})
-						.join(",") + (withAnnotations ? ",annotation" : "")
+						.join(",")
 				);
 				const segAnns = annsBySegment.get(Number(segmentIdx)) || []
 				let frameIdx = 0
+				let lastSeq: number | null = null
 				// For each chunk file in this segment, load and stream frames
 				for (const chunkFile of files) {
 					try {
@@ -238,31 +241,64 @@ export function useSessionExport(manifest: any) {
 						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
 						const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
 						for (let j = 0; j < frames.length; j++) {
-							const frameContent = [];
-							frameContent.push(frames[j].sequence);
+							const seq = frames[j].sequence
+							const frameContent: (number | string)[] = [seq];
+							for (let p = 0; p < IO_PORTS.length; p++) frameContent.push(0);
 							for (let k = 0; k < channels.length; k++) {
 								frameContent.push(frames[j].channels[channels[k]]);
 							}
-							if (withAnnotations) {
-								let labelText = ""
-								if (segAnns.length > 0) {
-									const hits: string[] = []
-									for (const an of segAnns) {
-										if (frameIdx >= an.s && frameIdx <= an.e) hits.push(an.text)
-									}
-									labelText = hits.join("; ")
-								}
-								frameContent.push(escCsv(labelText))
-							}
 							fileContent.push(frameContent.join(","));
+							if (segAnns.length > 0) {
+								for (const an of segAnns) {
+									if (an.nseq === null && frameIdx >= an.startFrame) an.nseq = seq
+								}
+							}
+							lastSeq = seq
 							frameIdx++
 						}
 					} catch (e) {
 						console.error("[CSV Export] Failed to read chunk file", chunkFile, e);
 					}
 				}
+				for (const an of segAnns) if (an.nseq === null) an.nseq = lastSeq
 				zip.file(`segment_${segmentIdx}.csv`, fileContent.join("\n"));
 			}
+
+			if (withAnnotations) {
+				const labelById = new Map((labels ?? []).map(l => [l.id, l]))
+				const segs = [...annsBySegment.keys()].sort((a, b) => a - b)
+				for (const seg of segs) {
+					const anns = (annsBySegment.get(seg) || []).slice().sort((a, b) => a.t0 - b.t0)
+					if (anns.length === 0) continue
+					const legend: Record<string, string> = {}
+					for (const an of anns) {
+						const lbl = labelById.get(an.labelId)
+						legend[String(an.labelId)] = lbl ? lbl.name : String(an.labelId)
+					}
+					const segMeta = segmentsMeta.find(s => s.index == seg)
+					const segStartedAt = Number(segMeta?.startedAt) || 0
+					const annMetadata = {
+						Device: deviceType === "sense" ? "ScientISST Sense" : "ScientISST Maker",
+						"Device name": manifest.device || "",
+						Firmware: manifest.firmwareVersion || "",
+						Segment: seg,
+						"ISO 8601": new Date(segStartedAt).toISOString(),
+						Timestamp: segStartedAt,
+						Labels: legend
+					}
+					const annContent: string[] = []
+					annContent.push("#" + JSON.stringify(annMetadata, null, null))
+					annContent.push("#NSeq,L,ti,tf")
+					for (const an of anns) {
+						annContent.push([an.nseq ?? "", an.labelId, an.t0.toFixed(3), an.t1.toFixed(3)].join(","))
+					}
+					zip.file(`annotations_segment_${seg}.csv`, annContent.join("\n"))
+				}
+				if (segs.length === 0) {
+					zip.file("annotations.csv", "#NSeq,L,ti,tf")
+				}
+			}
+
 			if (firstTimestamp === 0) {
 				firstTimestamp = new Date().getTime();
 			}

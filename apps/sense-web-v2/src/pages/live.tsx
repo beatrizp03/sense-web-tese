@@ -548,13 +548,13 @@ const Page = () => {
 			}
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
-			console.error(error)
 			deviceRef.current = null
 
 			if (error instanceof CancelledByUserException) {
 				setStatus(STATUS.DISCONNECTED)
 				return
 			}
+			console.error(error)
 			setStatus(STATUS.CONNECTION_FAILED)
 		}
 	}, [cleanupPipeline])

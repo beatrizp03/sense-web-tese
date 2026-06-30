@@ -68,10 +68,19 @@ function makeAnnotation(segment: number, t0: number, t1: number, labelId: number
 	}
 }
 
+type SerializedAnnotation = Omit<Annotation, "t0" | "t1"> & {
+	ti: number
+	tf: number
+	sample: number
+	sampleEnd: number
+	atStartMs: number | null
+	atEndMs: number | null
+}
+
 interface AnnotationsFile {
 	version: number
 	savedAt: string
-	annotations: Annotation[]
+	annotations: SerializedAnnotation[]
 	labels?: AnnotationLabel[]
 	segmentLabels?: Record<number, number>
 }
@@ -106,8 +115,8 @@ function sanitizeAnnotations(value: unknown): Annotation[] {
 	for (const item of value) {
 		if (!item || typeof item !== "object") continue
 		const raw = item as Record<string, unknown>
-		const t0 = Number(raw.t0 ?? raw.startSec)
-		const t1raw = Number(raw.t1 ?? raw.endSec ?? raw.t0 ?? raw.startSec)
+		const t0 = Number(raw.ti ?? raw.t0 ?? raw.startSec)
+		const t1raw = Number(raw.tf ?? raw.t1 ?? raw.endSec ?? raw.ti ?? raw.t0 ?? raw.startSec)
 		const labelId = Number(raw.labelId)
 		if (!Number.isFinite(t0) || !Number.isFinite(labelId)) continue
 		const t1 = Number.isFinite(t1raw) ? Math.max(t0, t1raw) : t0
@@ -566,14 +575,16 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		try {
 			const rate = Number(sampleRate) > 0 ? Number(sampleRate) : 1000
 			const segStartMs = new Map((segments ?? []).map(s => [s.index, s.startedAt]))
-			const anchored = annotations.map(a => {
-				const base = segStartMs.get(a.segment)
+			const anchored = annotations.map(({ t0, t1, ...rest }) => {
+				const base = segStartMs.get(rest.segment)
 				return {
-					...a,
-					sample: Math.round(a.t0 * rate),
-					sampleEnd: Math.round(a.t1 * rate),
-					atStartMs: typeof base === "number" ? Math.round(base + a.t0 * 1000) : null,
-					atEndMs: typeof base === "number" ? Math.round(base + a.t1 * 1000) : null
+					...rest,
+					ti: t0,
+					tf: t1,
+					sample: Math.round(t0 * rate),
+					sampleEnd: Math.round(t1 * rate),
+					atStartMs: typeof base === "number" ? Math.round(base + t0 * 1000) : null,
+					atEndMs: typeof base === "number" ? Math.round(base + t1 * 1000) : null
 				}
 			})
 			const savedAt = new Date().toISOString()

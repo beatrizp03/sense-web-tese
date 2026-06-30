@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
@@ -15,6 +15,7 @@ interface SessionExportBarProps {
 	labels?: AnnotationLabel[]
 	defaultSegment?: number
 	defaultRange?: { startSec: number; endSec: number } | null
+	onBusyChange?: (busy: boolean) => void
 }
 
 /**
@@ -28,10 +29,17 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	annotations = [],
 	labels = [],
 	defaultSegment = 1,
-	defaultRange = null
+	defaultRange = null,
+	onBusyChange
 }) => {
 	const { csvDownloading, annotationsDownloading, annotatedPdfDownloading, convertToCSV, convertToCSVWithAnnotations, convertToAnnotatedPDF } = useSessionExport(manifest)
 	const hasSession = Array.isArray(manifest?.chunks) && manifest.chunks.length > 0
+
+	const exporting = csvDownloading || annotationsDownloading || annotatedPdfDownloading
+	useEffect(() => {
+		onBusyChange?.(exporting)
+		return () => onBusyChange?.(false)
+	}, [exporting, onBusyChange])
 
 	const [pdfModalOpen, setPdfModalOpen] = useState(false)
 
@@ -69,8 +77,8 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 		},
 		{
 			id: "csv-annotations",
-			label: annotationsDownloading ? "Downloading..." : "Download as CSV with Annotations",
-			description: "The raw signal samples with an extra annotation column, where each annotation is aligned to the frame it was placed on. One CSV per segment, bundled in a zip.",
+			label: annotationsDownloading ? "Downloading CSV w/ Annotations" : "Download as CSV w/ Annotations",
+			description: "A zip with the raw signal (one CSV per segment) plus a separate annotations.csv listing each annotation as NSeq, label, ti, tf, matchable to the raw rows by NSeq.",
 			onClick: () => convertToCSVWithAnnotations(annotations, labels),
 			disabled: !hasSession || annotationsDownloading
 		},

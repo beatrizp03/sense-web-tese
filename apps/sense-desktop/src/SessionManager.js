@@ -46,6 +46,8 @@ class SessionManager {
                 Device: meta.deviceType === "sense"
                     ? "ScientISST Sense"
                     : "ScientISST Maker",
+                "Device name": meta.device || "",
+                Firmware: meta.firmwareVersion || "",
                 Channels: meta.channels || [],
                 "Sampling rate (Hz)": meta.sampleRate || 0,
                 "ISO 8601": meta.iso8601 || (meta.startedAt ? new Date(meta.startedAt).toISOString() : ''),
@@ -97,6 +99,8 @@ class SessionManager {
                 Device: patch.deviceType === "sense"
                     ? "ScientISST Sense"
                     : "Maker",
+                "Device name": this.manifest.device || "",
+                Firmware: this.manifest.firmwareVersion || "",
                 Channels: patch.channels || this.manifest.channels || [],
                 "Sampling rate (Hz)": patch.sampleRate || this.manifest.sampleRate || 0,
                 "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (this.manifest.startedAt ? new Date(this.manifest.startedAt).toISOString() : '')),
