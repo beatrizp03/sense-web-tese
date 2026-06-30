@@ -102,6 +102,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [edaMethodSelection, setEdaMethodSelection] = useState<"neurokit" | "biosppy" | "auto">("auto")
 	const [excludedChannels, setExcludedChannels] = useState<Record<string, boolean>>({})
 	const [signalKindLibraries, setSignalKindLibraries] = useState<Record<string, "neurokit" | "biosppy">>({})
+	const [emgWindowMs, setEmgWindowMs] = useState<number>(200)
+	const [emgWindowStepMs, setEmgWindowStepMs] = useState<number>(100)
+	const [hrvWindowSec, setHrvWindowSec] = useState<number>(300)
+	const [hrvWindowStepSec, setHrvWindowStepSec] = useState<number>(300)
 	const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null)
 	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
 	const [selectedDetailEntry, setSelectedDetailEntry] = useState<any>(null)
@@ -126,6 +130,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				if (parsed.edaMethodSelection === "auto" || parsed.edaMethodSelection === "neurokit" || parsed.edaMethodSelection === "biosppy") setEdaMethodSelection(parsed.edaMethodSelection)
 				if (parsed.excludedChannels && typeof parsed.excludedChannels === "object") setExcludedChannels(parsed.excludedChannels)
 				if (parsed.signalKindLibraries && typeof parsed.signalKindLibraries === "object") setSignalKindLibraries(parsed.signalKindLibraries)
+				if (Number.isFinite(parsed.emgWindowMs) && parsed.emgWindowMs > 0) setEmgWindowMs(parsed.emgWindowMs)
+				if (Number.isFinite(parsed.emgWindowStepMs) && parsed.emgWindowStepMs > 0) setEmgWindowStepMs(parsed.emgWindowStepMs)
+				if (Number.isFinite(parsed.hrvWindowSec) && parsed.hrvWindowSec > 0) setHrvWindowSec(parsed.hrvWindowSec)
+				if (Number.isFinite(parsed.hrvWindowStepSec) && parsed.hrvWindowStepSec > 0) setHrvWindowStepSec(parsed.hrvWindowStepSec)
 			}
 		} catch {
 			// ignore corrupted storage
@@ -138,12 +146,12 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		try {
 			sessionStorage.setItem(
 				ANALYSIS_SETTINGS_STORAGE_KEY,
-				JSON.stringify({ activeTab, outlierRemovalEnabled, edaMethodSelection, excludedChannels, signalKindLibraries })
+				JSON.stringify({ activeTab, outlierRemovalEnabled, edaMethodSelection, excludedChannels, signalKindLibraries, emgWindowMs, emgWindowStepMs, hrvWindowSec, hrvWindowStepSec })
 			)
 		} catch {
 			// ignore quota / serialization errors
 		}
-	}, [hydrated, activeTab, outlierRemovalEnabled, edaMethodSelection, excludedChannels, signalKindLibraries])
+	}, [hydrated, activeTab, outlierRemovalEnabled, edaMethodSelection, excludedChannels, signalKindLibraries, emgWindowMs, emgWindowStepMs, hrvWindowSec, hrvWindowStepSec])
 
 	// Load any stored analysis result for the imported session from disk.
 	useEffect(() => {
@@ -395,6 +403,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				excludedChannels: appliedExcludedChannels,
 				signalKindLibraries: appliedSignalKindLibraries,
 				outputSubdir: subdir,
+				emgWindowMs,
+				emgWindowStepMs,
+				hrvWindowSec,
+				hrvWindowStepSec,
 				...(range ? { range: { startSec: range.startSec, endSec: range.endSec }, segment: selectedSegment } : {}),
 			})
 
@@ -429,7 +441,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 			setLoading(false)
 			analysisInProgressRef.current = false
 		}
-	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder, outlierRemovalEnabled, edaMethodSelection, appliedExcludedChannels, appliedSignalKindLibraries, selectedSegment])
+	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder, outlierRemovalEnabled, edaMethodSelection, appliedExcludedChannels, appliedSignalKindLibraries, selectedSegment, emgWindowMs, emgWindowStepMs, hrvWindowSec, hrvWindowStepSec])
 
 	const runAnalysis = useCallback(async (range?: AnalysisRange | null) => {
 		pendingRangeRef.current = range ?? null
@@ -653,6 +665,76 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							<option value="biosppy" className="text-xs">BioSPPy</option>
 						</select>
 					</label>
+
+					{assignedKinds.includes("emg") ? (
+						<div className="space-y-1">
+							<div className="flex flex-col items-start gap-2 text-sm">
+								<span className="text-xs">EMG feature epoch:</span>
+								<div className="flex flex-wrap items-center gap-4">
+									<label className="flex items-center gap-1">
+										<input
+											type="number"
+											min={1}
+											step={1}
+											value={emgWindowMs}
+											onChange={e => setEmgWindowMs(Math.max(1, Number(e.target.value) || 0))}
+											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+										/>
+										<span className="text-xs">ms length</span>
+									</label>
+									<label className="flex items-center gap-1">
+										<input
+											type="number"
+											min={1}
+											step={1}
+											value={emgWindowStepMs}
+											onChange={e => setEmgWindowStepMs(Math.max(1, Number(e.target.value) || 0))}
+											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+										/>
+										<span className="text-xs">ms step</span>
+									</label>
+								</div>
+							</div>
+							<p className="text-xs text-over-background-low">
+								Hudgins set (MAV/RMS/WL/ZC/SSC) + MNF/MDF are computed per epoch. Step &lt; length means epochs overlap.
+							</p>
+						</div>
+					) : null}
+
+					{assignedKinds.includes("ecg") || assignedKinds.includes("ppg") ? (
+						<div className="space-y-1">
+							<div className="flex flex-col items-start gap-2 text-sm">
+								<span className="text-xs">HRV / PRV epoch:</span>
+								<div className="flex flex-wrap items-center gap-4">
+									<label className="flex items-center gap-1">
+										<input
+											type="number"
+											min={1}
+											step={1}
+											value={hrvWindowSec}
+											onChange={e => setHrvWindowSec(Math.max(1, Number(e.target.value) || 0))}
+											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+										/>
+										<span className="text-xs">s length</span>
+									</label>
+									<label className="flex items-center gap-1">
+										<input
+											type="number"
+											min={1}
+											step={1}
+											value={hrvWindowStepSec}
+											onChange={e => setHrvWindowStepSec(Math.max(1, Number(e.target.value) || 0))}
+											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+										/>
+										<span className="text-xs">s step</span>
+									</label>
+								</div>
+							</div>
+							<p className="text-xs text-over-background-low">
+								ECG HRV (and PPG pulse-rate variability) are computed per epoch via NeuroKit2. Default 300s / 300s = consecutive 5-min epochs.
+							</p>
+						</div>
+					) : null}
 
 					<div className="space-y-2">
 						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to exclude it from library analysis.</p>

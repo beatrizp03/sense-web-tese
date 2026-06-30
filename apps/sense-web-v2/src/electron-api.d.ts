@@ -52,7 +52,7 @@ declare global {
       readSessionLabels?: (sessionFolder: string) => Promise<any>;
       writeSessionLabels?: (sessionFolder: string, data: any) => Promise<{ ok: boolean }>;
       exportAnnotationsCsv?: (sessionFolder: string) => Promise<{ ok: boolean; path?: string; count?: number; canceled?: boolean; error?: string }>;
-      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; outputSubdir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy">; range?: { startSec: number; endSec: number }; segment?: number }) => Promise<any>;
+      runPostHocAnalysis?: (payload?: { sessionFolder?: string; pythonExecutable?: string; outputDir?: string; outputSubdir?: string; signalKinds?: Record<string, string>; signalAxes?: Record<string, string>; outlierRemoval?: boolean; edaMethod?: "auto" | "neurokit" | "biosppy"; excludedChannels?: string[]; signalKindLibraries?: Record<string, "neurokit" | "biosppy">; emgWindowMs?: number; emgWindowStepMs?: number; hrvWindowSec?: number; hrvWindowStepSec?: number; range?: { startSec: number; endSec: number }; segment?: number }) => Promise<any>;
       cancelPostHocAnalysis?: (payload?: { sessionFolder?: string; reason?: string }) => Promise<{ cancelled: boolean }>;
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
       readPostHocAnalysisResult?: (sessionFolderPath: string, subdir?: string) => Promise<any>;

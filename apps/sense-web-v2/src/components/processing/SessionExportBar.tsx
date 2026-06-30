@@ -72,7 +72,7 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 		{
 			id: "csv-annotations",
 			label: annotationsDownloading ? "Downloading CSV w/ Annotations" : "Download as CSV w/ Annotations",
-			description: "The raw signal samples with an extra annotation column, where each annotation is aligned to the frame it was placed on. One CSV per segment, bundled in a zip.",
+			description: "A zip with the raw signal (one CSV per segment) plus a separate annotations.csv listing each annotation as NSeq, label, t0, t1, matchable to the raw rows by NSeq.",
 			onClick: () => convertToCSVWithAnnotations(annotations, labels),
 			disabled: !hasSession || annotationsDownloading,
 			loading: annotationsDownloading

@@ -132,10 +132,31 @@ function normalizeAnalysisSegment(value) {
   return index >= 1 ? index : undefined;
 }
 
+function normalizeEmgWindow(windowMs, stepMs) {
+  const window = Number(windowMs);
+  if (!Number.isFinite(window) || window <= 0) return undefined;
+  let step = Number(stepMs);
+  if (!Number.isFinite(step) || step <= 0) step = window / 2;
+  if (step > window) step = window;
+  return { emgWindowMs: window, emgWindowStepMs: step };
+}
+
+// ECG/PPG HRV/PRV window length and step (seconds).
+function normalizeHrvWindow(windowSec, stepSec) {
+  const window = Number(windowSec);
+  if (!Number.isFinite(window) || window <= 0) return undefined;
+  let step = Number(stepSec);
+  if (!Number.isFinite(step) || step <= 0) step = window;
+  if (step > window) step = window;
+  return { hrvWindowSec: window, hrvWindowStepSec: step };
+}
+
 function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
   const opts = options || {};
   const range = normalizeAnalysisRange(opts.range);
   const segment = range ? normalizeAnalysisSegment(opts.segment) : undefined;
+  const emgWindow = normalizeEmgWindow(opts.emgWindowMs, opts.emgWindowStepMs);
+  const hrvWindow = normalizeHrvWindow(opts.hrvWindowSec, opts.hrvWindowStepSec);
   return {
     version: 1,
     libraryPreference: normalizeLibraryPreference(opts.edaMethod ?? opts.libraryPreference),
@@ -145,7 +166,9 @@ function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
     channelSignalAxes: signalAxes,
     excludedChannels: normalizeExcludedChannels(opts.excludedChannels),
     ...(range ? { range } : {}),
-    ...(segment ? { segment } : {})
+    ...(segment ? { segment } : {}),
+    ...(emgWindow ?? {}),
+    ...(hrvWindow ?? {})
   };
 }
 
@@ -637,11 +660,16 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.on('set-busy', (_event, reason) => {
+    busyReason = reason || null;
+  });
+
   ipcMain.on('confirm-close', (event, shouldClose) => {
     if (shouldClose) {
-      console.log('[main] User confirmed close. Finalizing session and exiting.');  
+      console.log('[main] User confirmed close. Finalizing session and exiting.');
       if (sampleWriter) sampleWriter.finalizeSession();
       sessionFolder = undefined;
+      busyReason = null;
       BrowserWindow.getAllWindows().forEach(win => win.destroy());
     }
   });

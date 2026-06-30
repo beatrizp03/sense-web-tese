@@ -21,7 +21,7 @@ interface AnnotationLabelsEditorProps {
 const MAX_CHANNEL_LABELS = 9
 
 const APPLIES_TO_OPTIONS: { value: AnnotationAppliesTo; label: string }[] = [
-	{ value: "channel", label: "Channel" },
+	{ value: "channel", label: "Windows" },
 	{ value: "segment", label: "Segment" }
 ]
 
@@ -34,7 +34,7 @@ const fieldLabelClasses = "text-[10px] font-medium uppercase tracking-wide text-
 const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
 	{ field: "Color", help: "The marker color shown on the chart for this label.", example: "e.g. red for artifacts, green for events" },
 	{ field: "Label", help: "Short name you'll pick while annotating.", example: "e.g. noise, onset, peak" },
-	{ field: "Applies to", help: "Whether the label marks a point/interval on a channel, or a whole segment.", example: "e.g. Channel for a noisy stretch, Segment for \"healthy\"" },
+	{ field: "Applies to", help: "Whether the label marks a point/interval on the windows, or a whole segment.", example: "e.g. Windows for a noisy stretch, Segment for \"healthy\"" },
 	{ field: "Category", help: "A group the label belongs to, for organisation.", example: "e.g. quality, event, feature, state, class" },
 	{ field: "Description", help: "A longer explanation, shown as a tooltip in the legend.", example: "e.g. \"Motion artifact\", \"Event start\"" }
 ]
