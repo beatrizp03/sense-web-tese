@@ -38,6 +38,8 @@ export class SessionManager {
           meta.deviceType === "sense"
             ? "ScientISST Sense"
             : "ScientISST Maker",
+        "Device name": meta.device || "",
+        Firmware: meta.firmwareVersion || "",
         Channels: meta.channels || [],
         "Sampling rate (Hz)": meta.sampleRate || 0,
         "ISO 8601": meta.iso8601 || (meta.startedAt ? new Date(meta.startedAt).toISOString() : ''),
@@ -61,9 +63,7 @@ export class SessionManager {
       resolutionBits.push((ScientISSTFrame as any).CHANNEL_SIZES[manifest.channels[j]]);
     }
     
-    // If patch contains any csvHeader-relevant fields, update csvHeader as well
     if (patch.deviceType || patch.device || patch.channels || patch.sampleRate || patch.iso8601 || patch.timestamp || patch.resolutionBits || patch.resolution) {
-      // prefer explicit device name (e.g. serial/bluetooth port) when available
       let deviceVal: string | undefined = undefined;
       if (patch.device && typeof patch.device === "string" && patch.device.trim()) {
         deviceVal = patch.device.trim();
@@ -78,6 +78,8 @@ export class SessionManager {
         Device: patch.deviceType === "sense"
 						? "ScientISST Sense"
 						: "Maker",
+        "Device name": manifest.device || "",
+        Firmware: manifest.firmwareVersion || "",
         Channels: patch.channels || manifest.channels || [],
         "Sampling rate (Hz)": patch.sampleRate || manifest.sampleRate || 0,
         "ISO 8601": patch.iso8601 || (patch.startedAt ? new Date(patch.startedAt).toISOString() : (manifest.startedAt ? new Date(manifest.startedAt).toISOString() : '')),
@@ -86,11 +88,9 @@ export class SessionManager {
       };
     }
     this._persistManifest();
-    // Removed localStorage logic for TESTING flag; persistence is now only via chunk files.
   }
 
   static registerSegment(segmentInfo: any) {
-    // segmentInfo: { index, startedAt, endedAt }
     if (!this.manifest) return;
     this.manifest.segments.push(segmentInfo);
     this._persistManifest();
