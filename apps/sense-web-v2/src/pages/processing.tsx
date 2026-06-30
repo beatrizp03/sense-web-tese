@@ -417,6 +417,7 @@ const Page = () => {
 								selectedAnnotationId={annotations.selectedId}
 								draft={annotations.draft}
 								onChartClick={annotations.handleChartClick}
+								onChartDoubleClick={annotations.handleChartDoubleClick}
 								onAnnotationDragBound={annotations.setAnnotationBounds}
 								onAnnotationMove={annotations.setAnnotationSpan}
 							/>

@@ -341,6 +341,10 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Resize I</kbd>
 						- Click and drag the ends
 					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Select</kbd>
+						- Double-click an annotation
+					</span>
 				</div>
 				)}
 			</div>
@@ -390,7 +394,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</button>
 				</div>
 				<p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
-					Channel
+					Window
 				</p>
 				<div className="flex flex-col gap-1.5">
 					{channelLabels.map((label, index) => {

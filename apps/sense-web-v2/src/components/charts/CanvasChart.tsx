@@ -48,6 +48,7 @@ export interface CanvasChartProps {
 	draftIntervalStart?: number | null
 	draftColor?: string
 	onDataClick?: (x: number, y: number, hitId: string | null) => void
+	onDataDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
@@ -77,6 +78,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	draftIntervalStart,
 	draftColor,
 	onDataClick,
+	onDataDoubleClick,
 	onAnnotationDragBound,
 	onAnnotationMove
 }) => {
@@ -404,7 +406,37 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		| null
 	>(null)
 	const justResizedRef = useRef(false)
+	const clickTimerRef = useRef<number | null>(null)
 	const [hover, setHover] = useState<{ x: number; y: number; label: string; description: string } | null>(null)
+
+	useEffect(
+		() => () => {
+			if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current)
+		},
+		[]
+	)
+
+	const hitIdAtPx = useCallback(
+		(px: number, geom: NonNullable<typeof geomRef.current>): string | null => {
+			const hitTolerance = 4 * pixelRatio
+			for (let i = geom.annotations.length - 1; i >= 0; i--) {
+				const ann = geom.annotations[i]
+				if (ann.t0 !== ann.t1) continue
+				const a0 = geom.xScale(ann.t0)
+				const triangle = (ann.selected ? 8 : 6) * pixelRatio
+				if (Math.abs(px - a0) <= Math.max(hitTolerance, triangle)) return ann.id
+			}
+			for (let i = geom.annotations.length - 1; i >= 0; i--) {
+				const ann = geom.annotations[i]
+				if (ann.t0 === ann.t1) continue
+				const a0 = geom.xScale(ann.t0)
+				const a1 = geom.xScale(ann.t1)
+				if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) return ann.id
+			}
+			return null
+		},
+		[pixelRatio]
+	)
 
 	const handleClick = useCallback(
 		(event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -413,6 +445,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				return
 			}
 			if (!onDataClick) return
+			if (event.detail > 1) return
 			const canvas = event.currentTarget
 			const geom = geomRef.current
 			if (!geom) return
@@ -433,33 +466,44 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 			const dataX = geom.xScale.invert(px)
 			const dataY = geom.yScale.invert(py)
-
-			const hitTolerance = 4 * pixelRatio
-			let hitId: string | null = null
-			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
-				const ann = geom.annotations[i]
-				if (ann.t0 !== ann.t1) continue
-				const a0 = geom.xScale(ann.t0)
-				const triangle = (ann.selected ? 8 : 6) * pixelRatio
-				if (Math.abs(px - a0) <= Math.max(hitTolerance, triangle)) {
-					hitId = ann.id
-				}
-			}
-			for (let i = geom.annotations.length - 1; i >= 0 && !hitId; i--) {
-				const ann = geom.annotations[i]
-				if (ann.t0 === ann.t1) continue
-				const a0 = geom.xScale(ann.t0)
-				const a1 = geom.xScale(ann.t1)
-				if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) {
-					hitId = ann.id
-				}
-			}
+			const hitId = hitIdAtPx(px, geom)
 
 			if (!inPlotY && !hitId) return
 
+			const deferForDoubleClick =
+				hitId != null && !!onDataDoubleClick && draftIntervalStart == null
+			if (deferForDoubleClick) {
+				if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current)
+				clickTimerRef.current = window.setTimeout(() => {
+					clickTimerRef.current = null
+					onDataClick(dataX, dataY, hitId)
+				}, 220)
+				return
+			}
+
 			onDataClick(dataX, dataY, hitId)
 		},
-		[onDataClick, pixelRatio]
+		[onDataClick, onDataDoubleClick, draftIntervalStart, hitIdAtPx]
+	)
+
+	const handleDoubleClick = useCallback(
+		(event: React.MouseEvent<HTMLCanvasElement>) => {
+			if (!onDataDoubleClick) return
+			if (clickTimerRef.current) {
+				window.clearTimeout(clickTimerRef.current)
+				clickTimerRef.current = null
+			}
+			const canvas = event.currentTarget
+			const geom = geomRef.current
+			if (!geom) return
+			const rect = canvas.getBoundingClientRect()
+			if (rect.width <= 0) return
+			const scaleX = canvas.width / rect.width
+			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
+			const hitId = hitIdAtPx(px, geom)
+			if (hitId) onDataDoubleClick(hitId)
+		},
+		[onDataDoubleClick, hitIdAtPx]
 	)
 
 	// Map a pointer event's clientX to a data-x using the current geometry.
@@ -591,6 +635,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				className="h-auto w-full"
 				style={onDataClick || onAnnotationDragBound || onAnnotationMove ? { cursor: "crosshair" } : undefined}
 				onClick={onDataClick ? handleClick : undefined}
+				onDoubleClick={onDataDoubleClick ? handleDoubleClick : undefined}
 				onPointerDown={onAnnotationDragBound || onAnnotationMove ? handlePointerDown : undefined}
 				onPointerMove={handlePointerMove}
 				onPointerUp={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}

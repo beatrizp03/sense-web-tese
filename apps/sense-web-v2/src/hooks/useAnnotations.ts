@@ -378,7 +378,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		(segment: number, dataX: number, hitId: string | null) => {
 			if (!enabled) return
 
-			if (hitId && !(mode === "interval" && draft)) {
+			if (mode === "idle") {
 				setSelectedId(hitId)
 				return
 			}
@@ -411,10 +411,16 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 				setSelectedId(ann.id)
 				return
 			}
-
-			setSelectedId(hitId)
 		},
 		[enabled, mode, draft, resolveLabelId, commit, snap]
+	)
+
+	const handleChartDoubleClick = useCallback(
+		(hitId: string | null) => {
+			if (!enabled) return
+			if (hitId) setSelectedId(hitId)
+		},
+		[enabled]
 	)
 
 	const removeSelected = useCallback(() => {
@@ -635,6 +641,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		dirty,
 		saving,
 		handleChartClick,
+		handleChartDoubleClick,
 		removeSelected,
 		removeAnnotation,
 		setAnnotationNote,
