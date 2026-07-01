@@ -1,332 +1,84 @@
 # ScientISST App Testing Guide
 
-Thank you for helping test the application.
+Thanks for helping test the app!
 
-The goal is to evaluate:
-
-* Stability during long acquisitions
-* Buffer manager behaviour (continuous saving + pause/resume + stop)
-* Performance on different computers
-* Export reliability (CSV & PDF)
-* Robustness during connection loss
-* Maximum acquisition duration supported
-* Whether the buffer manager loses any frames (measured, not just felt)
+The goal is to push the app through long and heavy acquisitions and **measure** whether it loses any data (not just how it feels). We're checking: stability, the buffer manager (continuous saving + pause/resume/stop), exports (CSV & PDF), connection-loss recovery, and maximum duration.
 
 ---
 
-# Installation
+## Setup (once)
 
-The installation steps are documented in the GitHub README on the `electron-version` branch (https://github.com/beatrizp03/sense-web-tese/tree/electron-version).
-For the Electron desktop app, please use the `sense-desktop` section to see how to install and run the app.
+- **Install** from the README on the [`testing` branch](https://github.com/beatrizp03/sense-web-tese/tree/testing) → follow the `sense-desktop` section.
+- Keep the ScientISST on **battery only** (except Test 8). If the battery gets low mid-test: stop, fully charge, restart that test from the beginning, and note it in the form.
+- Have a **stopwatch** handy to compare real time against the on-screen graph.
 
----
+## The routine (every test)
 
-# Important - Device Power State
+1. Unplug the charger (except Test 8), connect the device, and apply your assigned settings on the **Settings** page.
+2. Start recording — glance at the stopwatch vs the graph to spot lag.
+3. When done, **Stop** and export **CSV + PDF**.
+4. Run `check_lost_frames.py` ([how-to below](#running-check_lost_framespy)) and paste the SUMMARY into the Google Form.
+5. Send the zipped session folder (`apps/sense-desktop/data/<folder>`) + exports + the form (include battery level, power state, and anything weird you saw).
 
-**Unless a test explicitly says otherwise**, please keep the ScientISST on **battery only** during acquisition. Do not plug in the charger.
+> ⚠️ **Don't log off, sleep, or suspend the computer during a test** — it ends the acquisition.
 
-**If the battery runs low mid-test:** stop the acquisition, charge the device fully, then restart that test from the beginning. Note this in the Google Form.
+## What to search for during testing?
 
----
-
-# Before Starting
-
-**NOTE:** make sure you have a stopwatch to make sure you can compare the lag on the graph UI VS real time.
-
-1. Open the app
-2. Make sure the device is unplugged from any charger (unless running Test 8)
-3. Connect the device
-4. Use the test settings assigned to you (edit them on the settings page)
-5. Start recording (make sure you check with the stopwatch to check the lag)
-6. After each test:
-   * Fill the Google Form (including battery level at start and power state)
-   * Run `check_lost_frames.py` on the session folder (_/sense-web-tese/apps/apps/sense-desktop/data/<session_folder>_) and paste the SUMMARY block into the form
-   * Send the session folder + CSV + PDF exports (.zip preferred)
+Graph lag, freezes, crashes, slow buttons, disconnects, export/missing-file problems, and whether the app feels slower at the end than at the start (roughly how much?).
 
 ---
 
-# What to Observe During All Tests
+## The tests
 
-Please note if any of these happen:
+All tests use the **Sense device** on **battery** (except Test 8) and follow the routine above. The table below is just what's unique to each.
 
-* Graph delay / lag
-* Freezes
-* App crash
-* Buttons slow to react
-* Device disconnects
-* Export problems
-* Missing files
-* Slowdowns over time
-* Whether the app feels slower at the end of a long test than at the start (and if so, roughly how much)
+| # | Test | Channel(s) | Rate | Duration | Extra steps & what to check |
+|---|---|---|---|---|---|
+| 1 | Standard stability | 2 | 1000 | 30 min | Baseline. Expect a smooth graph, no freezes, **zero gaps**. |
+| 2 | Pause / resume | 4 | 1000 | ~35 min | Record 10 min → pause 1 min → resume → 10 min → pause → resume → 15 min → stop. File must contain **all 3 segments**; zero gaps within each. |
+| 3 | High load, **1 channel** | 1 (AI1) | 16000 | 65 min | Keep the live page **visible** the whole time. Check UI lag (stopwatch vs graph) and chunk-saving stability. |
+| 4 | High load, **6 channels** | 6 | 4000 | 65 min | **Minimise/hide** the window the whole time, then bring it back. Watch for "catch-up" behaviour on return. |
+| 5 | Connection loss | 4 | 1000 | 30+ min | 15 min → kill the link (power off the device or leave BT range) → download files → reconnect → 15 min. Expect a warning, no crash, data preserved, CSV still exports. |
+| 6 | Start / stop ×5 | 6 | 1000 | 5 × 5 min | Five separate record→stop sessions = **five folders**, each with zero gaps. |
+| 7 | Max duration | 6 | 1000 | as long as possible | Run until it breaks or the battery dies. **Target ≥4 h, ideally 8 h.** Note total duration, why it stopped, and any slowdown/freeze/crash/high-memory near the end. |
+| 8 | Charging robustness | 2 | 1000 | 30 min | **Charger connected the entire time** (use your usual Bluetooth connection, so USB is power-only). Checks the app stays healthy while charging — watch for **"invalid byte" errors**, crashes/freezes, and whether it **recovers**. Run `check_lost_frames` as usual. Note charger type and whether your laptop was also plugged in. (See note below.) |
 
----
-# Required Test Cases
-
-**IMPORTANT:** during tests, do **NOT** log off, sleep, or suspend the computer. If the computer is logged off or suspended, the app will finish/end the acquisition.
-
-## Test 1 - Standard Stability Test (30 min)
-
-### Settings:
-* Sense Device
-* 2 channels
-* 1000 Hz
-* **Power state: Battery only**
-
-### Steps:
-1. Connect
-2. Start acquisition
-3. Run for 30 min continuously
-4. Stop
-5. Export CSV + PDF
-
-### Check:
-* Smooth graph
-* No freezes
-* `check_lost_frames.py` reports zero gaps at both `__seq` and `seq` level ([How to Run The Script](#how-to-run-check_lost_framespy))
+**Test 8 note:** this is an **app-robustness** check, not a signal-quality one — without a controlled signal source we can't fairly judge whether the *waveform* degrades, so just report any app errors/crashes (frame counts are expected to be unchanged). ⚠️ For safety, **never attach electrodes to a person while the charger is connected** (USB power can put unsafe voltage on the inputs).
 
 ---
 
-## Test 2 - Pause / Resume Buffer Test (35 min)
+## Running `check_lost_frames.py`
 
-### Settings:
-* Sense Device
-* 4 channels
-* 1000 Hz
-* **Power state: Battery only**
+Put `check_lost_frames.py` in `sense-web-tese/apps/sense-desktop/data`, open a terminal there, and run:
 
-### Steps:
-1. Start acquisition
-2. Record 10 min
-3. Pause for 1 min
-4. Resume
-5. Record 10 min
-6. Pause again
-7. Resume
-8. Record final 15 min
-9. Stop
-10. Export CSV & PDF
+```
+python check_lost_frames.py <session_folder_name>
+```
 
-### Check:
-* Pause works instantly
-* Resume works correctly
-* No crashes
-* Final files contain all three segments of data (one for each start/restart of acquisition)
-* `check_lost_frames.py` reports zero gaps within each segment ([How to Run The Script](#how-to-run-check_lost_framespy))
+e.g. `python check_lost_frames.py 2026-05-04T12-12-51-794Z`
+
+Copy the SUMMARY block into the form:
+
+```
+═══════════════════════════════════════════════════════
+  SUMMARY
+═══════════════════════════════════════════════════════
+  [__seq]  ✅ No frames lost at IPC/buffer level
+  [seq]    ✅ No frames lost at device/transmission level
+═══════════════════════════════════════════════════════
+```
+
+If you see `❌`, paste the **full** summary (with the gap counts) so we can dig in. These numbers are the single most important output — please don't skip them, even if you skip the subjective questions.
 
 ---
 
-## Test 3 - High Load Stress Test, Tab minimized (65 min)
+## Feedback that matters most
 
-### Settings:
-* Sense Device
-* 6 channels
-* Highest available sample rate
-* **Power state: Battery only**
+1. What broke first, and what felt slow?
+2. Which test caused the most issues?
+3. Did the app feel slower at the end of a long test than at the start (roughly how much)?
+4. Would you trust the app for real use?
 
-### Steps:
-1. Start acquisition
-2. Leave the live page open the entire time so graphs keep drawing
-3. Run for 65 min
-4. Stop
-5. Export files
+Approximate answers are completely fine — even "it felt slow after 20 min" is useful.
 
-### Check:
-* UI lag (compare an external stopwatch with the graph time to detect delay between real time and UI updates)
-* Chunk saving stability
-* `check_lost_frames.py` output ([How to Run The Script](#how-to-run-check_lost_framespy))
-
----
-
-## Test 4 - High Load Stress Test, Tab minimized (65 min)
-
-### Settings:
-* Sense Device
-* 6 channels
-* Highest available sample rate
-* **Power state: Battery only**
-
-### Steps:
-1. Start acquisition
-2. Minimise the window, or switch to another full-screen app so the live graph is not visible
-3. Run for 65 min (you can glance at it occasionally but keep the window hidden most of the time)
-4. Bring the window back
-5. Stop
-6. Export files
-
-### Check:
-* `check_lost_frames.py` output ([How to Run The Script](#how-to-run-check_lost_framespy))
-* Any visible "catch-up" behaviour when you bring the window back up
-
----
-
-## Test 5 - Connection Loss Recovery Test (30+ min)
-
-### Settings:
-* Sense Device
-* 4 channels
-* 1000 Hz
-* **Power state: Battery only**
-
-### Steps:
-1. Start acquisition
-2. Record 15 min
-3. Disconnect the device intentionally (turn it off, or move it out of Bluetooth range)
-4. Download Files after Disconnection
-5. Reconnect 
-6. Restart acquisition for 15 min
-7. Stop
-8. Export CSV & PDF
-
-### Check:
-* Correct warning shown
-* App does not crash
-* Existing data preserved
-* CSV still exportable
-* `check_lost_frames.py` output ([How to Run The Script](#how-to-run-check_lost_framespy))
-
----
-
-## Test 6 - Start / Stop Repetition Test
-
-### Settings:
-* Sense Device
-* 6 channels
-* 1000 Hz
-* **Power state: Battery only**
-
-### Steps:
-Do 5 short sessions:
-1. Connect
-2. Start
-3. Record 5 min
-4. Stop
-5. Repeat
-
-### Check:
-* No broken sessions
-* New folders each time (5 folders in total)
-* `check_lost_frames.py` on each of the 5 session folders reports zero gaps ([How to Run The Script](#how-to-run-check_lost_framespy))
-
----
-
-## Test 7 - Robustness / Maximum Duration Test
-
-### Settings:
-* Sense Device
-* 6 channels
-* 1000 Hz
-* **Power state: Battery only** - if the battery runs out during the test, stop and note the duration reached. Do not plug in the charger mid-test.
-
-### Steps:
-1. Start acquisition
-2. Leave running as long as possible
-    * **Minimum target: 4 hours. Ideal target: 8 hours or until battery ends.**
-4. If stable, continue longer (note what time it stopped and why)
-
-### Stop when:
-* App slows heavily
-* Crash
-* Freeze
-* Memory too high
-* Battery runs out
-* End of available time
-
-### Record:
-* Total duration achieved
-* Any issues near the end
-* Whether the session ended due to battery or something else
-* `check_lost_frames.py` SUMMARY output ([How to Run The Script](#how-to-run-check_lost_framespy))
-
----
-
-## Test 8 - Charging Condition Test (30 min)
-
-### Settings:
-* Sense Device
-* 2 channels (matching Test 1)
-* 1000 Hz
-* **Power state:** Charger connected throughout the acquisition
-
-### Steps:
-1. Plug the device into its charger before starting
-2. Connect
-3. Start acquisition with the charger still connected
-4. Run for 30 min continuously with the charger connected the entire time
-5. Stop
-6. Export CSV + PDF
-
-### Check:
-* Any visible signal degradation on the graph (noise, spikes, flat regions)
-* Whether crashes or "invalid byte" errors occur
-* Whether the app recovers gracefully from any errors
-* Run `check_lost_frames.py` script on the folder created ([How to Run The Script](#how-to-run-check_lost_framespy))
-
-### Also record in the form:
-* Charger type (phone charger / laptop-provided USB port / powered hub / other)
-* Whether your **laptop** was also plugged into its charger during the test
-* Any visible artefacts in the graph, even small ones
-
----
-
-# How to Run The Script `check_lost_frames.py`
-
-1. Import the _check_lost_frames.py_ script into the ```sense-web-tese/apps/sense-desktop/data``` directory
-
-2. After each test, open a terminal in the ```sense-web-tese/apps/sense-desktop/data``` directory and run:
-
-    ```
-    python check_lost_frames.py <session_folder_name>
-    ```
-    For example: ```python check_lost_frames.py 2026-05-04T12-12-51-794Z ```
-
-    The script prints a SUMMARY block at the end that looks like this:
-
-    ```
-    ═══════════════════════════════════════════════════════
-      SUMMARY
-    ═══════════════════════════════════════════════════════
-      [__seq]  ✅ No frames lost at IPC/buffer level
-      [seq]    ✅ No frames lost at device/transmission level
-    ═══════════════════════════════════════════════════════
-    ```
-
-Copy that block and paste it into the Google Form. If you see `❌` instead of `✅`, copy the full summary (including the gap counts) so we can analyse what happened.
-
----
-
-# After Each Test
-
-Please send:
-* Session folder (zipped) with:
-  * session folder created in _/apps/sense-desktop/data/_
-  * CSV & PDF exports
-* Completed Google Form, which should include:
-  * Power state and battery level at start
-  * `check_lost_frames.py` SUMMARY output
-  * Charger details (on the forms)
-  * Any issues encountered
-
----
-
-# Most Important Feedback
-
-Tell me:
-1. What broke first
-2. What felt slow
-3. Which test caused most issues
-4. Whether the app felt slower at the end of a long test than at the start (and if so, roughly how much)
-5. Whether you would trust the app for real use
-6. Any noticeable difference between Test 1 (battery) and Test 8 (charging)
-7. Any noticeable difference between Test 3 (graph visible) and Test 4 (graph hidden)
-
----
-
-# Quick Advice
-
-Approximate answers are completely fine.
-Even "it felt slow after 20 min" is useful data.
-The numeric outputs from `check_lost_frames.py` are the most important thing - please don't skip that even if you skip some of the subjective questions.
-
----
-
-**Note:** If you wish to perform any additional tests you deem relevant, you are welcome to do so. Please make sure to note the settings you used, the exact steps you followed, and the power state (battery or charging). You can report these extra tests in the "Test Scenario" question on the forms as "other".
+> **Extra tests welcome.** If you try anything else, note the settings, exact steps, and power state, and report it under "other" in the form.

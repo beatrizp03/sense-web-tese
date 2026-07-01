@@ -52,9 +52,18 @@ try:
         SUPPORTED_SIGNAL_KINDS as BIOSPPY_SUPPORTED_SIGNAL_KINDS,
         process_signal as process_biosppy_signal,
     )
-except Exception:  
+except Exception:
     BIOSPPY_SUPPORTED_SIGNAL_KINDS = set()
     process_biosppy_signal = None
+
+try:
+    from preprocessing_metadata import (
+        build_preprocessing_block,
+        get_preprocessing_metadata,
+    )
+except Exception:
+    build_preprocessing_block = None
+    get_preprocessing_metadata = None
 
 RESERVED_FRAME_KEYS = {
     "__seq",
@@ -94,6 +103,25 @@ SIGNAL_KIND_LIBRARY_PREFERENCES: Dict[str, str] = {}
 SIGNAL_KIND_OVERRIDES: Dict[str, str] = {}
 SIGNAL_AXIS_OVERRIDES: Dict[str, str] = {}
 EXCLUDED_CHANNELS: set = set()
+
+ANALYSIS_WINDOW_SECONDS: Optional[Tuple[float, Optional[float]]] = None
+ANALYSIS_SEGMENT: Optional[int] = None
+
+DEFAULT_EMG_WINDOW_MS = 200.0
+DEFAULT_EMG_WINDOW_STEP_MS = 100.0
+EMG_WINDOW_MS: float = DEFAULT_EMG_WINDOW_MS
+EMG_WINDOW_STEP_MS: float = DEFAULT_EMG_WINDOW_STEP_MS
+
+DEFAULT_HRV_WINDOW_SEC = 300.0
+DEFAULT_HRV_WINDOW_STEP_SEC = 300.0
+HRV_WINDOW_SEC: float = DEFAULT_HRV_WINDOW_SEC
+HRV_WINDOW_STEP_SEC: float = DEFAULT_HRV_WINDOW_STEP_SEC
+
+def segment_artifact_folder(output_folder: Path, segment_index: int) -> Path:
+    if ANALYSIS_SEGMENT is not None:
+        return output_folder
+    return output_folder / f"segment-{segment_index}"
+
 
 def _normalize_library_pref(value: Any) -> Optional[str]:
     """Normalize a free-form library token to "neurokit", "biosppy", or Default."""
@@ -307,6 +335,66 @@ def normalize_excluded_channels(value: Any) -> List[str]:
     return result
 
 
+def normalize_analysis_range(value: Any) -> Optional[Tuple[float, Optional[float]]]:
+    """Parse an optional analysis window {startSec, endSec} into a (start, end)
+    tuple of seconds. Returns None (analyze whole session) when absent or invalid."""
+    if not isinstance(value, dict):
+        return None
+    start = safe_float(value.get("startSec"))
+    end = safe_float(value.get("endSec"))
+    if start is None or start < 0:
+        start = 0.0
+    if end is None:
+        return (float(start), None)
+    if end <= start:
+        return None
+    return (float(start), float(end))
+
+
+def normalize_analysis_segment(value: Any) -> Optional[int]:
+    parsed = safe_float(value)
+    if parsed is None:
+        return None
+    segment = int(parsed)
+    return segment if segment >= 1 else None
+
+
+def normalize_emg_window(window_value: Any, step_value: Any) -> Tuple[float, float]:
+    """Parse the EMG sliding-window length and step (milliseconds) from the run
+    config. Falls back to the defaults for missing/invalid values, defaults the
+    step to 50% overlap when only the window is given, and clamps the step to the
+    window length (a longer step would skip samples between windows)."""
+    window_ms = safe_float(window_value)
+    if window_ms is None or window_ms <= 0:
+        window_ms = DEFAULT_EMG_WINDOW_MS
+
+    step_ms = safe_float(step_value)
+    if step_ms is None or step_ms <= 0:
+        step_ms = window_ms / 2.0
+    if step_ms > window_ms:
+        step_ms = window_ms
+
+    return float(window_ms), float(step_ms)
+
+
+def normalize_hrv_window(window_value: Any, step_value: Any) -> Tuple[float, float]:
+    """Parse the ECG/PPG HRV/PRV window length and step (seconds) from the run
+    config. Falls back to the 5-min Task Force default, defaults the step to the
+    window length (consecutive non-overlapping windows), and clamps the step to
+    the window length."""
+    window_sec = safe_float(window_value)
+    if window_sec is None or window_sec <= 0:
+        window_sec = DEFAULT_HRV_WINDOW_SEC
+
+    step_sec = safe_float(step_value)
+    if step_sec is None or step_sec <= 0:
+        step_sec = window_sec
+    if step_sec > window_sec:
+        step_sec = window_sec
+
+    return float(window_sec), float(step_sec)
+
+
 def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
     config_path = getattr(args, "config", None)
     if config_path:
@@ -316,6 +404,12 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
         raw = load_json(path)
         if not isinstance(raw, dict):
             raise ValueError("Analysis config file must contain a JSON object")
+        emg_window_ms, emg_window_step_ms = normalize_emg_window(
+            raw.get("emgWindowMs"), raw.get("emgWindowStepMs")
+        )
+        hrv_window_sec, hrv_window_step_sec = normalize_hrv_window(
+            raw.get("hrvWindowSec"), raw.get("hrvWindowStepSec")
+        )
         return {
             "libraryPreference": _normalize_library_pref(raw.get("libraryPreference")),
             "signalKindLibraries": normalize_signal_kind_library_map(raw.get("signalKindLibraries")),
@@ -323,6 +417,12 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
             "signalKinds": normalize_signal_kind_map(raw.get("channelSignalKinds")),
             "signalAxes": normalize_signal_axis_map(raw.get("channelSignalAxes")),
             "excludedChannels": normalize_excluded_channels(raw.get("excludedChannels")),
+            "range": normalize_analysis_range(raw.get("range")),
+            "segment": normalize_analysis_segment(raw.get("segment")),
+            "emgWindowMs": emg_window_ms,
+            "emgWindowStepMs": emg_window_step_ms,
+            "hrvWindowSec": hrv_window_sec,
+            "hrvWindowStepSec": hrv_window_step_sec,
         }
 
     return {
@@ -332,6 +432,12 @@ def load_run_config(args: argparse.Namespace) -> Dict[str, Any]:
         "signalKinds": load_signal_kind_overrides(),
         "signalAxes": load_signal_axis_overrides(),
         "excludedChannels": [],
+        "range": None,
+        "segment": None,
+        "emgWindowMs": DEFAULT_EMG_WINDOW_MS,
+        "emgWindowStepMs": DEFAULT_EMG_WINDOW_STEP_MS,
+        "hrvWindowSec": DEFAULT_HRV_WINDOW_SEC,
+        "hrvWindowStepSec": DEFAULT_HRV_WINDOW_STEP_SEC,
     }
 
 
@@ -374,6 +480,20 @@ def build_library_policy_manifest() -> Dict[str, Any]:
         "secondaryLibrary": SECONDARY_LIBRARY,
         "signalPolicies": signal_policies,
     }
+
+
+def detect_library_versions() -> Dict[str, Optional[str]]:
+    """Best-effort capture of the installed library versions so the preprocessing
+    reference in analysis.json is pinned to what actually ran."""
+    versions: Dict[str, Optional[str]] = {"biosppy": None, "neurokit2": None}
+    try:
+        import biosppy  # local import: BioSPPy isn't imported at module load
+        versions["biosppy"] = getattr(biosppy, "__version__", None)
+    except Exception:
+        pass
+    if nk is not None:
+        versions["neurokit2"] = getattr(nk, "__version__", None)
+    return versions
 
 
 def normalize_channel_list(value: Any) -> List[str]:
@@ -673,6 +793,81 @@ def export_series_csv(
         writer.writerow(["index", "time_seconds", "value"])
         for index, value in zip(indices, values):
             writer.writerow([index, index / sample_rate if sample_rate else index, value])
+
+    return str(csv_path)
+
+
+def export_emg_windows_csv(
+    output_folder: Path,
+    channel_name: str,
+    windows: Sequence[Dict[str, Any]],
+) -> str:
+    """Export the per-window EMG feature time series to a single CSV.
+
+    One row per sliding window, with the window's time span and the Hudgins
+    time-domain set + spectral indices (MAV/RMS/WL/ZC/SSC/MNF/MDF)."""
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in channel_name
+    ).strip("_") or "channel"
+    windows_dir = output_folder / "emg_windows"
+    windows_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = windows_dir / f"{safe_name}.csv"
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            ["window", "start_sample", "end_sample", "start_seconds", "end_seconds"]
+            + EMG_DERIVED_FEATURE_NAMES
+        )
+        for row in windows:
+            writer.writerow(
+                [
+                    row.get("window"),
+                    row.get("startSample"),
+                    row.get("endSample"),
+                    row.get("startSec"),
+                    row.get("endSec"),
+                ]
+                + [row.get(name) for name in EMG_DERIVED_FEATURE_NAMES]
+            )
+
+    return str(csv_path)
+
+
+def export_hrv_windows_csv(
+    output_folder: Path,
+    channel_name: str,
+    windows: Sequence[Dict[str, Any]],
+    subdir: str,
+) -> str:
+    """Export the per-window HRV (ECG) or PRV (PPG) metric time series to a CSV.
+
+    One row per window, with the window's time span, peak count, and every HRV/PRV
+    metric NeuroKit2 produced. The metric columns are discovered dynamically as
+    the union across windows so differing per-window metric sets stay aligned."""
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in channel_name
+    ).strip("_") or "channel"
+    windows_dir = output_folder / subdir
+    windows_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = windows_dir / f"{safe_name}.csv"
+
+    meta_keys = ("window", "startSec", "endSec", "peakCount")
+    metric_keys = sorted({
+        key
+        for row in windows
+        for key in row.keys()
+        if key not in meta_keys
+    })
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["window", "start_seconds", "end_seconds", "peak_count"] + metric_keys)
+        for row in windows:
+            writer.writerow(
+                [row.get("window"), row.get("startSec"), row.get("endSec"), row.get("peakCount")]
+                + [row.get(key) for key in metric_keys]
+            )
 
     return str(csv_path)
 
@@ -1247,6 +1442,124 @@ def _prepare_signal_for_analysis(signal_kind: str, values: Sequence[float], samp
     return cleaned_signal, preprocessing
 
 
+def compute_hrv_windowed(
+    peaks: Sequence[int],
+    sample_rate: float,
+    signal_length: int,
+    window_sec: float,
+    step_sec: float,
+    prv: bool = False,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[str]]:
+    """Run NeuroKit2's nk.hrv() over consecutive (optionally overlapping) windows
+    of detected peaks, following the 5-min short-term standard.
+
+    Used for both ECG HRV and PPG PRV (same NeuroKit engine; when prv=True the
+    HRV_* metric names are relabelled PRV_* since they describe pulse-rate, not
+    heart-rate, variability).
+
+    Returns (aggregate, windows, meta, warnings):
+      - aggregate: {<METRIC>_mean/_std/_min/_max + <prefix>_window_count} across
+        windows, for the flat features.csv table (under the neurokit2 library).
+      - windows: per-window list of dicts (window index, time span, peak count and
+        every HRV/PRV metric) for the per-window time-series CSV export.
+      - meta: the window parameters actually used (kept in analysis.json).
+      - warnings: any issues encountered.
+    """
+    label = "PRV" if prv else "HRV"
+    warnings: List[str] = []
+
+    if nk is None:
+        warnings.append(f"{label} windowing skipped: NeuroKit2 is unavailable.")
+        return {}, [], {}, warnings
+    if np is None:
+        warnings.append(f"{label} windowing skipped: NumPy is unavailable.")
+        return {}, [], {}, warnings
+    if not sample_rate or sample_rate <= 0:
+        warnings.append(f"{label} windowing skipped: sample rate unavailable.")
+        return {}, [], {}, warnings
+
+    ordered_peaks = sorted({int(p) for p in peaks if p is not None and int(p) >= 0})
+    if len(ordered_peaks) < 4:
+        warnings.append(f"{label} windowing skipped: fewer than 4 peaks detected.")
+        return {}, [], {}, warnings
+
+    length = int(signal_length) if signal_length else (ordered_peaks[-1] + 1)
+    window_samples = max(1, int(round(window_sec * sample_rate)))
+    step_samples = max(1, int(round(step_sec * sample_rate)))
+
+    bounds: List[Tuple[int, int]] = []
+    if length <= window_samples:
+        bounds.append((0, length))
+    else:
+        start = 0
+        while start + window_samples <= length:
+            bounds.append((start, start + window_samples))
+            start += step_samples
+
+    meta: Dict[str, Any] = {
+        "windowSec": float(window_sec),
+        "stepSec": float(step_sec),
+        "windowSamples": int(window_samples),
+        "stepSamples": int(step_samples),
+        "overlapPercent": round((1.0 - step_samples / window_samples) * 100.0, 2) if window_samples else 0.0,
+        "sampleRate": float(sample_rate),
+        "standard": "Task Force ESC/NASPE 1996 (5-min short-term)",
+        "windowCount": 0,
+    }
+
+    windows: List[Dict[str, Any]] = []
+    collected: Dict[str, List[float]] = defaultdict(list)
+
+    for w_index, (start, end) in enumerate(bounds):
+        window_peaks = [p for p in ordered_peaks if start <= p < end]
+        if len(window_peaks) < 4:
+            continue
+        try:
+            hrv_df = nk.hrv(np.asarray(window_peaks, dtype=int), sampling_rate=float(sample_rate), show=False)
+        except Exception as exc:
+            warnings.append(f"{label} window {w_index} failed: {exc}")
+            continue
+
+        rows = serialize_df_like(hrv_df)
+        metrics = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+        if prv:
+            metrics = {
+                (f"PRV_{key[4:]}" if isinstance(key, str) and key.startswith("HRV_") else key): value
+                for key, value in metrics.items()
+            }
+
+        row: Dict[str, Any] = {
+            "window": w_index,
+            "startSec": start / sample_rate,
+            "endSec": end / sample_rate,
+            "peakCount": len(window_peaks),
+        }
+        for key, value in metrics.items():
+            number = safe_float(value)  
+            row[key] = number
+            if number is not None:
+                collected[str(key)].append(number)
+        windows.append(row)
+
+    meta["windowCount"] = len(windows)
+
+    if not windows:
+        warnings.append(f"{label} windowing produced no usable windows.")
+        return {}, [], meta, warnings
+
+    aggregate: Dict[str, Any] = {f"{label}_window_count": len(windows)}
+    for key, series in collected.items():
+        if not series:
+            continue
+        stats = basic_stats(series)
+        aggregate[f"{key}_mean"] = stats["mean"]
+        aggregate[f"{key}_std"] = stats["std"]
+        aggregate[f"{key}_min"] = stats["min"]
+        aggregate[f"{key}_max"] = stats["max"]
+
+    return aggregate, windows, meta, warnings
+
+
 def analyze_ecg(
     values: Sequence[float],
     sample_rate: float,
@@ -1285,11 +1598,26 @@ def analyze_ecg(
             if info is not None:
                 try:
                     corrected_info = record["neurokit2"].get("info")
-                    # Only run HRV when corrected peaks are present and sufficient
+                    # Compute HRV over consecutive 5-min windows rather than once 
+                    # over the whole recording. Per-window metrics go to a CSV; 
+                    # cross-window aggregates flow to features.csv.
                     peaks_for_hrv = _normalize_peak_indices(corrected_info)
-                    if len(peaks_for_hrv) >= 3:
-                        hrv = nk.hrv(corrected_info, sampling_rate=float(sample_rate))
-                        record["neurokit2"]["hrv"] = serialize_df_like(hrv)
+                    if len(peaks_for_hrv) >= 4:
+                        aggregate, hrv_windows, hrv_meta, hrv_warnings = compute_hrv_windowed(
+                            peaks_for_hrv,
+                            float(sample_rate),
+                            len(signal),
+                            HRV_WINDOW_SEC,
+                            HRV_WINDOW_STEP_SEC,
+                            prv=False,
+                        )
+                        record["neurokit2"]["hrvWindowing"] = hrv_meta
+                        if aggregate:
+                            record["neurokit2"]["derivedFeatures"] = aggregate
+                        if hrv_windows:
+                            record["_hrvWindows"] = hrv_windows
+                        for warning in hrv_warnings:
+                            record.setdefault("warnings", []).append(warning)
                     else:
                         record.setdefault("warnings", []).append(
                             "NeuroKit2 HRV skipped: insufficient peaks after outlier removal"
@@ -1382,6 +1710,34 @@ def analyze_ppg(
                 "info": serialize_numpy_like(info),
             }
             _apply_neurokit2_outlier_removal(record, "ppg", sample_rate)
+
+            # Pulse-rate variability: feed the detected PPG pulse peaks to the
+            # same NeuroKit2 HRV engine over 5-min windows.
+            try:
+                corrected_info = record["neurokit2"].get("info")
+                peaks_for_prv = _normalize_peak_indices(corrected_info)
+                if len(peaks_for_prv) >= 4:
+                    aggregate, prv_windows, prv_meta, prv_warnings = compute_hrv_windowed(
+                        peaks_for_prv,
+                        float(sample_rate),
+                        len(signal),
+                        HRV_WINDOW_SEC,
+                        HRV_WINDOW_STEP_SEC,
+                        prv=True,
+                    )
+                    record["neurokit2"]["prvWindowing"] = prv_meta
+                    if aggregate:
+                        record["neurokit2"]["derivedFeatures"] = aggregate
+                    if prv_windows:
+                        record["_hrvWindows"] = prv_windows
+                    for warning in prv_warnings:
+                        record.setdefault("warnings", []).append(warning)
+                else:
+                    record.setdefault("warnings", []).append(
+                        "NeuroKit2 PRV skipped: insufficient pulse peaks detected"
+                    )
+            except Exception as exc:
+                record.setdefault("warnings", []).append(f"NeuroKit2 PRV processing failed: {exc}")
         except Exception as exc:
             record.setdefault("warnings", []).append(f"NeuroKit2 PPG processing failed: {exc}")
 
@@ -1390,6 +1746,169 @@ def analyze_ppg(
         progress.advance_neurokit2(0.8, _progress_label("NeuroKit2 PPG", channel_key, "complete"))
 
     return record
+
+
+def compute_emg_time_frequency_features(
+    signal: Any,
+    sample_rate: float,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Compute the Hudgins time-domain set (MAV, RMS, WL, ZC, SSC) plus the
+    spectral fatigue indices (MNF, MDF) on a cleaned EMG signal.
+    """
+    features: Dict[str, Any] = {}
+    warnings: List[str] = []
+
+    if np is None:
+        warnings.append("EMG time/frequency features skipped: NumPy is unavailable.")
+        return features, warnings
+
+    try:
+        x = np.asarray(signal, dtype=float).reshape(-1)
+        x = x[np.isfinite(x)]
+    except Exception as exc:
+        warnings.append(f"EMG time/frequency features skipped: {exc}")
+        return features, warnings
+
+    if x.size < 2:
+        warnings.append("EMG time/frequency features skipped: fewer than 2 samples.")
+        return features, warnings
+
+    # --- Time-domain set ---
+    diff = np.diff(x)
+    features["EMG_MAV"] = float(np.mean(np.abs(x)))         
+    features["EMG_RMS"] = float(np.sqrt(np.mean(x ** 2)))   
+    features["EMG_WL"] = float(np.sum(np.abs(diff)))        
+
+    signs = np.sign(x)
+    signs[signs == 0] = 1.0
+    features["EMG_ZC"] = int(np.sum(signs[:-1] * signs[1:] < 0))
+
+    if diff.size >= 2:
+        dsigns = np.sign(diff)
+        dsigns[dsigns == 0] = 1.0
+        features["EMG_SSC"] = int(np.sum(dsigns[:-1] * dsigns[1:] < 0))
+    else:
+        features["EMG_SSC"] = 0
+
+    if sample_rate and sample_rate > 0:
+        try:
+            from scipy.signal import welch
+
+            nperseg = int(min(x.size, max(256, int(sample_rate))))
+            freqs, psd = welch(x, fs=float(sample_rate), nperseg=nperseg)
+            total_power = float(np.sum(psd))
+            if total_power > 0 and freqs.size:
+                features["EMG_MNF"] = float(np.sum(freqs * psd) / total_power)
+                cumulative = np.cumsum(psd)
+                median_idx = min(int(np.searchsorted(cumulative, total_power / 2.0)), freqs.size - 1)
+                features["EMG_MDF"] = float(freqs[median_idx])
+            else:
+                warnings.append("EMG spectral features (MNF/MDF) skipped: PSD has no power.")
+        except Exception as exc:
+            warnings.append(f"EMG spectral features (MNF/MDF) skipped: {exc}")
+    else:
+        warnings.append("EMG spectral features (MNF/MDF) skipped: sample rate unavailable.")
+
+    return features, warnings
+
+
+EMG_DERIVED_FEATURE_NAMES = ["EMG_MAV", "EMG_RMS", "EMG_WL", "EMG_ZC", "EMG_SSC", "EMG_MNF", "EMG_MDF"]
+
+
+def compute_emg_windowed_features(
+    signal: Any,
+    sample_rate: float,
+    window_ms: float,
+    step_ms: float,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[str]]:
+    """Slide an overlapping window over the cleaned EMG signal and compute the
+    Hudgins time-domain set + spectral indices per window.
+
+    Returns (aggregate, windows, windowing_meta, warnings):
+      - aggregate: {<FEATURE>_mean/_std/_min/_max + EMG_window_count} across all
+        windows, for the flat features.csv table.
+      - windows: per-window list of dicts (window index, start/end sample & sec,
+        and each feature) for the per-window time-series CSV export.
+      - windowing_meta: the window parameters actually used (kept in analysis.json).
+      - warnings: any issues encountered.
+    """
+    warnings: List[str] = []
+
+    if np is None:
+        warnings.append("EMG windowed features skipped: NumPy is unavailable.")
+        return {}, [], {}, warnings
+
+    if not sample_rate or sample_rate <= 0:
+        warnings.append("EMG windowed features skipped: sample rate unavailable.")
+        return {}, [], {}, warnings
+
+    try:
+        x = np.asarray(signal, dtype=float).reshape(-1)
+        x = x[np.isfinite(x)]
+    except Exception as exc:
+        warnings.append(f"EMG windowed features skipped: {exc}")
+        return {}, [], {}, warnings
+
+    window_samples = max(2, int(round(window_ms * sample_rate / 1000.0)))
+    step_samples = max(1, int(round(step_ms * sample_rate / 1000.0)))
+
+    windowing_meta: Dict[str, Any] = {
+        "windowMs": float(window_ms),
+        "stepMs": float(step_ms),
+        "windowSamples": int(window_samples),
+        "stepSamples": int(step_samples),
+        "overlapPercent": round((1.0 - step_samples / window_samples) * 100.0, 2) if window_samples else 0.0,
+        "sampleRate": float(sample_rate),
+        "windowCount": 0,
+    }
+
+    if x.size < window_samples:
+        warnings.append(
+            f"EMG windowed features skipped: signal has {int(x.size)} samples, "
+            f"fewer than one {window_ms:g}ms window ({window_samples} samples)."
+        )
+        return {}, [], windowing_meta, warnings
+
+    windows: List[Dict[str, Any]] = []
+    collected: Dict[str, List[float]] = {name: [] for name in EMG_DERIVED_FEATURE_NAMES}
+
+    for w_index, start in enumerate(range(0, x.size - window_samples + 1, step_samples)):
+        end = start + window_samples
+        seg_features, _seg_warnings = compute_emg_time_frequency_features(x[start:end], sample_rate)
+        if not seg_features:
+            continue
+        row: Dict[str, Any] = {
+            "window": w_index,
+            "startSample": int(start),
+            "endSample": int(end),
+            "startSec": start / sample_rate,
+            "endSec": end / sample_rate,
+        }
+        for name in EMG_DERIVED_FEATURE_NAMES:
+            value = seg_features.get(name)
+            row[name] = value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                collected[name].append(float(value))
+        windows.append(row)
+
+    windowing_meta["windowCount"] = len(windows)
+
+    if not windows:
+        warnings.append("EMG windowed features produced no usable windows.")
+        return {}, [], windowing_meta, warnings
+
+    aggregate: Dict[str, Any] = {"EMG_window_count": len(windows)}
+    for name in EMG_DERIVED_FEATURE_NAMES:
+        series = collected[name]
+        if not series:
+            continue
+        stats = basic_stats(series)
+        aggregate[f"{name}_mean"] = stats["mean"]
+        aggregate[f"{name}_std"] = stats["std"]
+        aggregate[f"{name}_min"] = stats["min"]
+        aggregate[f"{name}_max"] = stats["max"]
+
+    return aggregate, windows, windowing_meta, warnings
 
 
 def analyze_emg(
@@ -1406,6 +1925,18 @@ def analyze_emg(
         progress.advance_biosppy(0.25, _progress_label("BioSPPy EMG", channel_key, "filtering & segmentation"))
 
     apply_biosppy_analysis(record, "emg", signal, sample_rate)
+
+    aggregate, emg_windows, windowing_meta, emg_warnings = compute_emg_windowed_features(
+        signal, sample_rate, EMG_WINDOW_MS, EMG_WINDOW_STEP_MS
+    )
+    if windowing_meta:
+        record["windowing"] = windowing_meta
+    if aggregate:
+        record["derivedFeatures"] = aggregate
+    if emg_windows:
+        record["_emgWindows"] = emg_windows
+    for warning in emg_warnings:
+        record.setdefault("warnings", []).append(warning)
 
     if progress is not None:
         progress.advance_biosppy(0.5, _progress_label("BioSPPy EMG", channel_key, "detecting peaks & features"))
@@ -1831,6 +2362,8 @@ def process_segment(
     eda_method: Optional[str],
     progress: Optional[AnalysisProgressTracker] = None,
     logger: Optional[AnalysisLogger] = None,
+    session_frame_offset: int = 0,
+    window_frames: Optional[Tuple[int, Optional[int]]] = None,
 ) -> Dict[str, Any]:
     if logger is not None:
         logger.log_message(
@@ -1844,6 +2377,15 @@ def process_segment(
     for chunk_file in chunk_files:
         frames.extend(load_chunk_frames(chunk_file))
 
+    # Total # frames (before window restriction)
+    raw_frame_count = len(frames)
+    
+    if window_frames is not None:
+        abs_start, abs_end = window_frames
+        local_start = max(0, abs_start - session_frame_offset)
+        local_end = raw_frame_count if abs_end is None else min(raw_frame_count, abs_end - session_frame_offset)
+        frames = frames[local_start:local_end] if local_start < local_end else []
+
     frame_count = len(frames)
 
     if frame_count == 0:
@@ -1851,6 +2393,7 @@ def process_segment(
             "segment": segment_index,
             "chunkFiles": [str(path) for path in chunk_files],
             "frameCount": 0,
+            "rawFrameCount": raw_frame_count,
             "channels": [],
             "warnings": ["Segment contains no frames to process"],
         }
@@ -1889,7 +2432,7 @@ def process_segment(
                 values=values,
                 sample_rate=sample_rate,
                 indices=indices,
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
             )
@@ -1976,7 +2519,7 @@ def process_segment(
             values=values,
             sample_rate=sample_rate,
             indices=indices,
-            output_folder=output_folder / f"segment-{segment_index}",
+            output_folder=segment_artifact_folder(output_folder, segment_index),
             eda_method=eda_method,
             progress=progress,
         )
@@ -2020,7 +2563,7 @@ def process_segment(
                 values=eeg_entry["values"],
                 sample_rate=sample_rate,
                 indices=eeg_entry["indices"],
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
                 analysis_override=eeg_analysis,
@@ -2068,7 +2611,7 @@ def process_segment(
                 values=entry["values"],
                 sample_rate=sample_rate,
                 indices=entry["indices"],
-                output_folder=output_folder / f"segment-{segment_index}",
+                output_folder=segment_artifact_folder(output_folder, segment_index),
                 eda_method=eda_method,
                 progress=None,
                 analysis_override=acc_analysis,
@@ -2086,6 +2629,7 @@ def process_segment(
         "segment": segment_index,
         "sampleRate": sample_rate,
         "frameCount": frame_count,
+        "rawFrameCount": raw_frame_count,
         "chunkFiles": [str(path) for path in chunk_files],
         "channels": result_channels,
         "warnings": [],
@@ -2144,6 +2688,11 @@ def build_result(
     library_policy = build_library_policy_manifest()
 
     grouped_entries = group_entries_by_segment(chunk_entries)
+    
+    if ANALYSIS_SEGMENT is not None:
+        grouped_entries = {
+            ANALYSIS_SEGMENT: grouped_entries.get(ANALYSIS_SEGMENT, [])
+        }
     segment_results: List[Dict[str, Any]] = []
     total_frames = 0
     total_chunks = 0
@@ -2153,7 +2702,14 @@ def build_result(
     progress.mark_data_prepared()
 
     signal_kind_counts: Dict[str, int] = {}
+    window_frames: Optional[Tuple[int, Optional[int]]] = None
+    if ANALYSIS_WINDOW_SECONDS is not None and sample_rate:
+        start_sec, end_sec = ANALYSIS_WINDOW_SECONDS
+        abs_start = max(0, int(math.floor(float(start_sec) * sample_rate)))
+        abs_end = None if end_sec is None else int(math.ceil(float(end_sec) * sample_rate))
+        window_frames = (abs_start, abs_end)
 
+    session_frame_offset = 0
     for segment_index, segment_files in grouped_entries.items():
         segment_result = process_segment(
             segment_index,
@@ -2164,6 +2720,8 @@ def build_result(
             eda_method,
             progress=progress,
             logger=logger,
+            session_frame_offset=session_frame_offset,
+            window_frames=window_frames,
         )
 
         for channel in segment_result.get("channels", []):
@@ -2173,14 +2731,29 @@ def build_result(
 
         segment_results.append(segment_result)
         total_frames += int(segment_result.get("frameCount", 0) or 0)
+        session_frame_offset += int(segment_result.get("rawFrameCount", segment_result.get("frameCount", 0)) or 0)
         total_chunks += len(segment_files)
 
     biosppy_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eeg", "pcg", "acc"]
     neurokit2_strategy = ["ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "hrv"]
 
+    library_versions = detect_library_versions()
+    preprocessing_block: Optional[Dict[str, Any]] = None
+    if build_preprocessing_block is not None:
+        present_kinds = sorted(k for k in signal_kind_counts if k and k != "generic")
+        try:
+            preprocessing_block = build_preprocessing_block(
+                library_versions.get("biosppy"),
+                library_versions.get("neurokit2"),
+                signal_kinds=present_kinds or None,
+            )
+        except Exception:
+            preprocessing_block = None
+
     return {
         "sessionId": manifest.get("sessionId"),
         "sessionFolder": str(session_folder),
+        "sampleRate": sample_rate,
         "chunkCount": total_chunks,
         "analyzedAt": now_iso(),
         "completedAt": now_iso(),
@@ -2195,6 +2768,7 @@ def build_result(
             },
         },
         "analysisPolicy": library_policy,
+        **({"preprocessing": preprocessing_block} if preprocessing_block is not None else {}),
         "analysisConfig": {
             "batchMode": "load-session-process-entire-dataset-store-features",
             "channelSignalKinds": analysis_manifest.get("channelSignalKinds", {}),
@@ -2206,6 +2780,11 @@ def build_result(
             "libraryPreference": SELECTED_LIBRARY_PREFERENCE or "auto",
             "signalKindLibraries": dict(SIGNAL_KIND_LIBRARY_PREFERENCES),
             "edaMethod": eda_method or "neurokit2-default",
+            **(
+                {"analysisWindow": {"startSec": ANALYSIS_WINDOW_SECONDS[0], "endSec": ANALYSIS_WINDOW_SECONDS[1]}}
+                if ANALYSIS_WINDOW_SECONDS is not None
+                else {}
+            ),
         },
         "segments": segment_results,
         "warnings": [],
@@ -2331,15 +2910,12 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         ]
                     )
 
-                for library, feature_key in [("biosppy", "biosppyFeatures"), ("neurokit2", "neurokit2Features")]:
+                for library, feature_key in [("biosppy", "biosppyFeatures"), ("neurokit2", "neurokit2Features"), ("derived", "derivedFeatures")]:
                     features = analysis.get(feature_key, {})
                     if not isinstance(features, dict):
                         continue
 
                     for feature_name, value in sorted(features.items(), key=lambda item: item[0]):
-                        # Exclude time-axis ('ts') columns from features.csv, including
-                        # stat-flattened variants like 'features_ts_mean'/'templates_ts_std'
-                        # where 'ts' sits mid-name. Match 'ts' as any underscore token.
                         if "ts" in feature_name.split("_"):
                             continue
 
@@ -2361,6 +2937,157 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         )
 
 
+def _signal_kinds_in_features(output_folder: Path) -> List[str]:
+    """Read the distinct signal kinds present in features.csv (column index 3)."""
+    features_path = output_folder / "features.csv"
+    if not features_path.exists():
+        return []
+    try:
+        csv.field_size_limit(10 ** 7)
+    except Exception:
+        pass
+    kinds: set = set()
+    try:
+        with features_path.open("r", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)
+            for row in reader:
+                if len(row) < 4:
+                    continue
+                kind = (row[3] or "").strip().lower()
+                if kind:
+                    kinds.add(kind)
+    except Exception:
+        return []
+    return sorted(kinds)
+
+
+def _describe_pp_filter(value: Any) -> str:
+    """Render a filter spec from preprocessing_metadata into a readable phrase."""
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return str(value)
+    if "stages" in value:
+        stage_text = "; then ".join(_describe_pp_filter(stage) for stage in value["stages"])
+        if value.get("zero_phase"):
+            stage_text += " (zero-phase)"
+        return stage_text
+    parts: List[str] = []
+    if value.get("type"):
+        parts.append(str(value["type"]))
+    if value.get("band"):
+        parts.append(str(value["band"]))
+    descriptor = " ".join(parts)
+    extras: List[str] = []
+    if value.get("order") is not None:
+        extras.append(f"order {value['order']}")
+    cutoff = value.get("cutoff_hz")
+    if cutoff is not None:
+        if isinstance(cutoff, (list, tuple)):
+            extras.append(f"{cutoff[0]}-{cutoff[1]} Hz")
+        else:
+            extras.append(f"{cutoff} Hz")
+    if value.get("split_cutoff_hz") is not None:
+        extras.append(f"split at {value['split_cutoff_hz']} Hz")
+    text = descriptor
+    if extras:
+        text = f"{descriptor}, {', '.join(extras)}" if descriptor else ", ".join(extras)
+    return text or "see library defaults"
+
+
+def _format_pp_value(key: str, value: Any) -> str:
+    if key == "filter":
+        return _describe_pp_filter(value)
+    if isinstance(value, dict):
+        bits: List[str] = []
+        for k, v in value.items():
+            if k == "filter":
+                bits.append(_describe_pp_filter(v))
+            elif isinstance(v, (list, tuple)):
+                bits.append(f"{k}: {', '.join(str(x) for x in v)}")
+            elif isinstance(v, dict):
+                bits.append(f"{k}: {_format_pp_value(k, v)}")
+            else:
+                bits.append(f"{k}: {v}")
+        return "; ".join(bits)
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(x) for x in value)
+    return str(value)
+
+
+def append_preprocessing_readme_section(output_folder: Path) -> None:
+    """Append a 'Preprocessing' section to README.md spelling out what BioSPPy and
+    NeuroKit2 do, by default, before extracting features."""
+    if get_preprocessing_metadata is None:
+        return
+    readme_path = output_folder / "README.md"
+    kinds = _signal_kinds_in_features(output_folder)
+    if not kinds:
+        return
+
+    versions = detect_library_versions()
+    bv, nv = versions.get("biosppy"), versions.get("neurokit2")
+
+    rendered: List[str] = []
+    _base_keys = {
+        "library", "requested_version", "reference_version",
+        "exact_version_match", "signal_kind", "status",
+    }
+    label_map = {"biosppy": "BioSPPy", "neurokit2": "NeuroKit2"}
+
+    for kind in kinds:
+        kind_blocks: List[str] = []
+        for library, version in (("biosppy", bv), ("neurokit2", nv)):
+            meta = get_preprocessing_metadata(library, version, kind)
+            if "status" in meta:  # no documented metadata for this kind/library
+                continue
+            lines = [f"#### {label_map.get(library, library)}\n"]
+            for key, value in meta.items():
+                if key in _base_keys:
+                    continue
+                lines.append(f"- **{key}**: {_format_pp_value(key, value)}\n")
+            kind_blocks.append("".join(lines))
+        if kind_blocks:
+            rendered.append(f"### {kind.upper()}\n\n" + "\n".join(kind_blocks))
+
+    if not rendered:
+        return
+
+    version_note_parts = []
+    if bv:
+        version_note_parts.append(f"BioSPPy {bv}")
+    if nv:
+        version_note_parts.append(f"NeuroKit2 {nv}")
+    version_note = f" ({', '.join(version_note_parts)})" if version_note_parts else ""
+
+    header = [
+        "## Preprocessing (what the libraries do by default)\n",
+        "Before any feature is extracted, each signal is filtered/cleaned by the "
+        "analysis libraries using their **default** routines" + version_note + ". "
+        "The worker does not override those internal pipelines (only EDA's cleaning "
+        "method is configurable via `--eda-method`). The exact methods and filter "
+        "parameters per library, per signal kind, are listed below and recorded "
+        "machine-readably in `analysis.json` under `preprocessing`.\n",
+        "**Ordering.** The worker first drops non-finite samples and, for "
+        "ECG/EDA/PPG/EMG/RSP/EOG, applies the NeuroKit2 `<kind>_clean` default once; "
+        "that cleaned series is then passed to **both** libraries, each of which "
+        "filters again internally. EEG/PCG/ACC receive only finite-value "
+        "sanitization. The per-channel steps actually run are recorded in each "
+        "channel's `preprocessing.steps` field in `analysis.json`.\n",
+    ]
+
+    try:
+        with readme_path.open("a", encoding="utf-8") as rh:
+            rh.write("\n".join(header))
+            rh.write("\n")
+            rh.write("\n".join(rendered))
+            rh.write("\n")
+    except Exception:
+        # Non-fatal: don't break analysis if README append fails
+        pass
+
+
 def append_features_readme_section(output_folder: Path) -> None:
     """Append a human-readable 'Features extracted' section to README.md describing
     the features present in `features.csv` grouped by library. """
@@ -2374,8 +3101,7 @@ def append_features_readme_section(output_folder: Path) -> None:
     except Exception:
         pass
 
-    # Collect features per library
-    libs: Dict[str, set] = {}
+    by_kind: Dict[str, Dict[str, set]] = {}
     try:
         with features_path.open("r", encoding="utf-8") as fh:
             reader = csv.reader(fh)
@@ -2383,20 +3109,18 @@ def append_features_readme_section(output_folder: Path) -> None:
             for row in reader:
                 if len(row) < 6:
                     continue
+                kind = (row[3] or "").strip().lower() or "unknown"
                 lib = row[4] or "unknown"
                 feat = (row[5] or "").strip()
-                # Exclude time-axis ('ts') columns, incl. mid-name variants like
-                # 'features_ts_mean'. Match 'ts' as any underscore token.
                 if not feat:
                     continue
                 if "ts" in feat.split("_"):
                     continue
-                libs.setdefault(lib, set()).add(feat)
+                by_kind.setdefault(kind, {}).setdefault(lib, set()).add(feat)
     except Exception:
         return
 
-    # Known feature descriptions (concise)
-    known: Dict[str, str] = {
+    common: Dict[str, str] = {
         # NeuroKit2 HRV metrics (common)
         "HRV_RMSSD": "Root Mean Square of Successive Differences of RR intervals (ms) - short-term HRV.",
         "HRV_SDNN": "Standard deviation of NN intervals (ms) - HRV overall variability.",
@@ -2404,15 +3128,15 @@ def append_features_readme_section(output_folder: Path) -> None:
         "HRV_HF": "High-frequency spectral power (Hz) component of HRV.",
         "HRV_LFHF": "Ratio of LF to HF power - balance of autonomic tone.",
         "HRV_PAS": "Probability-based or pseudospectral HRV metric (library-specific); consult NeuroKit2 docs for exact definition.",
+        "HRV_window_count": "Number of 5-min windows HRV was computed over.",
+        "PRV_window_count": "Number of 5-min windows pulse-rate variability (PRV) was computed over.",
 
         # BioSPPy / signal-level (common outputs)
         "ts": "Time axis for the processed signal (seconds).",
+        # Generic fallback; per-kind `filtered` overrides in by_kind_desc carry the
+        # signal-specific filter band. The stat-suffix logic (_mean/_std/…) resolves
+        # `filtered_*` against whichever `filtered` description applies for the kind.
         "filtered": "Filtered version of the raw signal (library-specific filtering).",
-        "filtered_mean": "Mean of the filtered signal (post-processing).",
-        "filtered_std": "Standard deviation of the filtered signal.",
-        "filtered_max": "Maximum value in the filtered signal.",
-        "filtered_min": "Minimum value in the filtered signal.",
-        "filtered_count": "Number of samples in the filtered signal.",
 
         # BioSPPy ECG outputs
         "rpeaks": "Indices of detected R-peaks in the ECG signal.",
@@ -2455,13 +3179,8 @@ def append_features_readme_section(output_folder: Path) -> None:
         "SCR_Recovery": "Sample indices of SCR half-recovery points.",
         "sampling_rate": "Sampling rate used for the analysis (Hz).",
 
-        # BioSPPy PPG outputs
-        "peaks": "Indices of detected PPG pulse peaks.",
-        "templates_ts": "Time axis for PPG pulse templates (seconds).",
-        "templates": "Extracted PPG pulse templates aligned on systolic peaks.",
-        "onsets": "PPG pulse onset indices (start of beats).",
-        "segments_loc": "Start/end indices for each PPG pulse segment.",
-        "params": "Auxiliary parameters returned by some peak/onset functions.",
+        # (PPG-specific outputs — peaks/onsets/templates/segments_loc/params —
+        # live in `by_kind_desc["ppg"]` because their names collide with EDA/PCG.)
 
         # BioSPPy Respiration outputs
         "zeros": "Indices of respiration zero-crossings (cycle boundaries).",
@@ -2477,7 +3196,7 @@ def append_features_readme_section(output_folder: Path) -> None:
         "gamma": "Gamma-band (25-40 Hz) power over time windows.",
         "plf": "Phase-Locking Factor between EEG channel pairs.",
         "plf_pairs": "Channel index pairs used for the phase-locking factor.",
-        "filtered": "Band-pass filtered EEG signal (0.5-45 Hz by default).",
+        # (EEG-specific 'filtered' override lives in by_kind_desc["eeg"].)
 
         # NeuroKit2 EEG band powers (nk.eeg_power, per channel)
         "EEG_Power_Delta": "NeuroKit2 EEG power in the delta band (0.5-4 Hz).",
@@ -2498,6 +3217,19 @@ def append_features_readme_section(output_folder: Path) -> None:
         "EMG_Amplitude_Max": "Maximum activation amplitude observed.",
         "EMG_Amplitude_Max_Time": "Time/sample index of the maximum activation amplitude.",
         "EMG_Bursts": "Count of EMG bursts (activations) in the epoch/interval.",
+
+        # Derived EMG features (computed per sliding window on the cleaned signal,
+        # 'derived' library). Each feature is computed per overlapping window; the
+        # _mean/_std/_min/_max suffixes summarize it across all windows, and the
+        # full per-window series is in emg_windows/<channel>.csv.
+        "EMG_MAV": "Mean Absolute Value (Hudgins) - average rectified amplitude of the cleaned EMG, per window.",
+        "EMG_RMS": "Root Mean Square (Hudgins) - signal power / amplitude of the cleaned EMG, per window.",
+        "EMG_WL": "Waveform Length (Hudgins) - cumulative length of the signal waveform (sum of |Δsample|), per window.",
+        "EMG_ZC": "Zero Crossings (Hudgins) - number of times the cleaned signal changes sign, per window.",
+        "EMG_SSC": "Slope Sign Changes (Hudgins) - number of times the slope (first difference) changes sign, per window.",
+        "EMG_MNF": "Mean (power) Frequency (Hz) - power-weighted average frequency of the Welch PSD; a fatigue indicator, per window.",
+        "EMG_MDF": "Median Frequency (Hz) - frequency splitting the Welch PSD power into two halves; a fatigue indicator, per window.",
+        "EMG_window_count": "Number of sliding windows the EMG features were computed over.",
 
         # NeuroKit2 RSP / respiration features
         "RSP_Raw": "Raw respiration belt signal samples.",
@@ -2533,29 +3265,170 @@ def append_features_readme_section(output_folder: Path) -> None:
         "RRV_SampEn": "Sample entropy of respiratory rate variability.",
     }
 
+    # Per-signal-kind descriptions. These take priority over `common`, so they
+    # disambiguate shared keys (ts/filtered/onsets/peaks/amplitudes/heart_rate)
+    # whose meaning differs per signal, and document each kind's BioSPPy and
+    # NeuroKit2 outputs. HRV_*/PRV_* (NeuroKit2-only) stay in `common`.
+    by_kind_desc: Dict[str, Dict[str, str]] = {
+        "ecg": {
+            # BioSPPy (biosppy.signals.ecg.ecg)
+            "ts": "Time axis of the BioSPPy-filtered ECG (seconds).",
+            "filtered": "Band-pass filtered ECG signal (BioSPPy, FIR ~3-45 Hz).",
+            "rpeaks": "Sample indices of detected R-peaks (BioSPPy Hamilton segmenter).",
+            "templates": "Extracted heartbeat templates aligned on R-peaks (BioSPPy).",
+            "templates_ts": "Time axis for the heartbeat templates (seconds).",
+            "heart_rate": "Instantaneous heart rate from successive RR intervals (bpm, BioSPPy).",
+            "heart_rate_ts": "Time axis for the instantaneous heart-rate samples (seconds).",
+            # NeuroKit2 (nk.ecg_process; HRV_* from nk.hrv are in `common`)
+            "ECG_Clean": "Cleaned ECG (NeuroKit2 default: ~0.5 Hz high-pass Butterworth + powerline notch).",
+            "ECG_R_Peaks": "Sample indices of detected R-peaks (NeuroKit2).",
+            "ECG_Rate": "Instantaneous heart rate interpolated per sample (bpm, NeuroKit2).",
+            "ECG_Quality": "Per-sample ECG signal-quality index (NeuroKit2).",
+        },
+        "eda": {
+            # BioSPPy (biosppy.signals.eda.eda)
+            "ts": "Time axis of the BioSPPy-filtered EDA (seconds).",
+            "filtered": "Filtered EDA signal (BioSPPy).",
+            "onsets": "Detected SCR onset sample indices (BioSPPy).",
+            "peaks": "Detected SCR peak sample indices (BioSPPy).",
+            "amplitudes": "SCR amplitudes at the detected peaks (BioSPPy).",
+            # NeuroKit2 (nk.eda_process; SCR_* are in `common`)
+            "EDA_Clean": "Cleaned EDA signal (NeuroKit2).",
+            "EDA_Tonic": "Tonic EDA component / skin-conductance level (SCL) (NeuroKit2).",
+            "EDA_Phasic": "Phasic EDA component / skin-conductance response driver (NeuroKit2).",
+        },
+        "ppg": {
+            # BioSPPy (biosppy.signals.ppg.ppg)
+            "ts": "Time axis of the BioSPPy-filtered PPG (seconds).",
+            "filtered": "Filtered PPG signal (BioSPPy).",
+            "onsets": "PPG pulse onset indices (start of beats, BioSPPy).",
+            "peaks": "Indices of detected PPG pulse (systolic) peaks (BioSPPy).",
+            "templates": "Extracted PPG pulse templates aligned on systolic peaks (BioSPPy).",
+            "segments_loc": "Start/end indices for each PPG pulse segment (BioSPPy).",
+            "params": "Auxiliary parameters returned by some peak/onset functions (BioSPPy).",
+            "heart_rate": "Instantaneous pulse rate from successive PPG peaks (bpm, BioSPPy).",
+            "heart_rate_ts": "Time axis for the instantaneous pulse-rate samples (seconds).",
+            # NeuroKit2 (nk.ppg_process; PRV_* map to the HRV_* descriptions in `common`)
+            "PPG_Clean": "Cleaned PPG signal (NeuroKit2).",
+            "PPG_Peaks": "Sample indices of detected systolic peaks (NeuroKit2).",
+            "PPG_Rate": "Instantaneous pulse rate interpolated per sample (bpm, NeuroKit2).",
+            "PPG_Quality": "Per-sample PPG signal-quality index (NeuroKit2).",
+        },
+        "emg": {
+            # BioSPPy (biosppy.signals.emg.emg)
+            "ts": "Time axis of the BioSPPy-filtered EMG (seconds).",
+            "filtered": "Filtered/rectified EMG signal (BioSPPy).",
+            "onsets": "Detected EMG activation onset sample indices (BioSPPy threshold detector).",
+            # NeuroKit2 (nk.emg_process). Windowed Hudgins/MNF/MDF features are in
+            # `common` under the 'derived' library; these are the nk.emg_process outputs.
+            "EMG_Clean": "Cleaned EMG signal (NeuroKit2: high-pass + rectify).",
+            "EMG_Amplitude": "Linear envelope of the EMG / activation amplitude (NeuroKit2).",
+            "EMG_Activity": "Binary activation mask (1 where amplitude exceeds threshold) (NeuroKit2).",
+            "EMG_Onsets": "Detected activation onset samples (NeuroKit2).",
+            "EMG_Offsets": "Detected activation offset samples (NeuroKit2).",
+        },
+        "rsp": {
+            # BioSPPy (biosppy.signals.resp.resp)
+            "ts": "Time axis of the BioSPPy-filtered respiration (seconds).",
+            "filtered": "Band-pass filtered respiration signal (BioSPPy, ~0.1-0.35 Hz).",
+            "zeros": "Respiration zero-crossing indices / cycle boundaries (BioSPPy).",
+            "resp_rate": "Instantaneous respiration rate (Hz, BioSPPy).",
+            "resp_rate_ts": "Time axis for the respiration-rate samples (seconds).",
+            # NeuroKit2 (nk.rsp_process; RRV_* are in `common`)
+            "RSP_Clean": "Cleaned respiration signal (NeuroKit2).",
+            "RSP_Peaks": "Detected exhalation peak samples (NeuroKit2).",
+            "RSP_Troughs": "Detected inhalation trough samples (NeuroKit2).",
+            "RSP_Rate": "Instantaneous respiration rate (breaths/min, NeuroKit2).",
+            "RSP_Amplitude": "Per-breath respiratory amplitude (NeuroKit2).",
+        },
+        "eeg": {
+            # BioSPPy (biosppy.signals.eeg.eeg)
+            "ts": "Time axis of the BioSPPy-filtered EEG (seconds).",
+            "filtered": "Band-pass filtered EEG signal (~4-40 Hz by default: 4 Hz high-pass order-8 + 40 Hz low-pass order-16 Butterworth).",
+            "theta": "Theta-band (4-8 Hz) power over time windows (BioSPPy).",
+            "alpha_low": "Low alpha-band (8-10 Hz) power over time windows (BioSPPy).",
+            "alpha_high": "High alpha-band (10-13 Hz) power over time windows (BioSPPy).",
+            "beta": "Beta-band (13-25 Hz) power over time windows (BioSPPy).",
+            "gamma": "Gamma-band (25-40 Hz) power over time windows (BioSPPy).",
+            "plf": "Phase-locking factor between EEG channel pairs (BioSPPy).",
+            "plf_pairs": "Channel index pairs used for the phase-locking factor (BioSPPy).",
+            # NeuroKit2 (nk.eeg_power)
+            "EEG_Power_Delta": "NeuroKit2 EEG power in the delta band (0.5-4 Hz).",
+            "EEG_Power_Theta": "NeuroKit2 EEG power in the theta band (4-8 Hz).",
+            "EEG_Power_Alpha": "NeuroKit2 EEG power in the alpha band (8-13 Hz).",
+            "EEG_Power_Beta": "NeuroKit2 EEG power in the beta band (13-30 Hz).",
+            "EEG_Power_Gamma": "NeuroKit2 EEG power in the gamma band (30-45 Hz).",
+        },
+        "pcg": {
+            # BioSPPy (biosppy.signals.pcg.pcg) - no NeuroKit2 PCG support
+            "ts": "Time axis of the BioSPPy-filtered PCG (seconds).",
+            "filtered": "Filtered phonocardiogram signal (BioSPPy).",
+            "peaks": "Indices of detected heart-sound peaks (BioSPPy).",
+            "heart_sounds": "Classified heart sounds, e.g. S1/S2 (BioSPPy).",
+            "heart_rate": "Heart rate derived from heart-sound intervals (bpm, BioSPPy).",
+        },
+        "acc": {
+            # BioSPPy (biosppy.signals.acc.acc) - no NeuroKit2 ACC support
+            "ts": "Time axis of the BioSPPy-processed acceleration (seconds).",
+            "filtered": "Filtered per-axis acceleration signal (BioSPPy).",
+            "signal": "Processed per-axis acceleration signal (BioSPPy).",
+            "vm": "Vector magnitude of the 3-axis acceleration (BioSPPy, version-dependent).",
+        },
+        "eog": {
+            # NeuroKit2 (nk.eog_process) + custom _extract_eog_features - no BioSPPy EOG
+            "EOG_Clean": "Cleaned EOG signal (NeuroKit2).",
+            "EOG_Blinks": "Sample indices of detected blinks (NeuroKit2).",
+            "EOG_Rate": "Blink-rate signal interpolated per sample (NeuroKit2).",
+            "EOG_Blinks_count": "Total number of detected blinks.",
+            "EOG_Blink_Rate_per_min": "Blink rate (blinks per minute).",
+            "EOG_IBI_Mean_s": "Mean inter-blink interval (seconds).",
+            "EOG_IBI_SD_s": "Standard deviation of inter-blink intervals (seconds).",
+            "EOG_Rate_Mean": "Mean of the per-sample blink-rate signal.",
+            "EOG_Rate_SD": "Standard deviation of the per-sample blink-rate signal.",
+            "EOG_Rate_Min": "Minimum of the per-sample blink-rate signal.",
+            "EOG_Rate_Max": "Maximum of the per-sample blink-rate signal.",
+        },
+    }
+
     stat_suffixes = ("_mean", "_std", "_median", "_min", "_max", "_count")
 
-    def describe(feature: str, lib: str) -> str:
-        if feature in known:
-            return known[feature]
+    def describe(feature: str, kind: str) -> str:
+        kind_map = by_kind_desc.get(kind, {})
+
+        def lookup(name: str) -> Optional[str]:
+            if name in kind_map:
+                return kind_map[name]
+            if name in common:
+                return common[name]
+            if name.startswith("PRV_"):
+                hrv_desc = common.get(f"HRV_{name[4:]}")
+                if hrv_desc is not None:
+                    return hrv_desc.replace("HRV", "PRV").replace("RR intervals", "pulse-to-pulse intervals")
+            return None
+
+        direct = lookup(feature)
+        if direct is not None:
+            return direct
         for suffix in stat_suffixes:
             if feature.endswith(suffix):
                 base = feature[: -len(suffix)]
-                if base in known:
-                    stat = suffix[1:]
-                    return f"{stat.capitalize()} of: {known[base]}"
+                base_desc = lookup(base)
+                if base_desc is not None:
+                    return f"{suffix[1:].capitalize()} of: {base_desc}"
         return "See NeuroKit2 or BioSPPy docs."
 
     lines: List[str] = []
     lines.append("## Features extracted by analysis\n")
-    lines.append("This section lists the features written to `features.csv` during analysis, grouped by the library that produced them. Short descriptions are provided where available.\n")
+    lines.append("This section lists the features written to `features.csv` during analysis, grouped by signal kind and the library that produced them. Short descriptions are provided where available.\n")
 
-    for lib, feats in sorted(libs.items()):
-        lines.append(f"### {lib}\n")
-        for feat in sorted(feats):
-            desc = describe(feat, lib)
-            lines.append(f"- **{feat}**: {desc}\n")
-        lines.append("\n")
+    for kind in sorted(by_kind.keys()):
+        lines.append(f"### {kind.upper()}\n")
+        for lib, feats in sorted(by_kind[kind].items()):
+            lines.append(f"#### {lib}\n")
+            for feat in sorted(feats):
+                desc = describe(feat, kind)
+                lines.append(f"- **{feat}**: {desc}\n")
+            lines.append("\n")
 
     try:
         # Append to README (create if missing)
@@ -2573,18 +3446,20 @@ def write_channel_series_csvs(output_folder: Path, result: Dict[str, Any]) -> No
     on each channel record. Temporary fields are removed after writing to
     avoid bloating the JSON result.
     """
-    sample_rate = result.get("sampleRate") or 0
+    result_sample_rate = result.get("sampleRate") or 0
     for segment in result.get("segments", []):
         segment_index = segment.get("segment") if isinstance(segment, dict) else None
-        segment_folder = output_folder / f"segment-{segment_index}"
+        sample_rate = (segment.get("sampleRate") if isinstance(segment, dict) else None) or result_sample_rate
+        segment_folder = segment_artifact_folder(output_folder, segment_index)
         segment_folder.mkdir(parents=True, exist_ok=True)
 
         for channel in segment.get("channels", []) if isinstance(segment, dict) else []:
             if not isinstance(channel, dict):
                 continue
 
+            export_name = channel.get("_export_name") or channel.get("channel")
+
             if "_indices" in channel and "_values" in channel:
-                export_name = channel.get("_export_name") or channel.get("channel")
                 series_path = export_series_csv(
                     segment_folder,
                     export_name,
@@ -2596,6 +3471,23 @@ def write_channel_series_csvs(output_folder: Path, result: Dict[str, Any]) -> No
                 for tmp in ("_indices", "_values", "_export_name"):
                     if tmp in channel:
                         del channel[tmp]
+
+            analysis = channel.get("analysis")
+            if isinstance(analysis, dict) and "_emgWindows" in analysis:
+                windows = analysis.pop("_emgWindows")
+                if isinstance(windows, list) and windows:
+                    channel["emgWindowsPath"] = export_emg_windows_csv(
+                        segment_folder, export_name, windows
+                    )
+
+            if isinstance(analysis, dict) and "_hrvWindows" in analysis:
+                hrv_windows = analysis.pop("_hrvWindows")
+                if isinstance(hrv_windows, list) and hrv_windows:
+                    is_prv = (channel.get("signalKind") or "").lower() == "ppg"
+                    subdir = "prv_windows" if is_prv else "hrv_windows"
+                    channel["hrvWindowsPath"] = export_hrv_windows_csv(
+                        segment_folder, export_name, hrv_windows, subdir
+                    )
 
 # --- ScientISST sense.py FileWriter-format export ---------------------------
 
@@ -2640,7 +3532,7 @@ def write_signal_csvs(
     SENSE_FILEWRITER_* notes above and sense_src/file_writer.py /
     scientisst/frame.py upstream):
 
-        #{'API version': ..., 'Channels': [...], 'Channels indexes': [...],
+        #{'API version': ..., 'Channels': [...], 'Channels indexes raw': [...],
           'Channels labels': [...], 'Device': ..., 'Firmware version': ...,
           'Header': [...], 'ISO 8601': ..., 'Resolution (bits)': [...],
           'Sampling rate (Hz)': ..., 'Timestamp': ...}
@@ -2664,6 +3556,9 @@ def write_signal_csvs(
     if not chunk_entries:
         return []
     grouped = group_entries_by_segment(chunk_entries)
+    
+    if ANALYSIS_SEGMENT is not None:
+        grouped = {ANALYSIS_SEGMENT: grouped.get(ANALYSIS_SEGMENT, [])}
 
     sample_rate: Any = manifest.get("sampleRate")
     if sample_rate is None:
@@ -2757,7 +3652,7 @@ def write_signal_csvs(
         metadata = {
             "API version": api_version_field,
             "Channels": [int(n) for n in channel_numbers],
-            "Channels indexes": [(n - 1) + 5 for n in channel_numbers],
+            "Channels indexes raw": [(n - 1) + 5 for n in channel_numbers],
             "Channels labels": channel_labels,
             "Device": device_field,
             "Firmware version": firmware_field,
@@ -2769,7 +3664,7 @@ def write_signal_csvs(
         }
         metadata = {key: metadata[key] for key in sorted(metadata)}
 
-        segment_folder = output_folder / f"segment-{segment_index}"
+        segment_folder = segment_artifact_folder(output_folder, segment_index)
         segment_folder.mkdir(parents=True, exist_ok=True)
         csv_path = segment_folder / "signal.csv"
 
@@ -2825,13 +3720,20 @@ def main() -> int:
     startup_started = time.perf_counter()
     config = load_run_config(args)
     global DISABLE_OUTLIER_REMOVAL, SELECTED_LIBRARY_PREFERENCE, SIGNAL_KIND_LIBRARY_PREFERENCES
-    global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS
+    global SIGNAL_KIND_OVERRIDES, SIGNAL_AXIS_OVERRIDES, EXCLUDED_CHANNELS, ANALYSIS_WINDOW_SECONDS
+    global ANALYSIS_SEGMENT, EMG_WINDOW_MS, EMG_WINDOW_STEP_MS, HRV_WINDOW_SEC, HRV_WINDOW_STEP_SEC
     DISABLE_OUTLIER_REMOVAL = bool(config.get("disableOutlierRemoval", False))
     SELECTED_LIBRARY_PREFERENCE = config.get("libraryPreference")
     SIGNAL_KIND_LIBRARY_PREFERENCES = dict(config.get("signalKindLibraries", {}))
     SIGNAL_KIND_OVERRIDES = dict(config.get("signalKinds", {}))
     SIGNAL_AXIS_OVERRIDES = dict(config.get("signalAxes", {}))
     EXCLUDED_CHANNELS = set(config.get("excludedChannels", []))
+    ANALYSIS_WINDOW_SECONDS = config.get("range")
+    ANALYSIS_SEGMENT = config.get("segment")
+    EMG_WINDOW_MS = config.get("emgWindowMs", DEFAULT_EMG_WINDOW_MS)
+    EMG_WINDOW_STEP_MS = config.get("emgWindowStepMs", DEFAULT_EMG_WINDOW_STEP_MS)
+    HRV_WINDOW_SEC = config.get("hrvWindowSec", DEFAULT_HRV_WINDOW_SEC)
+    HRV_WINDOW_STEP_SEC = config.get("hrvWindowStepSec", DEFAULT_HRV_WINDOW_STEP_SEC)
 
     eda_method = SELECTED_LIBRARY_PREFERENCE or "auto"
     session_name = session_folder.name
@@ -2924,6 +3826,10 @@ CSV export is performed after analysis completes.
             result_path = output_folder / "analysis.json"
             write_summary_csv(output_folder, result)
             write_features_csv(output_folder, result)
+            try:
+                append_preprocessing_readme_section(output_folder)
+            except Exception:
+                pass
             try:
                 append_features_readme_section(output_folder)
             except Exception:

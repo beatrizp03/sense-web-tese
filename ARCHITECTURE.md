@@ -388,12 +388,6 @@ The PDF contains:
 
 Filename: `<timestampISO>_annotation_[seg<N>_]<start>_<end>.pdf`.
 
-### 4. Acquisition summary PDF - `convertToPDF()`
-
-The original branded report: a fixed **last-10-seconds** preview per channel
-(3/page), loaded via `loadPreviewFrames`. Kept for the acquisition summary page;
-the annotated PDF above is the richer, span-selectable version.
-
 ### Troubleshooting
 
 | Symptom | Cause | Fix |

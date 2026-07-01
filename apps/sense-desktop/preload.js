@@ -1,9 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { SerialPort } = require('serialport');
 
-// Keep track of open ports by path so we can operate on them later
 const openPorts = new Map();
-// Only expose secure bridge APIs, no buffering or business logic
+
 const serialBuffers = {};
 const serialDataHandlers = new Map();
 const serialCloseHandlers = new Map();
@@ -322,8 +321,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadAllChunks: async () => {
     return await ipcRenderer.invoke('load-all-chunks');
   },
+  getCurrentSessionFolder: async () => {
+    return await ipcRenderer.invoke('get-current-session-folder');
+  },
   loadPreviewFrames: async (sampleNum, frameCount) => {
     return await ipcRenderer.invoke('load-preview-frames', { sampleNum, frameCount });
+  },
+  decimateSession: async (sessionFolder, targetPoints, segment) => {
+    return await ipcRenderer.invoke('decimate-session', sessionFolder, targetPoints, segment);
   },
   openSerialPort,
   readSerialPort,
@@ -331,6 +336,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearRingBuffer,
   readSessionManifest: async (sessionPath) => {
     return await ipcRenderer.invoke('read-session-manifest', sessionPath);
+  },
+  readSessionAnnotations: async (sessionFolder) => {
+    return await ipcRenderer.invoke('read-session-annotations', sessionFolder);
+  },
+  writeSessionAnnotations: async (sessionFolder, data) => {
+    return await ipcRenderer.invoke('write-session-annotations', sessionFolder, data);
+  },
+  readSessionLabels: async (sessionFolder) => {
+    return await ipcRenderer.invoke('read-session-labels', sessionFolder);
+  },
+  writeSessionLabels: async (sessionFolder, data) => {
+    return await ipcRenderer.invoke('write-session-labels', sessionFolder, data);
+  },
+  exportAnnotationsCsv: async (sessionFolder) => {
+    return await ipcRenderer.invoke('export-annotations-csv', sessionFolder);
   },
   selectAnalysisSessionFolder: async () => {
     return await ipcRenderer.invoke('select-analysis-session-folder');
@@ -345,8 +365,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('analysis-progress', (_event, data) => callback(data));
     return () => ipcRenderer.removeAllListeners('analysis-progress');
   },
-  readPostHocAnalysisResult: async (sessionFolderPath) => {
-    return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath);
+  readPostHocAnalysisResult: async (sessionFolderPath, subdir) => {
+    return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath, subdir);
+  },
+  selectAnalysisResultFolder: async () => {
+    return await ipcRenderer.invoke('select-analysis-result-folder');
   },
   acquisitionError: async (sessionPath) => {
     return await ipcRenderer.invoke('acquisition-error', sessionPath);
@@ -358,6 +381,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   confirmClose: (shouldClose) => ipcRenderer.send('confirm-close', shouldClose),
   resetSession: () => ipcRenderer.send('reset-session'),
   logPerfEvent: (name, durationMs) => ipcRenderer.send('log-perf-event', { name, durationMs }),
+  logAnnotationEvent: (payload) => ipcRenderer.send('log-annotation-event', payload),
   stopPerfLoggerIfPending: (status) => ipcRenderer.invoke('stop-perf-logger-if-pending', status),
   loadSessionSettingsHistory: () => ipcRenderer.invoke('load-session-settings-history'),
   saveSessionSettingsSnapshot: (snapshot) => ipcRenderer.invoke('save-session-settings-snapshot', snapshot),

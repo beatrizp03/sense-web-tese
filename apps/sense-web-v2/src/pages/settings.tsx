@@ -22,7 +22,9 @@ import * as Yup from "yup"
 import tailwindConfig from "../../tailwind.config"
 import CoreBottom from "../assets/boards/core-bottom.svg"
 import CoreTop from "../assets/boards/core-top.svg"
+import AnnotationLabelsEditor from "../components/processing/AnnotationLabelsEditor"
 import SenseLayout from "../components/layout/SenseLayout"
+import { useAnnotationLabels } from "../utils/annotationLabels"
 import {
 	applySessionSettingsSnapshot,
 	clearLastSessionSettingsPersistent,
@@ -113,7 +115,9 @@ const backgroundAccentLightColor =
 
 const Page = () => {
 	const isDark = useDarkTheme()
+	const { labels: annotationLabels } = useAnnotationLabels()
 	const [loaded, setLoaded] = useState(false)
+	const [showLabelEditor, setShowLabelEditor] = useState(false)
 	const [showHistoryModal, setShowHistoryModal] = useState(false)
 	const [settingsHistory, setSettingsHistory] =
 		useState<SessionSettingsSnapshot[]>([])
@@ -616,14 +620,15 @@ const Page = () => {
 											>
 												Reset History
 											</TextButton>
-											<TextButton
-												size={"base"}
+											<button
+												type="button"
 												onClick={() => {
 													setShowHistoryModal(false)
 												}}
+												className="rounded-lg border border-white/70 bg-transparent px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10"
 											>
 												Close
-											</TextButton>
+											</button>
 										</div>
 									</div>
 								</div>
@@ -632,6 +637,38 @@ const Page = () => {
 					)}
 				</Formik>
 			)}
+
+			<section className="w-full max-w-2xl rounded-xl p-6">
+				<div className="flex items-start justify-between gap-4">
+					<div>
+						<h2 className="text-lg font-semibold text-over-background-highest">Annotation Labels</h2>
+						<p className="mt-1 text-sm text-over-background-medium">
+							Customise the labels used when annotating sessions (add, rename, recolor, or remove labels).
+						</p>
+					</div>
+					<TextButton size="base" className="text-sm whitespace-nowrap" onClick={() => setShowLabelEditor(true)}>
+						Edit labels
+					</TextButton>
+				</div>
+				<div className="mt-4 flex flex-wrap gap-2">
+					{annotationLabels.filter(label => !label.retired).length === 0 ? (
+						<p className="text-sm text-over-background-medium">No labels defined.</p>
+					) : (
+						annotationLabels.filter(label => !label.retired).map(label => (
+							<span
+								key={label.id}
+								className="inline-flex items-center gap-1.5 rounded-full border border-background-accent px-2.5 py-1 text-xs text-over-background-highest"
+								title={`${label.appliesTo} · ${label.description || "no description"}`}
+							>
+								<span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: label.color }} />
+								{label.name || "(unnamed)"}
+							</span>
+						))
+					)}
+				</div>
+			</section>
+
+			<AnnotationLabelsEditor open={showLabelEditor} onClose={() => setShowLabelEditor(false)} />
 		</SenseLayout>
 	)
 }
