@@ -315,6 +315,67 @@ source venv/bin/activate
 pip install -r apps/sense-desktop/python/requirements.txt
 ```
 
+#### Analysis fails with `EACCES: permission denied, mkdir`
+
+```
+Error occurred in handler for 'run-posthoc-analysis': Error: EACCES: permission
+denied, mkdir '.../User Tests/usertest/full-session-analysis'
+```
+
+Post-hoc analysis writes its results **inside the session folder** (a
+`full-session-analysis/` subfolder plus config and CSV files). A session folder
+you downloaded and extracted can land with read-only permissions (or be owned by
+another user), so the app can't create that subfolder. Grant write access, or
+copy the session somewhere writable:
+
+```bash
+# check owner and permission bits first
+ls -ld "path/to/session-folder"
+
+# grant yourself write access on the folder and its contents
+chmod -R u+w "path/to/session-folder"
+
+# if it's owned by another user (e.g. extracted with sudo)
+sudo chown -R "$USER" "path/to/session-folder"
+```
+
+#### Analysis fails with `spawn python ENOENT`
+
+```
+Error occurred in handler for 'run-posthoc-analysis': Error: spawn python ENOENT
+```
+
+Most Linux distros ship `python3`, not a bare `python`, so the older code failed
+to launch the analysis worker. The app now auto-detects the interpreter
+(`python3` first on Linux/macOS), so this should no longer happen. If you still
+see it, no Python was found on `PATH` — install Python 3 and its analysis
+dependencies (see the venv step above). You can also point the app at a specific
+interpreter by exporting `PYTHON` before launching (must be `export`ed, or set
+inline on the same command so child processes inherit it):
+
+```bash
+export PYTHON=python3
+pnpm run start:desktop
+# or, inline:
+PYTHON=/path/to/venv/bin/python pnpm run start:desktop
+```
+
+Whichever interpreter is used must have the analysis packages installed
+(`python3 -c "import numpy, neurokit2, biosppy"` should succeed), otherwise you'll
+get import errors instead.
+
+#### Harmless `systemd`/D-Bus error on startup
+
+```
+ERROR:dbus/object_proxy.cc:573 Failed to call method:
+org.freedesktop.systemd1.Manager.StartTransientUnit ... UnitExists: Unit
+app-org.chromium.Chromium-<pid>.scope was already loaded or has a fragment file.
+```
+
+This is a benign Chromium/Electron warning about registering its processes as
+`systemd` scopes when launched from a terminal. It does not affect the app and
+can be ignored.
+
 ### Windows Troubleshooting
 ---
 #### `Electron failed to install correctly`
