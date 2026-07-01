@@ -28,7 +28,7 @@ declare global {
       updateSessionMeta?: (patch: any) => Promise<void>;
       updateSegmentEndedAt?: (index: number, endedAt: number) => Promise<void>;
       setChannelNames?: (names: Record<string, string>) => Promise<void>;
-      readChunkFile?: (filePath: string) => Promise<any>;
+      readChunkFile?: (filePath: string, baseFolder?: string) => Promise<any>;
       loadAllChunks?: () => Promise<{ meta: any }>;
       getCurrentSessionFolder?: () => Promise<string | null>;
       loadPreviewFrames?: (sampleNum: number, frameCount: number) => Promise<any[]>;

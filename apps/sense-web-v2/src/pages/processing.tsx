@@ -548,10 +548,10 @@ const Page = () => {
 			{confirmLeave && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
 					<div
-						className="w-full max-w-md rounded-lg p-8 text-white shadow-lg"
+						className="w-full max-w-md rounded-lg p-8 text-over-background-highest-dark shadow-lg"
 						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
 					>
-						<h2 className="mb-4 text-xl font-bold text-red-600">{confirmLeave.title}</h2>
+						<h2 className="mb-4 text-xl font-bold text-over-background-highest-dark">{confirmLeave.title}</h2>
 						<p className="mb-4">{confirmLeave.body}</p>
 						<div className="flex justify-end gap-4">
 							<button

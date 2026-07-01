@@ -33,7 +33,7 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	defaultRange = null,
 	onBusyChange
 }) => {
-	const { csvDownloading, annotationsDownloading, annotatedPdfDownloading, convertToCSV, convertToCSVWithAnnotations, convertToAnnotatedPDF } = useSessionExport(manifest)
+	const { csvDownloading, annotationsDownloading, annotatedPdfDownloading, convertToCSV, convertToCSVWithAnnotations, convertToAnnotatedPDF } = useSessionExport(manifest, sessionFolder)
 	const hasSession = Array.isArray(manifest?.chunks) && manifest.chunks.length > 0
 
 	const exporting = csvDownloading || annotationsDownloading || annotatedPdfDownloading

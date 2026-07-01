@@ -550,10 +550,15 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			cumLen: 0
 		}
 		setWindowStartSec(0)
-		setWindowSec(DEFAULT_WINDOW_SECONDS)
+		setWindowSec(
+			totalSecondsEstimate > 0 &&
+				totalSecondsEstimate < DEFAULT_WINDOW_SECONDS
+				? totalSecondsEstimate
+				: DEFAULT_WINDOW_SECONDS
+		)
 		setWindowByChannel({})
 		setLoadError(null)
-	}, [sessionFolder, selectedSegment])
+	}, [sessionFolder, selectedSegment, totalSecondsEstimate])
 
 	useEffect(() => {
 		let cancelled = false
@@ -633,7 +638,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			while (cache.cumLen < targetEnd && cache.loaded < chunks.length) {
 				const idx = cache.loaded
 				const data = await window.electronAPI?.readChunkFile?.(
-					chunks[idx].file
+					chunks[idx].file,
+					sessionFolder
 				)
 				if (cancelled) return false
 				const frames = Array.isArray(data?.frames)

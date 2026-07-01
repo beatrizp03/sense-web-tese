@@ -17,7 +17,6 @@ const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.p
 
 let busyReason = null;
 
-// One annotation event-log per session folder, created lazily on first event.
 const annotationLoggers = new Map();
 function getAnnotationLogger(sessionFolder) {
   if (!sessionFolder || typeof sessionFolder !== 'string') return null;
@@ -396,7 +395,6 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       const trimmed = text.replace(/\r?\n$/, '');
       if (trimmed) console.log('[analysis-worker]', trimmed);
 
-      // Parse and forward every progress event to renderer.
       for (const line of text.split(/\r?\n/)) {
         const progressMatch = line.match(/\[progress\]\s+(\d+)%\s+(.+)/i);
         if (!progressMatch) continue;
@@ -753,12 +751,15 @@ app.whenReady().then(() => {
   });
 
   // IPC handler to read a chunk file by path (from renderer)
-  ipcMain.handle('read-chunk-file', async (_event, filePath) => {
+  ipcMain.handle('read-chunk-file', async (_event, filePath, baseFolder) => {
     try {
-      // If filePath is not absolute, resolve relative to session folder
       let absPath = filePath;
       if (!path.isAbsolute(filePath)) {
-        const folder = sessionFolder || lastSessionFolder;
+        const folder = baseFolder || sessionFolder || lastManifestFolder || lastSessionFolder;
+        if (!folder) {
+          console.error('[read-chunk-file] Cannot resolve relative chunk path; no session folder known:', filePath);
+          return null;
+        }
         absPath = path.join(folder, filePath);
       }
       const data = fs.readFileSync(absPath, 'utf-8');
@@ -795,6 +796,7 @@ let bufferManager = null;
 let segmentNumber = 1;
 let sessionFolder = undefined;
 let lastSessionFolder = undefined;
+let lastManifestFolder = undefined;
 let sampleWriter = undefined;
 let perfLogger = null;
 let exportEventsCompleted = { csv: false, pdf: false };
@@ -839,7 +841,7 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
         sampleWriter.writeChunk(chunkToWrite, (filename) => {
           // Now guaranteed the file is flushed and closed
           if (filename && fs.existsSync(filename)) {
-            SessionManager.appendChunkRecord(filename, segment, final);
+            SessionManager.appendChunkRecord(path.basename(filename), segment, final);
             console.log(`[main] Chunk ${chunkIndex} for segment ${segment} written to ${filename} (final: ${final}).`);
             console.log(`[main] manifest.chunks.length: ${SessionManager.manifest ? SessionManager.manifest.chunks.length : 'N/A'}`);
             const saveTime = Date.now() - start;
@@ -1086,11 +1088,9 @@ ipcMain.on('finalize-session', () => {
 ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   try {
     const manifest = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
+    lastManifestFolder = path.dirname(sessionPath);
     return manifest;
   } catch (e) {
-    // Missing file is an expected case (user picked a non-session folder);
-    // return null so the renderer can show a friendly "re-import" message
-    // instead of surfacing a raw IPC stack trace.
     if (e && e.code === 'ENOENT') {
       console.log('[read-session-manifest] no session.json at', sessionPath);
       return null;

@@ -268,8 +268,8 @@ async function closeSerialPort(path) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {  
-  readChunkFile: async (filePath) => {
-    return await ipcRenderer.invoke('read-chunk-file', filePath);
+  readChunkFile: async (filePath, baseFolder) => {
+    return await ipcRenderer.invoke('read-chunk-file', filePath, baseFolder);
   },
   listSerialPorts: listPorts,
   requestPort: choosePort,

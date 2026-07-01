@@ -148,13 +148,6 @@ def _biosppy_enabled_for(signal_kind: Optional[str]) -> bool:
 def _neurokit_enabled_for(signal_kind: Optional[str]) -> bool:
     return nk is not None and resolve_library_preference(signal_kind) != "biosppy"
 
-def _allows_biosppy_progress() -> bool:
-    return SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != "neurokit"
-
-
-def _allows_neurokit2_progress() -> bool:
-    return SELECTED_LIBRARY_PREFERENCE is None or SELECTED_LIBRARY_PREFERENCE != "biosppy"
-
 # --- ScientISST sense.py FileWriter compatibility ---------------------------
 SENSE_FILEWRITER_API_VERSION = "1.2.0"
 SENSE_CHANNEL_RESOLUTION_BITS = {
@@ -708,21 +701,21 @@ def count_progress_units(
             normalized_kind = (infer_signal_kind(manifest, channel_key) or "").lower()
             normalized_axis = infer_signal_axis(manifest, channel_key) if normalized_kind == "acc" else None
             if normalized_kind == "acc" and normalized_axis in ACC_AXIS_ORDER:
-                if not acc_group_counted and _allows_biosppy_progress():
+                if not acc_group_counted and _biosppy_enabled_for(normalized_kind):
                     biosppy_total += 1
                     acc_group_counted = True
                 continue
             if normalized_kind == "eeg":
                 if not eeg_group_counted:
-                    if _allows_biosppy_progress():
+                    if _biosppy_enabled_for(normalized_kind):
                         biosppy_total += 1
-                    if _allows_neurokit2_progress():
+                    if _neurokit_enabled_for(normalized_kind):
                         neurokit2_total += 1
                     eeg_group_counted = True
                 continue
-            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and _allows_biosppy_progress():
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and _biosppy_enabled_for(normalized_kind):
                 biosppy_total += 1
-            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS and _allows_neurokit2_progress():
+            if normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS and _neurokit_enabled_for(normalized_kind):
                 neurokit2_total += 1
 
     return biosppy_total, neurokit2_total
@@ -942,6 +935,7 @@ class AnalysisProgressTracker:
         self.last_emitted_label = ""
         self.biosppy_started = False
         self.neurokit2_started = False
+        self.active_kind: Optional[str] = None
 
         self.total_weight = PROGRESS_STAGE_WEIGHTS["data_prep"] + PROGRESS_STAGE_WEIGHTS["csv"]
         if self.biosppy_total > 0:
@@ -1005,7 +999,7 @@ class AnalysisProgressTracker:
             self.emit(label or "Initializing analysis", force=True)
 
     def advance_biosppy(self, amount: float, label: str) -> None:
-        if not _allows_biosppy_progress():
+        if not _biosppy_enabled_for(self.active_kind):
             return
         if self.biosppy_total <= 0 or amount <= 0:
             return
@@ -1013,7 +1007,7 @@ class AnalysisProgressTracker:
         self.emit(label)
 
     def advance_neurokit2(self, amount: float, label: str) -> None:
-        if not _allows_neurokit2_progress():
+        if not _neurokit_enabled_for(self.active_kind):
             return
         if self.neurokit2_total <= 0 or amount <= 0:
             return
@@ -2414,14 +2408,10 @@ def process_segment(
         label = infer_label(channel_key, manifest)
         kind = infer_signal_kind(manifest, channel_key)
         axis = infer_signal_axis(manifest, channel_key) if (kind or "").lower() == "acc" else None
-        
+
         if progress is not None:
-            normalized_kind = (kind or "").lower()
-            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
-                progress.start_analysis(
-                    label=_progress_label(normalized_kind.upper(), channel_key, "initializing analysis"),
-                )
-        
+            progress.active_kind = (kind or "").lower()
+
         indices, values = channel_series(frames, channel_key)
 
         if channel_key in EXCLUDED_CHANNELS:
@@ -2448,6 +2438,13 @@ def process_segment(
             )
             result_channels.append(channel_record)
             continue
+
+        if progress is not None:
+            normalized_kind = (kind or "").lower()
+            if normalized_kind in BIOSPPY_PROGRESS_SIGNAL_KINDS and normalized_kind in NEUROKIT2_PROGRESS_SIGNAL_KINDS:
+                progress.start_analysis(
+                    label=_progress_label(normalized_kind.upper(), channel_key, "initializing analysis"),
+                )
 
         if (kind or "").lower() == "acc" and axis in ACC_AXIS_ORDER:
             if not values:
@@ -2531,6 +2528,8 @@ def process_segment(
         result_channels.append(channel_record)
 
     if eeg_group_entries:
+        if progress is not None:
+            progress.active_kind = "eeg"
         ordered_eeg_entries = ordered_eeg_channels(
             manifest,
             [str(entry["channel"]) for entry in eeg_group_entries],
@@ -2575,6 +2574,8 @@ def process_segment(
             result_channels.append(channel_record)
 
     if acc_group_entries:
+        if progress is not None:
+            progress.active_kind = "acc"
         # Validate: ACC can have at most 3 axes (X, Y, Z)
         if len(acc_group_entries) > 3:
             warnings = [f"ACC assigned to {len(acc_group_entries)} channels; only the first 3 (X, Y, Z) will be processed."]

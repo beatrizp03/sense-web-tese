@@ -1096,10 +1096,10 @@ const Page = () => {
 			{showCloseModal && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
 					<div
-						className="rounded-lg shadow-lg p-8 max-w-md w-full text-white"
+						className="rounded-lg shadow-lg p-8 max-w-md w-full text-over-background-highest-dark"
 						style={{ backgroundColor: `${backgroundDarkColor}E6` }}
 					>
-						<h2 className="text-xl font-bold mb-4 text-red-600">Ongoing Acquisition</h2>
+						<h2 className="text-xl font-bold mb-4 text-over-background-highest-dark">Ongoing Acquisition</h2>
 						<p className="mb-4">
 							An acquisition is currently running. If you want to close the tab, please stop the acquisition first.
 						</p>
