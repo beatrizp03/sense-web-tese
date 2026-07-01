@@ -2,7 +2,7 @@ const { app, BrowserWindow } = require("electron");
 const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
 const { BufferManager } = require('./dist/BufferManager.js');
@@ -17,7 +17,6 @@ const PYTHON_ANALYSIS_WORKER = path.join(__dirname, 'python', 'analysis_worker.p
 
 let busyReason = null;
 
-// One annotation event-log per session folder, created lazily on first event.
 const annotationLoggers = new Map();
 function getAnnotationLogger(sessionFolder) {
   if (!sessionFolder || typeof sessionFolder !== 'string') return null;
@@ -141,10 +140,31 @@ function normalizeAnalysisSegment(value) {
   return index >= 1 ? index : undefined;
 }
 
+function normalizeEmgWindow(windowMs, stepMs) {
+  const window = Number(windowMs);
+  if (!Number.isFinite(window) || window <= 0) return undefined;
+  let step = Number(stepMs);
+  if (!Number.isFinite(step) || step <= 0) step = window / 2;
+  if (step > window) step = window;
+  return { emgWindowMs: window, emgWindowStepMs: step };
+}
+
+// ECG/PPG HRV/PRV window length and step (seconds).
+function normalizeHrvWindow(windowSec, stepSec) {
+  const window = Number(windowSec);
+  if (!Number.isFinite(window) || window <= 0) return undefined;
+  let step = Number(stepSec);
+  if (!Number.isFinite(step) || step <= 0) step = window;
+  if (step > window) step = window;
+  return { hrvWindowSec: window, hrvWindowStepSec: step };
+}
+
 function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
   const opts = options || {};
   const range = normalizeAnalysisRange(opts.range);
   const segment = range ? normalizeAnalysisSegment(opts.segment) : undefined;
+  const emgWindow = normalizeEmgWindow(opts.emgWindowMs, opts.emgWindowStepMs);
+  const hrvWindow = normalizeHrvWindow(opts.hrvWindowSec, opts.hrvWindowStepSec);
   return {
     version: 1,
     libraryPreference: normalizeLibraryPreference(opts.edaMethod ?? opts.libraryPreference),
@@ -154,7 +174,9 @@ function buildAnalysisRunConfig(options, signalKinds, signalAxes) {
     channelSignalAxes: signalAxes,
     excludedChannels: normalizeExcludedChannels(opts.excludedChannels),
     ...(range ? { range } : {}),
-    ...(segment ? { segment } : {})
+    ...(segment ? { segment } : {}),
+    ...(emgWindow ?? {}),
+    ...(hrvWindow ?? {})
   };
 }
 
@@ -180,6 +202,21 @@ function saveSessionSettingsHistoryToDisk(history) {
     console.error('[main] Failed to save session settings history:', error);
     return [];
   }
+}
+
+function findSystemPython() {
+  const candidates = process.platform === 'win32'
+    ? ['python', 'py', 'python3']
+    : ['python3', 'python'];
+  for (const candidate of candidates) {
+    try {
+      const result = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
+      if (!result.error && result.status === 0) return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
 }
 
 function resolveAnalysisWorkerCommand(preferredExecutable) {
@@ -209,7 +246,15 @@ function resolveAnalysisWorkerCommand(preferredExecutable) {
   }
 
   // Dev / unpackaged runs: developers are expected to have Python available.
-  return { command: 'python', scriptArgs: [PYTHON_ANALYSIS_WORKER] };
+  // Probe PATH so we don't assume a bare `python` exists (it usually doesn't on Linux).
+  const systemPython = findSystemPython();
+  if (!systemPython) {
+    throw new Error(
+      'Post-hoc analysis requires Python 3, but no "python3" or "python" interpreter was found on PATH. ' +
+      'Install Python 3 (with the analysis dependencies), or set the PYTHON environment variable to your interpreter.'
+    );
+  }
+  return { command: systemPython, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
 }
 
 function getAnalysisOutputDir(sessionFolderPath) {
@@ -373,7 +418,6 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
       const trimmed = text.replace(/\r?\n$/, '');
       if (trimmed) console.log('[analysis-worker]', trimmed);
 
-      // Parse and forward every progress event to renderer.
       for (const line of text.split(/\r?\n/)) {
         const progressMatch = line.match(/\[progress\]\s+(\d+)%\s+(.+)/i);
         if (!progressMatch) continue;
@@ -730,12 +774,15 @@ app.whenReady().then(() => {
   });
 
   // IPC handler to read a chunk file by path (from renderer)
-  ipcMain.handle('read-chunk-file', async (_event, filePath) => {
+  ipcMain.handle('read-chunk-file', async (_event, filePath, baseFolder) => {
     try {
-      // If filePath is not absolute, resolve relative to session folder
       let absPath = filePath;
       if (!path.isAbsolute(filePath)) {
-        const folder = sessionFolder || lastSessionFolder;
+        const folder = baseFolder || sessionFolder || lastManifestFolder || lastSessionFolder;
+        if (!folder) {
+          console.error('[read-chunk-file] Cannot resolve relative chunk path; no session folder known:', filePath);
+          return null;
+        }
         absPath = path.join(folder, filePath);
       }
       const data = fs.readFileSync(absPath, 'utf-8');
@@ -746,11 +793,16 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.on('set-busy', (_event, reason) => {
+    busyReason = reason || null;
+  });
+
   ipcMain.on('confirm-close', (event, shouldClose) => {
     if (shouldClose) {
-      console.log('[main] User confirmed close. Finalizing session and exiting.');  
+      console.log('[main] User confirmed close. Finalizing session and exiting.');
       if (sampleWriter) sampleWriter.finalizeSession();
       sessionFolder = undefined;
+      busyReason = null;
       BrowserWindow.getAllWindows().forEach(win => win.destroy());
     }
   });
@@ -767,6 +819,7 @@ let bufferManager = null;
 let segmentNumber = 1;
 let sessionFolder = undefined;
 let lastSessionFolder = undefined;
+let lastManifestFolder = undefined;
 let sampleWriter = undefined;
 let perfLogger = null;
 let exportEventsCompleted = { csv: false, pdf: false };
@@ -811,7 +864,7 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
         sampleWriter.writeChunk(chunkToWrite, (filename) => {
           // Now guaranteed the file is flushed and closed
           if (filename && fs.existsSync(filename)) {
-            SessionManager.appendChunkRecord(filename, segment, final);
+            SessionManager.appendChunkRecord(path.basename(filename), segment, final);
             console.log(`[main] Chunk ${chunkIndex} for segment ${segment} written to ${filename} (final: ${final}).`);
             console.log(`[main] manifest.chunks.length: ${SessionManager.manifest ? SessionManager.manifest.chunks.length : 'N/A'}`);
             const saveTime = Date.now() - start;
@@ -1058,11 +1111,9 @@ ipcMain.on('finalize-session', () => {
 ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   try {
     const manifest = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
+    lastManifestFolder = path.dirname(sessionPath);
     return manifest;
   } catch (e) {
-    // Missing file is an expected case (user picked a non-session folder);
-    // return null so the renderer can show a friendly "re-import" message
-    // instead of surfacing a raw IPC stack trace.
     if (e && e.code === 'ENOENT') {
       console.log('[read-session-manifest] no session.json at', sessionPath);
       return null;
@@ -1228,7 +1279,7 @@ ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
         const frames = Array.isArray(data && data.frames) ? data.frames : (Array.isArray(data) ? data : []);
         for (let j = 0; j < frames.length; j++) {
           const f = frames[j];
-          const row = [f.sequence];
+          const row = [f.__seq ?? f.sequence];
           for (const ch of channels) row.push(f.channels ? f.channels[ch] : '');
           let labelText = '';
           if (segAnns.length > 0) {

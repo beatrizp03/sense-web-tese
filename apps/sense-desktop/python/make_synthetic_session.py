@@ -14,7 +14,8 @@ Usage:
     python make_synthetic_session.py <kind>
     python make_synthetic_session.py <layout>
     python make_synthetic_session.py <kind> --duration 60 --sample-rate 1000
-
+    python make_synthetic_session.py usertest --duration 7200 --unmapped --only-layout-channels --name usertest
+    
 Single kinds: ecg, eda, ppg, emg, rsp, eog, eeg, pcg, acc
 
 Multi-channel layouts (one signal kind per channel, single session):
@@ -262,7 +263,7 @@ def write_session(
         chunk_filename = f"sample1_chunk{chunk_idx}.json"
         chunk_path = session_dir / chunk_filename
         write_chunk_slice(chunk_path, signals, start, end)
-        chunks_meta.append({"file": str(chunk_path.resolve()), "segment": 1, "final": is_final})
+        chunks_meta.append({"file": chunk_filename, "segment": 1, "final": is_final})
 
     started_ms = int(time.time() * 1000)
     ended_ms = started_ms + int(n * 1000 / sample_rate)

@@ -133,6 +133,7 @@ interface ChannelRowProps {
 	annotations: CanvasAnnotation[]
 	draftIntervalStart: number | null
 	onDataClick?: (x: number, y: number, hitId: string | null) => void
+	onDataDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
@@ -155,6 +156,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	annotations,
 	draftIntervalStart,
 	onDataClick,
+	onDataDoubleClick,
 	onAnnotationDragBound,
 	onAnnotationMove
 }) => {
@@ -325,6 +327,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					annotations={annotations}
 					draftIntervalStart={draftIntervalStart}
 					onDataClick={onDataClick}
+					onDataDoubleClick={onDataDoubleClick}
 					onAnnotationDragBound={onAnnotationDragBound}
 					onAnnotationMove={onAnnotationMove}
 				/>
@@ -446,6 +449,7 @@ interface SessionChartProps {
 	selectedAnnotationId?: string | null
 	draft?: { startSec: number } | null
 	onChartClick?: (segment: number, dataX: number, hitId: string | null) => void
+	onChartDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
 }
@@ -465,6 +469,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	selectedAnnotationId = null,
 	draft = null,
 	onChartClick,
+	onChartDoubleClick,
 	onAnnotationDragBound,
 	onAnnotationMove
 }) => {
@@ -545,10 +550,15 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			cumLen: 0
 		}
 		setWindowStartSec(0)
-		setWindowSec(DEFAULT_WINDOW_SECONDS)
+		setWindowSec(
+			totalSecondsEstimate > 0 &&
+				totalSecondsEstimate < DEFAULT_WINDOW_SECONDS
+				? totalSecondsEstimate
+				: DEFAULT_WINDOW_SECONDS
+		)
 		setWindowByChannel({})
 		setLoadError(null)
-	}, [sessionFolder, selectedSegment])
+	}, [sessionFolder, selectedSegment, totalSecondsEstimate])
 
 	useEffect(() => {
 		let cancelled = false
@@ -601,6 +611,20 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		onWindowRangeChange?.({ startSec: windowStartSec, endSec: windowStartSec + windowSec })
 	}, [onWindowRangeChange, windowStartSec, windowSec])
 
+	const viewRef = useRef({ windowStartSec, windowSec, rangeSeconds, annotations, selectedSegment })
+	viewRef.current = { windowStartSec, windowSec, rangeSeconds, annotations, selectedSegment }
+
+	useEffect(() => {
+		if (!selectedAnnotationId) return
+		const { windowStartSec: start, windowSec: sec, rangeSeconds: range, annotations: anns, selectedSegment: seg } = viewRef.current
+		const ann = anns.find(a => a.id === selectedAnnotationId && a.segment === seg)
+		if (!ann) return
+		if (ann.t0 >= start && ann.t1 <= start + sec) return
+		const focus = ann.t0
+		const maxStart = Math.max(0, range - sec)
+		setWindowStartSec(Math.min(Math.max(0, focus - sec / 2), maxStart))
+	}, [selectedAnnotationId])
+
 	useEffect(() => {
 		if (channels.length === 0 || chunks.length === 0) {
 			setWindowByChannel({})
@@ -614,7 +638,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			while (cache.cumLen < targetEnd && cache.loaded < chunks.length) {
 				const idx = cache.loaded
 				const data = await window.electronAPI?.readChunkFile?.(
-					chunks[idx].file
+					chunks[idx].file,
+					sessionFolder
 				)
 				if (cancelled) return false
 				const frames = Array.isArray(data?.frames)
@@ -735,6 +760,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 							? (x, _y, hitId) => onChartClick(selectedSegment, x, hitId)
 							: undefined
 					}
+					onDataDoubleClick={annotating ? onChartDoubleClick : undefined}
 					onAnnotationDragBound={annotating ? onAnnotationDragBound : undefined}
 					onAnnotationMove={annotating ? onAnnotationMove : undefined}
 				/>

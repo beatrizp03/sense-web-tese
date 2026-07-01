@@ -6,6 +6,7 @@ import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import SenseLayout from "../components/layout/SenseLayout"
 import PdfExportModal, { PdfExportRange } from "../components/processing/PdfExportModal"
+import LoadingDots, { LOADING_BUTTON_CLASS } from "../components/processing/LoadingDots"
 import { useSessionExport } from "../hooks/useSessionExport"
 
 const Page = () => {
@@ -124,7 +125,7 @@ const Page = () => {
 		<SenseLayout
 			title="Summary"
 			returnHref="/live"
-			className="flex w-[560px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[820px]"
+			className="flex w-[640px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[960px]"
 		>
 			{loading ? (
 				<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
@@ -135,7 +136,7 @@ const Page = () => {
 				</div>
 			) : (
 				<>
-					<span>End of acquisition!</span>
+					<span className="text-lg">End of acquisition!</span>
 					{mappingWarnings.length > 0 && (
 						<div className="text-red-600 text-xs whitespace-pre-line border border-red-300 rounded p-2 bg-red-50 max-w-full">
 							<b>Session Data Warnings:</b>
@@ -149,19 +150,25 @@ const Page = () => {
 					<div className="flex w-full flex-row justify-center gap-4">
 						<TextButton
 							size="base"
-							className="flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+							className={`flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95${csvDownloading ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 							disabled={csvDownloading}
 							onClick={convertToCSV}
 						>
-							Download as CSV
+							<span className="inline-flex items-center justify-center gap-2">
+								{csvDownloading && <LoadingDots />}
+								{csvDownloading ? "Downloading CSV" : "Download as CSV"}
+							</span>
 						</TextButton>
 						<TextButton
 							size="base"
-							className="flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95"
+							className={`flex-1 basis-0 motion-safe:hover:!scale-95 motion-safe:active:!scale-95${annotatedPdfDownloading ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 							disabled={annotatedPdfDownloading}
 							onClick={() => setPdfModalOpen(true)}
 						>
-							{annotatedPdfDownloading ? "Generating…" : "Download as PDF"}
+							<span className="inline-flex items-center justify-center gap-2">
+								{annotatedPdfDownloading && <LoadingDots />}
+								{annotatedPdfDownloading ? "Downloading PDF" : "Download as PDF"}
+							</span>
 						</TextButton>
 						<TextButton
 							size="base"
@@ -183,11 +190,6 @@ const Page = () => {
 						showAnnotationInfo={false}
 						showAnalysisToggle={false}
 					/>
-					<div className="text-xs text-gray-500">
-						{csvDownloading && (
-							<span>Downloading CSV ...</span>
-						)}
-					</div>
 				</>
 			)}
 		</SenseLayout>

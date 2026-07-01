@@ -138,7 +138,7 @@ const fmtStat = (v: unknown): string =>
  * renders a ten-second preview per channel via d3 + jsPDF. Both read from the
  * manifest and the Electron file APIs, so they work for live and imported sessions.
  */
-export function useSessionExport(manifest: any) {
+export function useSessionExport(manifest: any, sessionFolder?: string) {
 	const [csvDownloading, setCsvDownloading] = useState(false)
 	const [annotationsDownloading, setAnnotationsDownloading] = useState(false)
 	const [annotatedPdfDownloading, setAnnotatedPdfDownloading] = useState(false)
@@ -238,10 +238,10 @@ export function useSessionExport(manifest: any) {
 				for (const chunkFile of files) {
 					try {
 						// Use Electron API to read chunk file from disk
-						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
+						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile, sessionFolder);
 						const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
 						for (let j = 0; j < frames.length; j++) {
-							const seq = frames[j].sequence
+							const seq = frames[j].__seq ?? frames[j].sequence
 							const frameContent: (number | string)[] = [seq];
 							for (let p = 0; p < IO_PORTS.length; p++) frameContent.push(0);
 							for (let k = 0; k < channels.length; k++) {
@@ -306,7 +306,7 @@ export function useSessionExport(manifest: any) {
 			const blob = await zip.generateAsync({ type: "blob" })
 			return { blob, timestampISO }
 		},
-		[manifest]
+		[manifest, sessionFolder]
 	)
 
 	const convertToCSV = useCallback(async () => {
@@ -394,7 +394,7 @@ export function useSessionExport(manifest: any) {
 				let idx = 0
 				for (const c of segmentChunks) {
 					if (idx >= endFrame) break
-					const data = await window.electronAPI?.readChunkFile?.(c.file)
+					const data = await window.electronAPI?.readChunkFile?.(c.file, opts.sessionFolder || sessionFolder)
 					const frames = Array.isArray(data?.frames) ? data.frames : (Array.isArray(data) ? data : [])
 					for (let j = 0; j < frames.length; j++) {
 						if (idx >= endFrame) break
@@ -872,7 +872,7 @@ export function useSessionExport(manifest: any) {
 				setAnnotatedPdfDownloading(false)
 			}
 		},
-		[manifest, annotatedPdfDownloading]
+		[manifest, annotatedPdfDownloading, sessionFolder]
 	)
 
 	const convertToRangePDF = useCallback(
