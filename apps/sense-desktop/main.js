@@ -2,7 +2,7 @@ const { app, BrowserWindow } = require("electron");
 const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
 const { BufferManager } = require('./dist/BufferManager.js');
@@ -204,6 +204,21 @@ function saveSessionSettingsHistoryToDisk(history) {
   }
 }
 
+function findSystemPython() {
+  const candidates = process.platform === 'win32'
+    ? ['python', 'py', 'python3']
+    : ['python3', 'python'];
+  for (const candidate of candidates) {
+    try {
+      const result = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
+      if (!result.error && result.status === 0) return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
 function resolveAnalysisWorkerCommand(preferredExecutable) {
   const explicitExecutable = preferredExecutable || process.env.PYTHON_EXECUTABLE || process.env.PYTHON;
   if (explicitExecutable) {
@@ -231,7 +246,15 @@ function resolveAnalysisWorkerCommand(preferredExecutable) {
   }
 
   // Dev / unpackaged runs: developers are expected to have Python available.
-  return { command: 'python', scriptArgs: [PYTHON_ANALYSIS_WORKER] };
+  // Probe PATH so we don't assume a bare `python` exists (it usually doesn't on Linux).
+  const systemPython = findSystemPython();
+  if (!systemPython) {
+    throw new Error(
+      'Post-hoc analysis requires Python 3, but no "python3" or "python" interpreter was found on PATH. ' +
+      'Install Python 3 (with the analysis dependencies), or set the PYTHON environment variable to your interpreter.'
+    );
+  }
+  return { command: systemPython, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
 }
 
 function getAnalysisOutputDir(sessionFolderPath) {
