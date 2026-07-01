@@ -1256,7 +1256,7 @@ ipcMain.handle('export-annotations-csv', async (_event, sessionFolder) => {
         const frames = Array.isArray(data && data.frames) ? data.frames : (Array.isArray(data) ? data : []);
         for (let j = 0; j < frames.length; j++) {
           const f = frames[j];
-          const row = [f.sequence];
+          const row = [f.__seq ?? f.sequence];
           for (const ch of channels) row.push(f.channels ? f.channels[ch] : '');
           let labelText = '';
           if (segAnns.length > 0) {

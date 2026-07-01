@@ -241,7 +241,7 @@ export function useSessionExport(manifest: any) {
 						const chunkData = await window.electronAPI.readChunkFile?.(chunkFile);
 						const frames = Array.isArray(chunkData?.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
 						for (let j = 0; j < frames.length; j++) {
-							const seq = frames[j].sequence
+							const seq = frames[j].__seq ?? frames[j].sequence
 							const frameContent: (number | string)[] = [seq];
 							for (let p = 0; p < IO_PORTS.length; p++) frameContent.push(0);
 							for (let k = 0; k < channels.length; k++) {

@@ -25,7 +25,12 @@ const backgroundDarkColor =
 
 type AnalysisRange = { startSec: number; endSec: number }
 
-type ConfirmLeave = { title: string; body: string; confirmLabel: string; onConfirm: () => void }
+type ConfirmLeave = { title: string; body: string; confirmLabel?: string; onConfirm?: () => void }
+
+const EXPORT_NOTICE: ConfirmLeave = {
+	title: "Export in progress",
+	body: "A file is still being exported. Please wait for it to finish before leaving."
+}
 
 function hexToRgba(hex: string, alpha: number): string {
 	const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
@@ -85,16 +90,6 @@ const Page = () => {
 		[annotations.discardChanges]
 	)
 
-	const buildExportLeave = useCallback(
-		(onConfirm: () => void): ConfirmLeave => ({
-			title: "Export in progress",
-			body: "A file is still being exported. If you leave now it may not finish. Do you want to proceed?",
-			confirmLabel: "Proceed",
-			onConfirm
-		}),
-		[]
-	)
-
 	const requestDiscard = useCallback(
 		(onConfirm: () => void) => {
 			if (!annotations.dirty) {
@@ -111,12 +106,12 @@ const Page = () => {
 			if (annotations.dirty) {
 				setConfirmLeave(buildDiscardLeave(onConfirm))
 			} else if (exportBusy) {
-				setConfirmLeave(buildExportLeave(onConfirm))
+				setConfirmLeave(EXPORT_NOTICE)
 			} else {
 				onConfirm()
 			}
 		},
-		[annotations.dirty, exportBusy, buildDiscardLeave, buildExportLeave]
+		[annotations.dirty, exportBusy, buildDiscardLeave]
 	)
 
 	const handleTabChange = useCallback(
@@ -139,12 +134,12 @@ const Page = () => {
 			if (annotations.dirty) {
 				setConfirmLeave(buildDiscardLeave(confirmClose))
 			} else if (exportBusy) {
-				setConfirmLeave(buildExportLeave(confirmClose))
+				setConfirmLeave(EXPORT_NOTICE)
 			} else if (!loading && !analysisBusy) {
 				confirmClose()
 			}
 		})
-	}, [annotations.dirty, exportBusy, loading, analysisBusy, buildDiscardLeave, buildExportLeave])
+	}, [annotations.dirty, exportBusy, loading, analysisBusy, buildDiscardLeave])
 
 	// Client-side navigation (Home/return button, links): same modal guard.
 	useEffect(() => {
@@ -154,18 +149,23 @@ const Page = () => {
 				return
 			}
 			if (annotations.dirty || exportBusy) {
-				const proceed = () => {
-					allowNavRef.current = true
-					void router.push(url)
+				if (annotations.dirty) {
+					setConfirmLeave(
+						buildDiscardLeave(() => {
+							allowNavRef.current = true
+							void router.push(url)
+						})
+					)
+				} else {
+					setConfirmLeave(EXPORT_NOTICE)
 				}
-				setConfirmLeave(annotations.dirty ? buildDiscardLeave(proceed) : buildExportLeave(proceed))
 				router.events.emit("routeChangeError", "aborted", url)
 				throw "Navigation blocked: unfinished work."
 			}
 		}
 		router.events.on("routeChangeStart", handler)
 		return () => router.events.off("routeChangeStart", handler)
-	}, [annotations.dirty, exportBusy, router, buildDiscardLeave, buildExportLeave])
+	}, [annotations.dirty, exportBusy, router, buildDiscardLeave])
 
 	const labels = annotations.labels
 	const labelById = useMemo(() => new Map(labels.map(l => [l.id, l])), [labels])
@@ -557,21 +557,23 @@ const Page = () => {
 							<button
 								type="button"
 								onClick={() => setConfirmLeave(null)}
-								className="rounded-lg border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
+								className="rounded-lg uppercase border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
 							>
-								Cancel
+								{confirmLeave.onConfirm ? "Cancel" : "Close"}
 							</button>
-							<TextButton
-								size="base"
-								className="!text-sm"
-								onClick={() => {
-									const action = confirmLeave.onConfirm
-									setConfirmLeave(null)
-									action()
-								}}
-							>
-								{confirmLeave.confirmLabel}
-							</TextButton>
+							{confirmLeave.onConfirm && (
+								<TextButton
+									size="base"
+									className="!text-sm"
+									onClick={() => {
+										const action = confirmLeave.onConfirm
+										setConfirmLeave(null)
+										action?.()
+									}}
+								>
+									{confirmLeave.confirmLabel ?? "Proceed"}
+								</TextButton>
+							)}
 						</div>
 					</div>
 				</div>
