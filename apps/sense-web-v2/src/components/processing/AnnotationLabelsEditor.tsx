@@ -16,9 +16,10 @@ interface AnnotationLabelsEditorProps {
 	onClose: () => void
 	value?: AnnotationLabel[]
 	onSave?: (labels: AnnotationLabel[]) => void
+	autoAddOnOpen?: boolean
 }
 
-const MAX_CHANNEL_LABELS = 9
+export const MAX_CHANNEL_LABELS = 9
 
 const APPLIES_TO_OPTIONS: { value: AnnotationAppliesTo; label: string }[] = [
 	{ value: "channel", label: "Windows" },
@@ -42,7 +43,7 @@ const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
 /**
  * Pop-up editor for annotation labels (add / rename / recolor / delete).
  */
-const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave }) => {
+const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave, autoAddOnOpen }) => {
 	const [draft, setDraft] = useState<AnnotationLabel[]>([])
 	const [lastAddedId, setLastAddedId] = useState<number | null>(null)
 
@@ -51,8 +52,22 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 	const newNameInputRef = useRef<HTMLInputElement>(null)
 
 	useEffect(() => {
-		if (open) {
-			setDraft((value ?? getAnnotationLabels()).map(label => ({ ...label })))
+		if (!open) {
+			setDraft([])
+			setLastAddedId(null)
+			return
+		}
+		const base = (value ?? getAnnotationLabels()).map(label => ({ ...label }))
+		const channelActive = base.filter(label => label.appliesTo === "channel" && !label.retired).length
+		if (autoAddOnOpen && channelActive < MAX_CHANNEL_LABELS) {
+			const id = nextLabelId(base)
+			setDraft([
+				...base,
+				{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: "channel", predefined: false, retired: false }
+			])
+			setLastAddedId(id)
+		} else {
+			setDraft(base)
 			setLastAddedId(null)
 		}
 	}, [open])

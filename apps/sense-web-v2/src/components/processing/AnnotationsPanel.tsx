@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import { AnnotationLabel } from "../../utils/annotationLabels"
 import { AnnotationMode } from "../../hooks/useAnnotations"
-import AnnotationLabelsEditor from "./AnnotationLabelsEditor"
+import AnnotationLabelsEditor, { MAX_CHANNEL_LABELS } from "./AnnotationLabelsEditor"
 import HelpHint from "./HelpHint"
 
 export { DEFAULT_ANNOTATION_LABELS as ANNOTATION_LABELS } from "../../utils/annotationLabels"
@@ -92,7 +93,14 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	onLabelsChange
 }) => {
 	const [editing, setEditing] = useState(false)
+	const [editorAutoAdd, setEditorAutoAdd] = useState(false)
 	const [helpOpen, setHelpOpen] = useState(true)
+	const [capTooltip, setCapTooltip] = useState<{ x: number; y: number } | null>(null)
+
+	const openLabelsEditor = (autoAdd: boolean) => {
+		setEditorAutoAdd(autoAdd)
+		setEditing(true)
+	}
 
 	const listRef = useRef<HTMLDivElement>(null)
 	const selectedRowRef = useRef<HTMLDivElement>(null)
@@ -127,6 +135,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 
 	const channelLabels = labels.filter(label => label.appliesTo === "channel" && !label.retired)
 	const segmentLabels = labels.filter(label => label.appliesTo === "segment" && !label.retired)
+	const atLabelCap = channelLabels.length >= MAX_CHANNEL_LABELS
 
 	return (
 		<div className="space-y-4 pr-1 text-over-background-highest">
@@ -334,6 +343,10 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						- I + click twice on the graph
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Set Label</kbd>
+						- Select 1-9 Label (keyboard shortcut) or click a colour swatch
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
 						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Move P / I</kbd>
 						- Click and drag an annotation
 					</span>
@@ -411,7 +424,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</p>
 					<button
 						type="button"
-						onClick={() => setEditing(true)}
+						onClick={() => openLabelsEditor(false)}
 						className="rounded-md border border-background-accent px-2 py-1 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
 					>
 						Edit labels
@@ -452,6 +465,24 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 							</button>
 						)
 					})}
+					<button
+						type="button"
+						onClick={() => {
+							if (atLabelCap) return
+							openLabelsEditor(true)
+						}}
+						aria-disabled={atLabelCap}
+						onMouseMove={atLabelCap ? event => setCapTooltip({ x: event.clientX, y: event.clientY }) : undefined}
+						onMouseLeave={atLabelCap ? () => setCapTooltip(null) : undefined}
+						className={`flex items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 text-left text-xs transition-colors ${
+							atLabelCap
+								? "cursor-not-allowed border-background-accent text-over-background-low opacity-60"
+								: "border-background-accent text-over-background-medium hover:border-primary hover:text-primary"
+						}`}
+					>
+						<span className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs leading-none">+</span>
+						New label
+					</button>
 				</div>
 
 				<p className="mb-1.5 mt-4 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
@@ -475,16 +506,31 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					))}
 				</div>
 				<p className="mt-1.5 text-[10px] text-over-background-low">
-					Select a segment at the top, then click it again to set or change its label
+					Click on a segment to set or change its label
 				</p>
 			</div>
 
 			<AnnotationLabelsEditor
 				open={editing}
-				onClose={() => setEditing(false)}
+				onClose={() => {
+					setEditing(false)
+					setEditorAutoAdd(false)
+				}}
 				value={labels}
 				onSave={onLabelsChange}
+				autoAddOnOpen={editorAutoAdd}
 			/>
+
+			{capTooltip && typeof document !== "undefined" &&
+				createPortal(
+					<div
+						className="pointer-events-none fixed z-[100] rounded-md border border-background-accent bg-background px-2 py-1 text-xs text-over-background-highest shadow-lg"
+						style={{ left: capTooltip.x + 12, top: capTooltip.y + 12 }}
+					>
+						Label limit reached ({MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS}) - remove or edit one to add another
+					</div>,
+					document.body
+				)}
 		</div>
 	)
 }
