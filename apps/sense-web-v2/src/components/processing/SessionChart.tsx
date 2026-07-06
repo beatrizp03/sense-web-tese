@@ -105,6 +105,21 @@ function formatTime(seconds: number): string {
 	return s < 10 ? `${m}:0${s}` : `${m}:${s}`
 }
 
+function parseTimeInput(raw: string): number | null {
+	const trimmed = raw.trim()
+	if (!trimmed) return null
+	if (trimmed.includes(":")) {
+		const parts = trimmed.split(":")
+		if (parts.length !== 2) return null
+		const m = Number(parts[0])
+		const s = Number(parts[1])
+		if (!Number.isFinite(m) || !Number.isFinite(s) || s < 0) return null
+		return m * 60 + s
+	}
+	const n = Number(trimmed)
+	return Number.isFinite(n) ? n : null
+}
+
 type DragMode = "move" | "resize-left" | "resize-right" | null
 
 interface ChunkCache {
@@ -258,6 +273,39 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 		setSizeDraft(String(Math.round(clamped)))
 	}
 
+	const [startDraft, setStartDraft] = useState(formatTime(windowStartSec))
+	useEffect(() => {
+		setStartDraft(formatTime(windowStartSec))
+	}, [windowStartSec])
+
+	const [endDraft, setEndDraft] = useState(formatTime(winEndSec))
+	useEffect(() => {
+		setEndDraft(formatTime(winEndSec))
+	}, [winEndSec])
+
+	const commitStart = (raw: string) => {
+		const parsed = parseTimeInput(raw)
+		if (parsed == null) {
+			setStartDraft(formatTime(windowStartSec))
+			return
+		}
+		const start = Math.min(Math.max(0, rangeSeconds - windowSec), Math.max(0, parsed))
+		onWindowChange(start, windowSec)
+		setStartDraft(formatTime(start))
+	}
+
+	const commitEnd = (raw: string) => {
+		const parsed = parseTimeInput(raw)
+		if (parsed == null) {
+			setEndDraft(formatTime(winEndSec))
+			return
+		}
+		const end = Math.min(rangeSeconds, Math.max(windowStartSec + MIN_WINDOW_SECONDS, parsed))
+		const size = Math.min(maxWindowSec, end - windowStartSec)
+		onWindowChange(windowStartSec, size)
+		setEndDraft(formatTime(windowStartSec + size))
+	}
+
 	const minimapPoints = useMemo(() => {
 		if (overviewSeries.length === 0 || totalSamples <= 0) return ""
 		let yMin = Infinity
@@ -294,13 +342,43 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 						)}
 					</span>
 				)}
-				<span className="ml-auto text-sm text-over-background-low">
+				<span className="ml-auto flex items-center gap-1 text-sm text-over-background-low">
 					{winLoading ? (
 						"Loading…"
 					) : (
 						<>
-							{formatTime(windowStartSec)} – {formatTime(winEndSec)} /{" "}
-							{formatTime(rangeSeconds)}
+							<input
+								type="text"
+								inputMode="numeric"
+								value={startDraft}
+								onChange={event => setStartDraft(event.target.value)}
+								onBlur={event => commitStart(event.target.value)}
+								onKeyDown={event => {
+									if (event.key === "Enter") {
+										event.preventDefault()
+										commitStart((event.target as HTMLInputElement).value)
+									}
+								}}
+								className="w-14 rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
+								aria-label="Window start time (m:ss or seconds)"
+							/>
+							–
+							<input
+								type="text"
+								inputMode="numeric"
+								value={endDraft}
+								onChange={event => setEndDraft(event.target.value)}
+								onBlur={event => commitEnd(event.target.value)}
+								onKeyDown={event => {
+									if (event.key === "Enter") {
+										event.preventDefault()
+										commitEnd((event.target as HTMLInputElement).value)
+									}
+								}}
+								className="w-14 rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
+								aria-label="Window end time (m:ss or seconds)"
+							/>
+							<span className="tabular-nums"> / {formatTime(rangeSeconds)}</span>
 						</>
 					)}
 				</span>

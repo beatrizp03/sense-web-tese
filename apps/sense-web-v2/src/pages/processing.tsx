@@ -496,6 +496,7 @@ const Page = () => {
 										onRemoveAnnotation={annotations.removeAnnotation}
 										onSetNote={annotations.setAnnotationNote}
 										onSetLabel={annotations.setAnnotationLabel}
+										onSetBounds={annotations.setAnnotationSpan}
 										onClearAll={() =>
 											windowRange &&
 											annotations.clearAnnotationsInRange(

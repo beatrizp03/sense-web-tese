@@ -53,6 +53,7 @@ interface AnnotationsPanelProps {
 	onRemoveAnnotation?: (id: string) => void
 	onSetNote?: (id: string, note: string) => void
 	onSetLabel?: (id: string, labelId: number) => void
+	onSetBounds?: (id: string, t0: number, t1: number) => void
 	onClearAll?: () => void
 	onUndo?: () => void
 	onRedo?: () => void
@@ -65,6 +66,45 @@ const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: s
 	{ mode: "point", label: "Point", shortcut: "P" },
 	{ mode: "interval", label: "Interval", shortcut: "I" }
 ]
+
+const formatSeconds = (value: number): string => String(Math.round(value * 1000) / 1000)
+
+const TimeBoundInput: React.FC<{ label: string; value: number; onCommit: (value: number) => void }> = ({
+	label,
+	value,
+	onCommit
+}) => {
+	const [text, setText] = useState(() => formatSeconds(value))
+
+	useEffect(() => {
+		setText(formatSeconds(value))
+	}, [value])
+
+	const commit = () => {
+		const parsed = Number(text)
+		if (Number.isFinite(parsed) && parsed >= 0) onCommit(parsed)
+		else setText(formatSeconds(value))
+	}
+
+	return (
+		<label className="flex flex-1 flex-col gap-0.5">
+			<span className="text-[10px] uppercase tracking-wide text-over-background-low">{label}</span>
+			<input
+				type="number"
+				step="0.1"
+				min={0}
+				value={text}
+				onChange={event => setText(event.target.value)}
+				onBlur={commit}
+				onKeyDown={event => {
+					if (event.key === "Enter") commit()
+					else if (event.key === "Escape") setText(formatSeconds(value))
+				}}
+				className="w-full rounded border border-background-accent bg-background px-2 py-1 text-xs tabular-nums text-over-background-highest outline-none focus:border-primary"
+			/>
+		</label>
+	)
+}
 
 /**
  * Annotations tab body.
@@ -85,6 +125,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	onRemoveAnnotation,
 	onSetNote,
 	onSetLabel,
+	onSetBounds,
 	onClearAll,
 	onUndo,
 	onRedo,
@@ -275,6 +316,30 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 														</span>
 													)
 												})}
+											</div>
+
+											{/* Time bounds — typed entry, alongside click/drag on the chart */}
+											<div className="flex items-end gap-2">
+												{isPoint ? (
+													<TimeBoundInput
+														label="Time (s)"
+														value={item.t0}
+														onCommit={value => onSetBounds?.(item.id, value, value)}
+													/>
+												) : (
+													<>
+														<TimeBoundInput
+															label="Start (s)"
+															value={item.t0}
+															onCommit={value => onSetBounds?.(item.id, value, item.t1)}
+														/>
+														<TimeBoundInput
+															label="End (s)"
+															value={item.t1}
+															onCommit={value => onSetBounds?.(item.id, item.t0, value)}
+														/>
+													</>
+												)}
 											</div>
 
 											{/* Description */}
