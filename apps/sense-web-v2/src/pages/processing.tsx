@@ -466,6 +466,7 @@ const Page = () => {
 								selectedSegment={selectedSegment}
 								onWindowRangeChange={setWindowRange}
 								annotating={annotating}
+								annotationMode={annotations.mode}
 								annotations={annotations.annotations}
 								labels={labels}
 								selectedAnnotationId={annotations.selectedId}

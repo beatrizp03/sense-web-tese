@@ -51,6 +51,7 @@ export interface CanvasChartProps {
 	onDataDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
+	placingCursor?: boolean
 }
 
 const CanvasChart: React.FC<CanvasChartProps> = ({
@@ -80,7 +81,8 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	onDataClick,
 	onDataDoubleClick,
 	onAnnotationDragBound,
-	onAnnotationMove
+	onAnnotationMove,
+	placingCursor
 }) => {
 	const [parentElement, setParentElement] = useState<HTMLDivElement | null>(
 		null
@@ -633,7 +635,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			<canvas
 				ref={setCanvasElement}
 				className="h-auto w-full"
-				style={onDataClick || onAnnotationDragBound || onAnnotationMove ? { cursor: "crosshair" } : undefined}
+				style={placingCursor ? { cursor: "crosshair" } : undefined}
 				onClick={onDataClick ? handleClick : undefined}
 				onDoubleClick={onDataDoubleClick ? handleDoubleClick : undefined}
 				onPointerDown={onAnnotationDragBound || onAnnotationMove ? handlePointerDown : undefined}

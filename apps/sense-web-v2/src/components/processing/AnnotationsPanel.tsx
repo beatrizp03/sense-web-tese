@@ -42,7 +42,7 @@ interface AnnotationsPanelProps {
 	annotationCount?: number
 	dirty?: boolean
 	saving?: boolean
-	onSave?: () => void
+	onSave?: () => void | Promise<void>
 	mode?: AnnotationMode
 	onToggleMode?: (mode: Exclude<AnnotationMode, "idle">) => void
 	activeLabelId?: number | null
@@ -318,30 +318,6 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 												})}
 											</div>
 
-											{/* Time bounds — typed entry, alongside click/drag on the chart */}
-											<div className="flex items-end gap-2">
-												{isPoint ? (
-													<TimeBoundInput
-														label="Time (s)"
-														value={item.t0}
-														onCommit={value => onSetBounds?.(item.id, value, value)}
-													/>
-												) : (
-													<>
-														<TimeBoundInput
-															label="Start (s)"
-															value={item.t0}
-															onCommit={value => onSetBounds?.(item.id, value, item.t1)}
-														/>
-														<TimeBoundInput
-															label="End (s)"
-															value={item.t1}
-															onCommit={value => onSetBounds?.(item.id, item.t0, value)}
-														/>
-													</>
-												)}
-											</div>
-
 											{/* Description */}
 											<input
 												ref={noteInputRef}
@@ -381,9 +357,9 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						size="base"
 						onClick={onSave}
 						disabled={saving || !dirty}
-						className="flex h-12 flex-1 basis-0 pl-2 pr-2 min-w-0 items-center justify-center px-4 text-center !text-xs leading-tight motion-safe:hover:!scale-95"
+						className={`flex h-12 flex-1 basis-0 pl-2 pr-2 min-w-0 items-center justify-center px-4 text-center !text-xs leading-tight motion-safe:hover:!scale-95 ${!dirty && !saving ? "opacity-30" : ""}`}
 					>
-						{saving ? "Saving…" : "Save session annotations"}
+						{saving ? "Saving…" : dirty ? "Save Session Annotations" : "Annotations saved"}
 					</TextButton>
 				</div>
 			</div>
@@ -392,13 +368,16 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				<button
 					type="button"
 					onClick={() => setHelpOpen(open => !open)}
-					className="flex w-full items-center justify-between text-xs uppercase tracking-[0.18em] text-over-background-low"
+					className={`flex w-full items-center justify-between text-xs uppercase tracking-[0.18em] text-over-background-low ${helpOpen ? "border-b border-background-accent pb-2" : ""}`}
 				>
 					<span className="text-xs">How to annotate</span>
 					<span aria-hidden className="text-xs leading-none">{helpOpen ? "▾" : "▸"}</span>
 				</button>
 				{helpOpen && (
 				<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+					<span className="basis-full text-[10px] font-semibold uppercase tracking-[0.18em] text-over-background-low">
+						Window annotations
+					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
 						<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Point</kbd>
 						- P + click on graph
@@ -408,7 +387,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						- I + click twice on the graph
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
-						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Set Label</kbd>
+						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Window Label</kbd>
 						- Select 1-9 Label (keyboard shortcut) or click a colour swatch
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
@@ -424,28 +403,20 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						- Double-click an annotation
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
-						<button
-							type="button"
-							onClick={onUndo}
-							disabled={!canUndo}
-							title="Undo (Ctrl+Z)"
-							className="inline-flex h-4 items-center justify-center gap-1 rounded border border-background-accent px-1 text-xs font-semibold transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
-						>
-							↶ Undo
-						</button>
+						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">↶ Undo</kbd>
 						- Ctrl+Z
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
-						<button
-							type="button"
-							onClick={onRedo}
-							disabled={!canRedo}
-							title="Redo (Ctrl+Shift+Z)"
-							className="inline-flex h-4 items-center justify-center gap-1 rounded border border-background-accent px-1 text-xs font-semibold transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
-						>
-							↷ Redo
-						</button>
+						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">↷ Redo</kbd>
 						- Ctrl+Shift+Z / Ctrl+Y
+					</span>
+
+					<span className="mt-1 basis-full text-[10px] font-semibold uppercase tracking-[0.18em] text-over-background-low">
+						Segment labels
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Label segment</kbd>
+						- Click a segment at the top, then click it again to pick a label
 					</span>
 				</div>
 				)}

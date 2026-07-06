@@ -5,7 +5,7 @@ import resolveConfig from "tailwindcss/resolveConfig"
 
 import tailwindConfig from "../../../tailwind.config"
 import CanvasChart, { CanvasAnnotation } from "../charts/CanvasChart"
-import { Annotation } from "../../hooks/useAnnotations"
+import { Annotation, AnnotationMode } from "../../hooks/useAnnotations"
 import { AnnotationLabel } from "../../utils/annotationLabels"
 
 const fullConfig = resolveConfig(tailwindConfig)
@@ -151,6 +151,7 @@ interface ChannelRowProps {
 	onDataDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
+	placingCursor?: boolean
 }
 
 const ChannelRow: React.FC<ChannelRowProps> = ({
@@ -173,7 +174,8 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 	onDataClick,
 	onDataDoubleClick,
 	onAnnotationDragBound,
-	onAnnotationMove
+	onAnnotationMove,
+	placingCursor
 }) => {
 	const winEndSec = windowStartSec + windowSec
 	const maxWindowSec = Math.max(MIN_WINDOW_SECONDS, rangeSeconds)
@@ -408,6 +410,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					onDataDoubleClick={onDataDoubleClick}
 					onAnnotationDragBound={onAnnotationDragBound}
 					onAnnotationMove={onAnnotationMove}
+					placingCursor={placingCursor}
 				/>
 			)}
 
@@ -522,6 +525,7 @@ interface SessionChartProps {
 	selectedSegment?: number
 	onWindowRangeChange?: (range: { startSec: number; endSec: number }) => void
 	annotating?: boolean
+	annotationMode?: AnnotationMode
 	annotations?: Annotation[]
 	labels?: AnnotationLabel[]
 	selectedAnnotationId?: string | null
@@ -542,6 +546,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	selectedSegment = 1,
 	onWindowRangeChange,
 	annotating = false,
+	annotationMode = "idle",
 	annotations = [],
 	labels = [],
 	selectedAnnotationId = null,
@@ -841,6 +846,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 					onDataDoubleClick={annotating ? onChartDoubleClick : undefined}
 					onAnnotationDragBound={annotating ? onAnnotationDragBound : undefined}
 					onAnnotationMove={annotating ? onAnnotationMove : undefined}
+					placingCursor={annotating && (annotationMode === "point" || annotationMode === "interval")}
 				/>
 			))}
 		</div>
