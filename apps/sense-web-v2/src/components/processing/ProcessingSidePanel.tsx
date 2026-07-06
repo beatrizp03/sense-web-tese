@@ -38,7 +38,6 @@ const ProcessingSidePanel: React.FC<ProcessingSidePanelProps> = ({
 			<div className="flex items-center justify-between gap-2">
 				{TABS.map(tab => {
 					const isActive = activeTab === tab.id
-					const showLiveDot = tab.id === "annotations" && isActive
 					return (
 						<button
 							key={tab.id}
@@ -50,12 +49,6 @@ const ProcessingSidePanel: React.FC<ProcessingSidePanelProps> = ({
 									: "text-over-background-medium hover:text-over-background-highest"
 							}`}
 						>
-							{showLiveDot && (
-								<span className="relative inline-flex h-2 w-2">
-									<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-over-background-highest opacity-75" />
-									<span className="relative inline-flex h-2 w-2 rounded-full bg-over-background-highest" />
-								</span>
-							)}
 							{tab.label}
 						</button>
 					)

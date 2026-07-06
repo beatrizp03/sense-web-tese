@@ -193,6 +193,10 @@ const Page = () => {
 	}, [annotations.annotations, selectedSegment, labelById])
 
 	useEffect(() => {
+		if (!annotating) setSegLabelMenu(null)
+	}, [annotating])
+
+	useEffect(() => {
 		try {
 			const saved = sessionStorage.getItem(SESSION_STORAGE_KEY)
 			if (saved) {
@@ -362,13 +366,23 @@ const Page = () => {
 												<span key={seg} className="relative inline-flex">
 													<button
 														type="button"
-														title={segLabel ? `Segment ${seg} · ${segLabel.name} (double-click to change)` : `Segment ${seg} (double-click to label)`}
+														title={
+															!annotating
+																? `Segment ${seg} — turn on Annotations to label segments`
+																: segLabel
+																	? `Segment ${seg} · ${segLabel.name} (click to change label)`
+																	: `Segment ${seg} (click to select, click again to label)`
+														}
 														onClick={() => {
-															if (seg === selectedSegment) return
-															annotations.clearInteraction()
-															setSelectedSegment(seg)
+															if (seg !== selectedSegment) {
+																annotations.clearInteraction()
+																setSelectedSegment(seg)
+																setSegLabelMenu(null)
+																return
+															}
+															if (!annotating) return
+															setSegLabelMenu(prev => (prev === seg ? null : seg))
 														}}
-														onDoubleClick={() => setSegLabelMenu(prev => (prev === seg ? null : seg))}
 														style={tint ? { backgroundColor: tint } : undefined}
 														className={`rounded-full px-3 py-1 text-xs font-medium transition ${
 															tint

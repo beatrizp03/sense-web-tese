@@ -475,7 +475,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					))}
 				</div>
 				<p className="mt-1.5 text-[10px] text-over-background-low">
-					Double-click a segment to set or change its label
+					Select a segment at the top, then click it again to set or change its label
 				</p>
 			</div>
 
