@@ -163,6 +163,11 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		annotationsRef.current = annotations
 	}, [annotations])
 
+	const draftRef = useRef(draft)
+	useEffect(() => {
+		draftRef.current = draft
+	}, [draft])
+
 	// ---- Undo / redo --------------------------------------------------------
 	const historyRef = useRef<{ past: Annotation[][]; future: Annotation[][] }>({ past: [], future: [] })
 	const lastEditRef = useRef<{ tag: string; at: number }>({ tag: "", at: 0 })
@@ -238,6 +243,10 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 	}, [logAnnotationEvent])
 
 	const undo = useCallback(() => {
+		if (draftRef.current) {
+			setDraft(null)
+			return
+		}
 		const h = historyRef.current
 		const prev = h.past.pop()
 		if (prev === undefined) return
@@ -516,6 +525,23 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 	useEffect(() => {
 		if (!enabled) return
 		const onKeyDown = (event: KeyboardEvent) => {
+			const key = event.key
+			const mod = event.ctrlKey || event.metaKey
+			
+			if (mod && (key === "z" || key === "Z")) {
+				event.preventDefault()
+				event.stopImmediatePropagation()
+				if (event.shiftKey) redo()
+				else undo()
+				return
+			}
+			if (mod && (key === "y" || key === "Y")) {
+				event.preventDefault()
+				event.stopImmediatePropagation()
+				redo()
+				return
+			}
+
 			const target = event.target as HTMLElement | null
 			if (
 				target &&
@@ -527,18 +553,6 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 				return
 			}
 
-			const key = event.key
-			if ((event.ctrlKey || event.metaKey) && (key === "z" || key === "Z")) {
-				event.preventDefault()
-				if (event.shiftKey) redo()
-				else undo()
-				return
-			}
-			if ((event.ctrlKey || event.metaKey) && (key === "y" || key === "Y")) {
-				event.preventDefault()
-				redo()
-				return
-			}
 			if (key === "p" || key === "P") {
 				event.preventDefault()
 				toggleMode("point")
@@ -561,8 +575,8 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 				}
 			}
 		}
-		window.addEventListener("keydown", onKeyDown)
-		return () => window.removeEventListener("keydown", onKeyDown)
+		window.addEventListener("keydown", onKeyDown, true)
+		return () => window.removeEventListener("keydown", onKeyDown, true)
 	}, [enabled, channelLabels, removeSelected, toggleMode, undo, redo])
 
 	// Cancel any in-progress interaction when leaving annotation mode.
@@ -638,7 +652,7 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 		exportCsv,
 		undo,
 		redo,
-		canUndo,
+		canUndo: canUndo || draft !== null,
 		canRedo,
 		mode,
 		setMode,

@@ -142,9 +142,9 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						disabled={!canUndo}
 						title="Undo (Ctrl+Z)"
 						aria-label="Undo"
-						className="rounded border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+						className="rounded text-xs border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-90"
 					>
-						↶
+						↶ Undo
 					</button>
 					<button
 						type="button"
@@ -152,9 +152,9 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						disabled={!canRedo}
 						title="Redo (Ctrl+Shift+Z)"
 						aria-label="Redo"
-						className="rounded border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+						className="rounded text-xs border border-background-accent px-1.5 py-0.5 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary disabled:opacity-90"
 					>
-						↷
+						↷ Redo
 					</button>
 					</div>
 				</div>
@@ -344,6 +344,30 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					<span className="inline-flex items-center gap-1.5 text-xs">
 						<kbd className="inline-flex h-4 items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Select</kbd>
 						- Double-click an annotation
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<button
+							type="button"
+							onClick={onUndo}
+							disabled={!canUndo}
+							title="Undo (Ctrl+Z)"
+							className="inline-flex h-4 items-center justify-center gap-1 rounded border border-background-accent px-1 text-xs font-semibold transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+						>
+							↶ Undo
+						</button>
+						- Ctrl+Z
+					</span>
+					<span className="inline-flex items-center gap-1.5 text-xs">
+						<button
+							type="button"
+							onClick={onRedo}
+							disabled={!canRedo}
+							title="Redo (Ctrl+Shift+Z)"
+							className="inline-flex h-4 items-center justify-center gap-1 rounded border border-background-accent px-1 text-xs font-semibold transition-colors hover:border-primary hover:text-primary disabled:opacity-30"
+						>
+							↷ Redo
+						</button>
+						- Ctrl+Shift+Z / Ctrl+Y
 					</span>
 				</div>
 				)}

@@ -112,6 +112,11 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
 
   const barWidth = `${Math.max(0, Math.min(100, progress.percentage))}%`
 
+  const handleCloseError = () => {
+    setProgress((prev) => ({ ...prev, errorMessage: undefined, isRunning: false }))
+    onCancel?.()
+  }
+
   if (progress.errorMessage) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -123,7 +128,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
           <p className="text-sm text-over-background-medium-dark dark:text-over-background-medium-light mb-6">{progress.errorMessage}</p>
           <div className="flex gap-3">
             <button
-              onClick={onCancel}
+              onClick={handleCloseError}
               className="flex-1 rounded-lg border border-over-background-highest-dark bg-transparent px-4 py-2 text-sm font-medium text-over-background-highest-dark hover:bg-black/5 dark:border-over-background-highest-light dark:text-over-background-highest-light dark:hover:bg-white/5"
             >
               Close
