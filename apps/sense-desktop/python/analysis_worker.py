@@ -903,11 +903,31 @@ def sanitize_for_json(value: Any) -> Any:
         if math.isnan(value) or math.isinf(value):
             return None
         return value
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return sanitize_for_json(value.tolist())
+        if isinstance(value, np.generic):
+            return sanitize_for_json(value.item())
     if isinstance(value, dict):
         return {key: sanitize_for_json(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [sanitize_for_json(item) for item in value]
     return value
+
+def _json_default(value: Any) -> Any:
+    """Fallback for json.dump when it meets a type it cannot serialize."""
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return sanitize_for_json(value.tolist())
+        if isinstance(value, np.generic):
+            return sanitize_for_json(value.item())
+    if hasattr(value, "to_dict"):
+        try:
+            return sanitize_for_json(serialize_df_like(value))
+        except Exception:
+            pass
+    return str(value)
+
 
 ARRAY_PRESERVE_LIMIT = 10000
 
@@ -2923,7 +2943,9 @@ def write_features_csv(output_folder: Path, result: Dict[str, Any]) -> None:
                         if isinstance(value, (int, float, str, bool)) or value is None:
                             serialized = value
                         else:
-                            serialized = json.dumps(value, ensure_ascii=False)
+                            serialized = json.dumps(
+                                sanitize_for_json(value), ensure_ascii=False, default=_json_default
+                            )
 
                         writer.writerow(
                             [
@@ -3836,7 +3858,14 @@ CSV export is performed after analysis completes.
             except Exception:
                 pass
             with result_path.open("w", encoding="utf-8") as handle:
-                json.dump(result, handle, indent=2, ensure_ascii=False, allow_nan=False)
+                json.dump(
+                    result,
+                    handle,
+                    indent=2,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    default=_json_default,
+                )
         progress.mark_csv_written()
         total_seconds = time.perf_counter() - analysis_started
         if result_path.stat().st_size / (1024*1024) > 0.1:
