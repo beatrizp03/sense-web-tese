@@ -98,11 +98,32 @@ function decimateSlice(
 	return out
 }
 
-function formatTime(seconds: number): string {
+const MIN_BRUSH_PX = 18
+
+// Rolls over to h:mm:ss past an hour; `decimals` adds sub-second precision.
+function formatTime(seconds: number, decimals = 0): string {
 	if (!Number.isFinite(seconds) || seconds < 0) return "0:00"
-	const s = Math.floor(seconds % 60)
-	const m = Math.floor(seconds / 60)
-	return s < 10 ? `${m}:0${s}` : `${m}:${s}`
+	const factor = 10 ** decimals
+	const total = Math.round(seconds * factor) / factor
+	const s = total % 60
+	const m = Math.floor(total / 60) % 60
+	const h = Math.floor(total / 3600)
+	const ss = (decimals > 0 ? s.toFixed(decimals) : String(Math.floor(s))).padStart(
+		decimals > 0 ? 3 + decimals : 2,
+		"0"
+	)
+	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`
+}
+
+/**
+ * Picks label precision from how far apart the ticks actually are. A 2-second
+ * window puts several ticks inside the same second, and whole-second labels then
+ * repeat ("17:08" twice); sub-second labels keep every tick distinct.
+ */
+function makeTimeTickFormat(spanSec: number, tickCount: number): (seconds: number) => string {
+	const spacing = spanSec > 0 ? spanSec / Math.max(1, tickCount) : 0
+	const decimals = spacing <= 0 ? 0 : spacing < 0.1 ? 2 : spacing < 1 ? 1 : 0
+	return (seconds: number) => formatTime(seconds, decimals)
 }
 
 function parseTimeInput(raw: string): number | null {
@@ -110,11 +131,10 @@ function parseTimeInput(raw: string): number | null {
 	if (!trimmed) return null
 	if (trimmed.includes(":")) {
 		const parts = trimmed.split(":")
-		if (parts.length !== 2) return null
-		const m = Number(parts[0])
-		const s = Number(parts[1])
-		if (!Number.isFinite(m) || !Number.isFinite(s) || s < 0) return null
-		return m * 60 + s
+		if (parts.length !== 2 && parts.length !== 3) return null
+		const nums = parts.map(Number)
+		if (nums.some(n => !Number.isFinite(n) || n < 0)) return null
+		return parts.length === 2 ? nums[0] * 60 + nums[1] : nums[0] * 3600 + nums[1] * 60 + nums[2]
 	}
 	const n = Number(trimmed)
 	return Number.isFinite(n) ? n : null
@@ -179,6 +199,8 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 }) => {
 	const winEndSec = windowStartSec + windowSec
 	const maxWindowSec = Math.max(MIN_WINDOW_SECONDS, rangeSeconds)
+	// Matches the chart's xTicks={6}.
+	const xTickFormat = useMemo(() => makeTimeTickFormat(windowSec, 6), [windowSec])
 	const trackRef = useRef<HTMLDivElement | null>(null)
 	const dragRef = useRef<{
 		mode: DragMode
@@ -361,7 +383,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 										commitStart((event.target as HTMLInputElement).value)
 									}
 								}}
-								className="w-14 rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
+								className="w-[4.5rem] rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
 								aria-label="Window start time (m:ss or seconds)"
 							/>
 							–
@@ -377,7 +399,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 										commitEnd((event.target as HTMLInputElement).value)
 									}
 								}}
-								className="w-14 rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
+								className="w-[4.5rem] rounded border border-background-accent-dark bg-background px-1.5 py-0.5 text-center text-sm tabular-nums text-over-background-highest outline-none focus:border-primary dark:border-background-accent-light"
 								aria-label="Window end time (m:ss or seconds)"
 							/>
 							<span className="tabular-nums"> / {formatTime(rangeSeconds)}</span>
@@ -403,7 +425,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					outlineColor={outlineColor}
 					xTicks={6}
 					yTicks={5}
-					xTickFormat={formatTime}
+					xTickFormat={xTickFormat}
 					annotations={annotations}
 					draftIntervalStart={draftIntervalStart}
 					onDataClick={onDataClick}
@@ -497,16 +519,19 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					})}
 				<div
 					className="absolute top-0 h-full cursor-grab touch-none rounded-sm border-2 border-background-accent-dark bg-primary/25 active:cursor-grabbing dark:border-background-accent-light"
-					style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+					style={{ left: `${leftPct}%`, width: `${widthPct}%`, minWidth: `${MIN_BRUSH_PX}px` }}
 					onPointerDown={startDrag("move")}
+					title="Drag to move the window; drag an edge to resize it"
 				>
 					<div
-						className="absolute left-0 top-0 h-full w-2 -translate-x-1/2 cursor-ew-resize touch-none"
+						className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize touch-none rounded-l-sm bg-background-accent-dark/60 dark:bg-background-accent-light/60"
 						onPointerDown={startDrag("resize-left")}
+						title="Drag to change the window start"
 					/>
 					<div
-						className="absolute right-0 top-0 h-full w-2 translate-x-1/2 cursor-ew-resize touch-none"
+						className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize touch-none rounded-r-sm bg-background-accent-dark/60 dark:bg-background-accent-light/60"
 						onPointerDown={startDrag("resize-right")}
+						title="Drag to change the window end"
 					/>
 				</div>
 			</div>

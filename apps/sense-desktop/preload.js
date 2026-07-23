@@ -368,6 +368,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readPostHocAnalysisResult: async (sessionFolderPath, subdir) => {
     return await ipcRenderer.invoke('read-posthoc-analysis-result', sessionFolderPath, subdir);
   },
+  openExternalPath: async (targetPath) => {
+    return await ipcRenderer.invoke('open-external-path', targetPath);
+  },
   selectAnalysisResultFolder: async () => {
     return await ipcRenderer.invoke('select-analysis-result-folder');
   },

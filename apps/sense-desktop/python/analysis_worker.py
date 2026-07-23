@@ -2435,28 +2435,13 @@ def process_segment(
         indices, values = channel_series(frames, channel_key)
 
         if channel_key in EXCLUDED_CHANNELS:
-            excluded_result = analyze_channel(
-                channel_key=channel_key,
-                label=label,
-                kind=None,
-                values=values,
-                sample_rate=sample_rate,
-                indices=indices,
-                output_folder=segment_artifact_folder(output_folder, segment_index),
-                eda_method=eda_method,
-                progress=None,
+            export_series_csv(
+                segment_artifact_folder(output_folder, segment_index),
+                f"{channel_key}_{kind.upper()}" if kind else channel_key,
+                indices,
+                values,
+                sample_rate,
             )
-            channel_record = dict(excluded_result)
-            channel_record["channel"] = channel_key
-            channel_record["label"] = label
-            channel_record["signalKind"] = kind or "generic"
-            channel_record["excluded"] = True
-            if axis in ACC_AXIS_ORDER:
-                channel_record["accAxis"] = axis
-            channel_record.setdefault("warnings", []).append(
-                "Channel excluded from library analysis; exported raw series and basic statistics only."
-            )
-            result_channels.append(channel_record)
             continue
 
         if progress is not None:

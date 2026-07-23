@@ -366,25 +366,28 @@ const Page = () => {
 												<span key={seg} className="relative inline-flex">
 													<button
 														type="button"
+														aria-haspopup="menu"
+														aria-expanded={segLabelMenu === seg}
 														title={
 															!annotating
-																? `Segment ${seg} — turn on Annotations to label segments`
+																? `Segment ${seg} - turn on Annotations to label segments`
 																: segLabel
 																	? `Segment ${seg} · ${segLabel.name} (click to change label)`
-																	: `Segment ${seg} (click to select, click again to label)`
+																	: `Segment ${seg} (click to label)`
 														}
 														onClick={() => {
 															if (seg !== selectedSegment) {
 																annotations.clearInteraction()
 																setSelectedSegment(seg)
+															}
+															if (!annotating) {
 																setSegLabelMenu(null)
 																return
 															}
-															if (!annotating) return
 															setSegLabelMenu(prev => (prev === seg ? null : seg))
 														}}
 														style={tint ? { backgroundColor: tint } : undefined}
-														className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+														className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
 															tint
 																? "text-over-background-highest"
 																: selectedSegment === seg
@@ -393,6 +396,13 @@ const Page = () => {
 														} ${selectedSegment === seg ? "ring-1 ring-background-accent-light/50 ring-offset-1 ring-offset-background" : ""}`}
 													>
 														Segment {seg}
+														<svg
+															viewBox="0 0 12 12"
+															aria-hidden="true"
+															className={`h-2.5 w-2.5 shrink-0 transition-transform ${segLabelMenu === seg ? "rotate-180" : ""} ${annotating ? "opacity-70" : "opacity-30"}`}
+														>
+															<path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+														</svg>
 													</button>
 													{segLabelMenu === seg && (
 														<>
@@ -444,7 +454,15 @@ const Page = () => {
 										})}
 									</>
 								)}
-								<span className="ml-auto inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-over-background-medium">
+								<button
+									type="button"
+									role="switch"
+									aria-checked={annotating}
+									aria-label="Annotations"
+									onClick={() => handleTabChange(annotating ? "analysis" : "annotations")}
+									title={annotating ? "Turn annotations off" : "Turn annotations on"}
+									className="ml-auto inline-flex items-center gap-2 rounded px-1 py-0.5 text-xs font-medium uppercase tracking-[0.18em] text-over-background-medium outline-none transition-colors hover:text-over-background-highest focus-visible:ring-1 focus-visible:ring-primary"
+								>
 									{annotating ? (
 										<span className="relative inline-flex h-2.5 w-2.5">
 											<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-over-background-medium opacity-75" />
@@ -454,7 +472,7 @@ const Page = () => {
 										<span className="text-xs inline-flex h-2.5 w-2.5 rounded-full border border-over-background-medium" />
 									)}
 									{annotating ? "Annotations ON" : "Annotations OFF"}
-								</span>
+								</button>
 							</div>
 							<SessionChart
 								channels={channels}

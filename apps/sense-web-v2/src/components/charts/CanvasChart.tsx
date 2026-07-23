@@ -54,6 +54,9 @@ export interface CanvasChartProps {
 	placingCursor?: boolean
 }
 
+const CLICK_MOVE_TOLERANCE_PX = 4
+const CLICK_HOLD_TOLERANCE_MS = 500
+
 const CanvasChart: React.FC<CanvasChartProps> = ({
 	className,
 	style,
@@ -181,12 +184,21 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 					)
 				) +
 				8 * pixelRatio
-			const xAxisHeight = fontSizeScaled + 8 * pixelRatio
+			const xAxisHeight = fontSizeScaled + 10 * pixelRatio
+
+			const xLabelHalfWidth =
+				(d3.max(
+					xTicksValues.map(
+						x => context.measureText(String(xTickFormat ? xTickFormat(x) : x)).width
+					)
+				) ?? 0) / 2
 
 			const scaledTopMargin =
 				(topMargin ?? fontSizeScaled / 2) * pixelRatio
 			const scaledRightMargin =
-				(rightMargin ?? fontSizeScaled / 2) * pixelRatio
+				rightMargin != null
+					? rightMargin * pixelRatio
+					: Math.max(fontSizeScaled / 2, xLabelHalfWidth + 2 * pixelRatio)
 			const scaledBottomMargin =
 				(bottomMargin ?? 0) * pixelRatio + xAxisHeight
 			const scaledLeftMargin = (leftMargin ?? 0) * pixelRatio + yAxisWidth
@@ -409,6 +421,8 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	>(null)
 	const justResizedRef = useRef(false)
 	const clickTimerRef = useRef<number | null>(null)
+	const pressRef = useRef<{ x: number; y: number; time: number } | null>(null)
+	const [dragCursor, setDragCursor] = useState<string | null>(null)
 	const [hover, setHover] = useState<{ x: number; y: number; label: string; description: string } | null>(null)
 
 	useEffect(
@@ -448,6 +462,12 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			}
 			if (!onDataClick) return
 			if (event.detail > 1) return
+			const press = pressRef.current
+			pressRef.current = null
+			if (press) {
+				const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y)
+				if (moved > CLICK_MOVE_TOLERANCE_PX || Date.now() - press.time > CLICK_HOLD_TOLERANCE_MS) return
+			}
 			const canvas = event.currentTarget
 			const geom = geomRef.current
 			if (!geom) return
@@ -520,6 +540,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 	const handlePointerDown = useCallback(
 		(event: React.PointerEvent<HTMLCanvasElement>) => {
+			pressRef.current = { x: event.clientX, y: event.clientY, time: Date.now() }
 			if (!onAnnotationDragBound && !onAnnotationMove) return
 			const geom = geomRef.current
 			const canvas = event.currentTarget
@@ -588,6 +609,32 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		return null
 	}
 
+	/**
+	 * What a press at this position would do to the selected annotation, so the
+	 * cursor can say whether it will resize an edge or move the whole interval.
+	 * Mirrors the hit-testing in handlePointerDown.
+	 */
+	const dragCursorAt = (clientX: number, canvas: HTMLCanvasElement): string | null => {
+		if (!onAnnotationDragBound && !onAnnotationMove) return null
+		const geom = geomRef.current
+		const rect = canvas.getBoundingClientRect()
+		if (!geom || rect.width <= 0) return null
+		const sel = geom.annotations.find(a => a.selected)
+		if (!sel) return null
+		const px = (clientX - rect.left) * (canvas.width / rect.width) - geom.leftMargin
+		const grab = 8 * pixelRatio
+		if (sel.t0 === sel.t1) {
+			return Math.abs(px - geom.xScale(sel.t0)) <= grab ? "ew-resize" : null
+		}
+		if (Math.abs(px - geom.xScale(sel.t0)) <= grab || Math.abs(px - geom.xScale(sel.t1)) <= grab) {
+			return onAnnotationDragBound ? "ew-resize" : null
+		}
+		const left = geom.xScale(Math.min(sel.t0, sel.t1))
+		const right = geom.xScale(Math.max(sel.t0, sel.t1))
+		if (onAnnotationMove && px > left + grab && px < right - grab) return "grab"
+		return null
+	}
+
 	const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
 		const r = resizeRef.current
 		if (r) {
@@ -601,6 +648,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			}
 			return
 		}
+		setDragCursor(dragCursorAt(event.clientX, event.currentTarget))
 		const hit = findAnnotationAt(event.clientX, event.currentTarget)
 		if (hit && (hit.label || hit.description)) {
 			const rect = event.currentTarget.getBoundingClientRect()
@@ -635,14 +683,17 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			<canvas
 				ref={setCanvasElement}
 				className="h-auto w-full"
-				style={placingCursor ? { cursor: "crosshair" } : undefined}
+				style={dragCursor ? { cursor: dragCursor } : placingCursor ? { cursor: "crosshair" } : undefined}
 				onClick={onDataClick ? handleClick : undefined}
 				onDoubleClick={onDataDoubleClick ? handleDoubleClick : undefined}
-				onPointerDown={onAnnotationDragBound || onAnnotationMove ? handlePointerDown : undefined}
+				onPointerDown={handlePointerDown}
 				onPointerMove={handlePointerMove}
 				onPointerUp={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
 				onPointerCancel={onAnnotationDragBound || onAnnotationMove ? endResize : undefined}
-				onPointerLeave={() => setHover(null)}
+				onPointerLeave={() => {
+					setHover(null)
+					setDragCursor(null)
+				}}
 			/>
 			{hover && (
 				<div

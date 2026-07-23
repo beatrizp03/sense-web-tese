@@ -213,6 +213,7 @@ const Page = () => {
 	const finalizingAfterErrorRef = useRef(false)
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
+	const [connectWarning, setConnectWarning] = useState<string | null>(null);
 
 	useBusyGuard(
 		status === STATUS.ACQUIRING || status === STATUS.PAUSED ? "Recording" : null
@@ -439,6 +440,7 @@ const Page = () => {
 
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
+		print("persistSessionMetadata: device=%o", device);
 		if (!device) return;
 		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 		const configuredSignalKinds =
@@ -481,13 +483,36 @@ const Page = () => {
 	}, []);
 
 	const connect = useCallback(async () => {
+		setConnectWarning(null)
 		setStatus(STATUS.CONNECTING)
 		setAcquisitionStarted(false)
 		cleanupPipeline(); // Reset all state and BufferManager before connect
 
-		 const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>;
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>;
 
 		try {
+			if (window.electronAPI?.listSerialPorts) {
+				let ports: any[] = []
+				try {
+					ports = (await window.electronAPI.listSerialPorts()) ?? []
+				} catch {
+					ports = []
+				}
+				if (ports.length === 0) {
+					setConnectWarning(
+						"No device found. Check that Bluetooth is turned on and your ScientISST board is paired, then try again."
+					)
+					setStatus(STATUS.DISCONNECTED)
+					return
+				}
+				const hasBluetooth = ports.some(port => /bluetooth/i.test(String(port?.friendlyName ?? "")))
+				if (!hasBluetooth) {
+					setConnectWarning(
+						"No Bluetooth device detected. If your board connects over Bluetooth, turn it on and pair it — otherwise pick your wired port below."
+					)
+				}
+			}
+
 			switch (settings.deviceType ?? "sense") {
 				case "maker": {
 					const baudRate = (settings.baudRate ?? 9600) as number
@@ -546,6 +571,7 @@ const Page = () => {
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
 				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current)
 			}
+			setConnectWarning(null)
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
 			deviceRef.current = null
@@ -898,9 +924,12 @@ const Page = () => {
 			shortTitle="Live"
 			returnHref="/"
 		>
-			{status === STATUS.CONNECTED && firmwareVersion !== null && (
-				<span>Firmware Version: {firmwareVersion}</span>
-			)}
+			{status === STATUS.CONNECTED && (
+                <div className="rounded-lg border border-background-accent bg-background-accent px-3 py-2 text-sm text-over-background-highest">
+					Connected device: <span className="font-medium">{deviceRef.current ? String(deviceRef.current) : "Unknown"}</span>
+                    {firmwareVersion !== null && <span className="ml-3 text-over-background-medium">Firmware: {firmwareVersion}</span>}
+                </div>
+            )}
 			<div className="relative flex w-full flex-row items-center justify-center gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
@@ -955,6 +984,9 @@ const Page = () => {
 					</>
 				)}
 			</div>
+			{connectWarning && (
+				<span className="max-w-md text-center text-sm text-over-background-medium">⚠️ {connectWarning}</span>
+			)}
 			{status === STATUS.CONNECTING && (
 				<span>Attempting to connect...</span>
 			)}

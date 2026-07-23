@@ -353,6 +353,7 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 			sessionFolder?: string
 			includeAnalysis?: boolean
 			skipAnnotationTable?: boolean
+			observations?: string
 		}) => {
 			if (annotatedPdfDownloading) return
 			setAnnotatedPdfDownloading(true)
@@ -635,16 +636,24 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						offset += smallChart ? 37 : 57
 					}
 
-					pdf.setFont("Lexend", "regular")
-					pdf.setFontSize(6)
-					pdf.setTextColor(...TEXT_SECONDARY)
-					pdf.text("OBSERVATIONS", DOCUMENT_MARGIN, DOCUMENT_MARGIN + 140, { align: "left", baseline: "top" })
+					const footerTop = DOCUMENT_HEIGHT - DOCUMENT_MARGIN - 8
+					const observations = (opts.observations ?? "").trim()
+					const observationsHeadingY = Math.min(DOCUMENT_MARGIN + offset + 4, footerTop - 8)
 
-					const observations =
-						"Lorem ipsum dolor sit amet consectetur adipisicing elit. Illum reprehenderit fuga, a, culpa consequatur dolorem molestias magni vero maxime quia suscipit ipsam debitis. Enim alias neque blanditiis soluta nisi odio doloribus ut sit, reiciendis esse, reprehenderit eius hic, repudiandae adipisci natus expedita fuga ad asperiores. Aliquid vero labore quaerat! Consectetur quaerat veritatis, placeat deserunt ullam neque sequi fuga quasi nulla tempora iusto aut? Perferendis id repellat in deleniti molestias. Molestiae alias quo soluta libero qui iste, sed eum magni non voluptas beatae atque dicta accusamus totam. Id ullam reprehenderit, fugit laborum odio dignissimos vel obcaecati minus, qui eos eum provident!"
-					const d_obs = pdf.splitTextToSize(observations, DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2)
-					pdf.setTextColor(...TEXT_PRIMARY)
-					pdf.text(d_obs, DOCUMENT_MARGIN, DOCUMENT_MARGIN + 140 + 3.5, { align: "left", baseline: "top" })
+					if (observations) {
+						pdf.setFont("Lexend", "regular")
+						pdf.setFontSize(6)
+						pdf.setTextColor(...TEXT_SECONDARY)
+						pdf.text("OBSERVATIONS", DOCUMENT_MARGIN, observationsHeadingY, { align: "left", baseline: "top" })
+
+						const observationsBodyY = observationsHeadingY + 3.5
+						const lineHeight = 2.6
+						const maxLines = Math.max(0, Math.floor((footerTop - observationsBodyY) / lineHeight))
+						const wrapped = pdf.splitTextToSize(observations, DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2)
+						const shown = wrapped.length > maxLines ? [...wrapped.slice(0, Math.max(0, maxLines - 1)), "..."] : wrapped
+						pdf.setTextColor(...TEXT_PRIMARY)
+						pdf.text(shown, DOCUMENT_MARGIN, observationsBodyY, { align: "left", baseline: "top" })
+					}
 
 					// Notices
 					pdf.setFont("Lexend", "light")

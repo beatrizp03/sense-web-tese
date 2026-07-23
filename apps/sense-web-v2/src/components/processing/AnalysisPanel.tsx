@@ -2,13 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
-import { AnalysisProgressPanel } from "../analysis/AnalysisProgressPanel"
+import { AnalysisProgressPanel, AnalysisOutputFile } from "../analysis/AnalysisProgressPanel"
 import { SIGNAL_TYPE_OPTIONS, ACC_AXIS_OPTIONS, toRecord, toAxisRecord } from "./analysisShared"
 import HelpHint from "./HelpHint"
 
 type AnalysisTab = "import" | "results"
 
 type AnalysisRange = { startSec: number; endSec: number }
+
+type AnalysisOutputs = {
+	resultPath?: string
+	outputFiles?: AnalysisOutputFile[]
+}
 
 const OUTLIER_REMOVAL_LIBRARY_SUPPORT = [
 	{
@@ -40,6 +45,13 @@ function formatLibraryName(value: unknown): string {
 	if (typeof value !== "string" || !value.trim()) return "--"
 	if (value === "biosppy") return "BioSPPy"
 	if (value === "neurokit2") return "NeuroKit2"
+	return value
+}
+
+function librarySelectionName(value: string): string {
+	if (value === "auto") return "Auto (both libraries)"
+	if (value === "neurokit") return "NeuroKit2"
+	if (value === "biosppy") return "BioSPPy"
 	return value
 }
 
@@ -107,7 +119,9 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [hrvWindowSec, setHrvWindowSec] = useState<number>(300)
 	const [hrvWindowStepSec, setHrvWindowStepSec] = useState<number>(300)
 	const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null)
+	const [analysisOutputs, setAnalysisOutputs] = useState<AnalysisOutputs | null>(null)
 	const [showReAnalysisDialog, setShowReAnalysisDialog] = useState(false)
+	const [showLibraryConflictDialog, setShowLibraryConflictDialog] = useState(false)
 	const [selectedDetailEntry, setSelectedDetailEntry] = useState<any>(null)
 	const [showDetailModal, setShowDetailModal] = useState(false)
 	const [zoomedTable, setZoomedTable] = useState<"summary" | "outlier" | null>(null)
@@ -115,6 +129,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [loadedFolder, setLoadedFolder] = useState<string>(FULL_SESSION_FOLDER)
 	const analysisInProgressRef = useRef(false)
 	const pendingRangeRef = useRef<AnalysisRange | null>(null)
+	const pendingKindLibrariesRef = useRef<Record<string, "neurokit" | "biosppy"> | null>(null)
 
 	useEffect(() => {
 		onBusyChange?.(loading)
@@ -182,6 +197,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		return channels.filter(channel => excludedChannels[channel])
 	}, [channels, excludedChannels])
 
+	const analysedChannelCount = useMemo(() => {
+		return Object.keys(appliedSignalKinds).filter(channel => !excludedChannels[channel]).length
+	}, [appliedSignalKinds, excludedChannels])
+
 	const assignedKinds = useMemo(() => {
 		const kinds: string[] = []
 		for (const channel of channels) {
@@ -209,12 +228,18 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		}, {})
 	}, [assignedKinds, signalKindLibraries])
 
+	const libraryConflicts = useMemo(() => {
+		return Object.entries(appliedSignalKindLibraries)
+			.filter(([, library]) => library !== edaMethodSelection)
+			.map(([kind, library]) => ({ kind, library }))
+	}, [edaMethodSelection, appliedSignalKindLibraries])
+
 	const analysisSource = analysisResult ?? manifest?.analysis ?? null
 	const analysisPolicy = analysisSource?.analysisPolicy ?? analysisSource?.analysisConfig?.libraryPolicy ?? analysisSource?.worker?.libraryPolicy ?? null
 
 	const summaryRows = useMemo(() => {
 		return analysisSource?.segments?.flatMap?.((seg: any) => {
-			return (seg?.channels || []).map((ch: any) => ({
+			return (seg?.channels || []).filter((ch: any) => !ch?.excluded).map((ch: any) => ({
 				segment: seg.segment,
 				channel: ch.channel,
 				label: ch.label,
@@ -383,8 +408,10 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		setError("")
 		setLoading(true)
 		setShowReAnalysisDialog(false)
+		setShowLibraryConflictDialog(false)
 		setShowProgressPanel(false)
 		setAnalysisStartTime(null)
+		setAnalysisOutputs(null)
 
 		await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -401,7 +428,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				outlierRemoval: outlierRemovalEnabled,
 				edaMethod: edaMethodSelection === "auto" ? undefined : edaMethodSelection,
 				excludedChannels: appliedExcludedChannels,
-				signalKindLibraries: appliedSignalKindLibraries,
+				signalKindLibraries: pendingKindLibrariesRef.current ?? appliedSignalKindLibraries,
 				outputSubdir: subdir,
 				emgWindowMs,
 				emgWindowStepMs,
@@ -419,6 +446,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
 			const refreshed = await window.electronAPI?.readPostHocAnalysisResult?.(sessionFolder, subdir)
 			setAnalysisResult(refreshed || result || null)
+			setAnalysisOutputs({ resultPath: result?.resultPath, outputFiles: result?.outputFiles })
 			setLoadedFolder(subdir)
 			setStatus(`${range ? "Window" : "Full session"} analysis completed and stored as /${subdir}.`)
 			setActiveTab("results")
@@ -443,8 +471,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		}
 	}, [appliedSignalAxes, appliedSignalKinds, sessionFolder, outlierRemovalEnabled, edaMethodSelection, appliedExcludedChannels, appliedSignalKindLibraries, selectedSegment, emgWindowMs, emgWindowStepMs, hrvWindowSec, hrvWindowStepSec])
 
-	const runAnalysis = useCallback(async (range?: AnalysisRange | null) => {
-		pendingRangeRef.current = range ?? null
+	const confirmExistingThenRun = useCallback(async (range: AnalysisRange | null) => {
 		const subdir = range ? windowFolderName(range, selectedSegment) : FULL_SESSION_FOLDER
 		let existing: any = null
 		try {
@@ -455,9 +482,25 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		if (existing) {
 			setShowReAnalysisDialog(true)
 		} else {
-			proceedWithAnalysis(range ?? null)
+			proceedWithAnalysis(range)
 		}
 	}, [proceedWithAnalysis, sessionFolder, selectedSegment])
+
+	const runAnalysis = useCallback(async (range?: AnalysisRange | null) => {
+		pendingRangeRef.current = range ?? null
+		if (libraryConflicts.length > 0) {
+			setShowLibraryConflictDialog(true)
+			return
+		}
+		pendingKindLibrariesRef.current = appliedSignalKindLibraries
+		await confirmExistingThenRun(range ?? null)
+	}, [confirmExistingThenRun, libraryConflicts, appliedSignalKindLibraries])
+
+	const resolveLibraryConflict = useCallback((choice: "global" | "perKind") => {
+		pendingKindLibrariesRef.current = choice === "global" ? {} : appliedSignalKindLibraries
+		setShowLibraryConflictDialog(false)
+		void confirmExistingThenRun(pendingRangeRef.current)
+	}, [appliedSignalKindLibraries, confirmExistingThenRun])
 
 	const selectAnalysisFolder = useCallback(async () => {
 		try {
@@ -653,18 +696,41 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 						<span className="text-xs">Enable Outlier Removal</span>
 					</label>
 
-					<label className="flex items-center gap-2 text-sm">
-						<span className="text-xs">Library used:</span>
-						<select
-							value={edaMethodSelection}
-							onChange={e => setEdaMethodSelection(e.target.value as any)}
-							className="rounded-full border border-background-accent bg-background px-3 py-1 text-xs"
-						>
-							<option value="auto" className="text-xs">Auto</option>
-							<option value="neurokit" className="text-xs">NeuroKit2</option>
-							<option value="biosppy" className="text-xs">BioSPPy</option>
-						</select>
-					</label>
+					<div className="space-y-1">
+						<label className="flex items-center gap-2 text-sm">
+							<span className="text-xs">Library used:</span>
+							<select
+								value={edaMethodSelection}
+								onChange={e => setEdaMethodSelection(e.target.value as any)}
+								className="rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+							>
+								<option value="auto" className="text-xs">Auto</option>
+								<option value="neurokit" className="text-xs">NeuroKit2</option>
+								<option value="biosppy" className="text-xs">BioSPPy</option>
+							</select>
+							<HelpHint label="Library selection" width="w-[26rem]">
+								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Help</p>
+								<h3 className="mt-1 text-xs font-semibold">Library selection</h3>
+								<div className="mt-3 space-y-2 text-xs text-over-background-medium">
+									<p className="text-xs">
+										<span className="font-semibold text-xs">Auto</span> runs every library that supports each signal, so ECG,
+										EDA, PPG, EMG, RSP and EEG are analysed by both BioSPPy and NeuroKit2. The results are reported
+										side by side, not combined into one number: each feature keeps the name of the library that produced
+										it, in the <span className="font-mono text-xs">library</span> column of features.csv and in separate blocks
+										of analysis.json. That lets you compare the two.
+									</p>
+									<p className="text-xs">
+										Picking a specific library skips the other one entirely. Note that some signals are only supported by
+										one library, PCG and ACC by BioSPPy, EOG by NeuroKit2, so forcing the other library leaves those
+										channels with no results.
+									</p>
+								</div>
+							</HelpHint>
+						</label>
+						<p className="text-xs text-over-background-low">
+							Auto runs both libraries where supported and reports their results side by side.
+						</p>
+					</div>
 
 					{assignedKinds.includes("emg") ? (
 						<div className="space-y-1">
@@ -737,7 +803,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 					) : null}
 
 					<div className="space-y-2">
-						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to exclude it from library analysis.</p>
+						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to leave it out of the analysis entirely — only its raw series is exported, and it appears in no results or metrics.</p>
 						{channels.length > 0 ? (
 							channels.map(channel => {
 								const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""
@@ -819,7 +885,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
 					{allAssignedKinds.length > 0 ? (
 						<div className="space-y-2">
-							<p className="text-xs text-over-background-medium">Override the analysis library per signal type. &quot;Default&quot; follows the global &quot;Library used&quot;.</p>
+							<p className="text-xs text-over-background-medium">Override the analysis library per signal type. &quot;Auto&quot; follows the global &quot;Library used&quot;.</p>
 							{allAssignedKinds.map(kind => {
 								const kindActive = assignedKinds.includes(kind)
 								return (
@@ -840,7 +906,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 											}}
 											className="min-w-[6rem] flex-1 rounded-full border border-background-accent bg-background px-3 py-2 text-xs outline-none disabled:cursor-not-allowed"
 										>
-											<option value="">Default</option>
+											<option value="">Auto</option>
 											<option value="neurokit">NeuroKit2</option>
 											<option value="biosppy">BioSPPy</option>
 										</select>
@@ -882,7 +948,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							</div>
 							<div className="flex items-center justify-between gap-2">
 								<span className="text-xs">Mapped channels</span>
-								<span className="text-xs text-over-background-highest">{Object.keys(appliedSignalKinds).length}</span>
+								<span className="text-xs text-over-background-highest">{analysedChannelCount}</span>
 							</div>
 						</div>
 						{!currentAnalysis && (
@@ -1043,7 +1109,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 					setShowProgressPanel(false)
 					window.electronAPI?.cancelPostHocAnalysis?.()
 				}}
-				resultPath={analysisResult?.resultPath}
+				resultPath={analysisOutputs?.resultPath}
+				outputFiles={analysisOutputs?.outputFiles}
 			/>
 
 			{showDetailModal && selectedDetailEntry && (
@@ -1062,7 +1129,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							<div>
 								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-highest-dark dark:text-over-background-highest-light">Details</p>
 								<h2 className="mt-1 text-base font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">
-									{selectedDetailEntry.label || selectedDetailEntry.channel} — Segment {selectedDetailEntry.segment}
+									{selectedDetailEntry.label || selectedDetailEntry.channel} - Segment {selectedDetailEntry.segment}
 								</h2>
 							</div>
 							<button
@@ -1204,6 +1271,50 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 								Re-analyse
 							</button>
 						</div>
+					</div>
+				</div>
+			)}
+
+			{showLibraryConflictDialog && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+					<div className="w-full max-w-md rounded-lg bg-background-light p-6 shadow-lg dark:bg-background-dark">
+						<div className="flex items-center gap-3 mb-4">
+							<span className="text-2xl">⚠️</span>
+							<h2 className="text-xl font-semibold text-over-background-highest-light dark:text-over-background-highest-dark">Which library should be used?</h2>
+						</div>
+						<p className="text-sm text-over-background-medium-light dark:text-over-background-medium-dark mb-3">
+							The global library is <span className="font-medium">{librarySelectionName(edaMethodSelection)}</span>,
+							but {libraryConflicts.length === 1 ? "one signal type asks" : "some signal types ask"} for a different one:
+						</p>
+						<ul className="mb-6 space-y-1">
+							{libraryConflicts.map(conflict => (
+								<li key={conflict.kind} className="text-sm text-over-background-medium-light dark:text-over-background-medium-dark">
+									<span className="font-medium">{conflict.kind.toUpperCase()}</span>
+									{" → "}
+									{librarySelectionName(conflict.library)}
+								</li>
+							))}
+						</ul>
+						<div className="flex flex-col gap-3 sm:flex-row">
+							<button
+								onClick={() => resolveLibraryConflict("global")}
+								className="flex-1 rounded-lg border border-over-background-highest-light dark:border-over-background-highest-dark bg-background-accent-light dark:bg-background-accent-dark px-4 py-2 text-sm font-medium text-over-background-highest-light dark:text-over-background-highest-dark hover:opacity-80"
+							>
+								Use {librarySelectionName(edaMethodSelection)} for everything
+							</button>
+							<button
+								onClick={() => resolveLibraryConflict("perKind")}
+								className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
+							>
+								Keep the per-signal choices
+							</button>
+						</div>
+						<button
+							onClick={() => setShowLibraryConflictDialog(false)}
+							className="mt-3 w-full rounded-lg px-4 py-2 text-xs font-medium text-over-background-medium-light dark:text-over-background-medium-dark hover:underline"
+						>
+							Cancel
+						</button>
 					</div>
 				</div>
 			)}

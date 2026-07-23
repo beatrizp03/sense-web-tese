@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, shell } = require("electron");
 const fs = require('fs');
 const path = require('path');
 const { ipcMain, dialog } = require("electron");
@@ -301,6 +301,38 @@ function openExternalElectronWindow(url) {
   });
 }
 
+const ANALYSIS_OUTPUT_DESCRIPTIONS = {
+  'analysis-config.json': 'The settings this analysis was run with.',
+  'analysis-log.csv': 'A log of each step and how long it took.',
+  'analysis.json': 'All the results in full detail. This is what the app reads.',
+  'features.csv': 'Every measurement, one per row. Open this in Excel.',
+  'summary.csv': 'A quick overview: one row per segment and channel.',
+  'README.md': 'A written explanation of everything in this folder.'
+};
+
+const SEGMENT_DIR_DESCRIPTION =
+  'The recorded signal for this segment, saved as spreadsheets.';
+
+function listAnalysisOutputFiles(outputDir) {
+  try {
+    return fs.readdirSync(outputDir, { withFileTypes: true })
+      .map(entry => {
+        const isDir = entry.isDirectory();
+        const description = isDir
+          ? (/^segment-\d+$/.test(entry.name) ? SEGMENT_DIR_DESCRIPTION : '')
+          : (ANALYSIS_OUTPUT_DESCRIPTIONS[entry.name] || '');
+        return { name: entry.name, kind: isDir ? 'directory' : 'file', description };
+      })
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { numeric: true });
+      });
+  } catch (error) {
+    console.error('[main] Failed to list analysis output files:', error);
+    return [];
+  }
+}
+
 function persistAnalysisResult(sessionFolderPath, result) {
   const outputDir = getAnalysisOutputDir(sessionFolderPath);
   fs.mkdirSync(outputDir, { recursive: true });
@@ -483,7 +515,8 @@ function runPythonAnalysisJob(sessionFolderPath, options = {}) {
         resolve({
           ...parsed,
           outputDir,
-          resultPath
+          resultPath,
+          outputFiles: listAnalysisOutputFiles(path.dirname(resultPath))
         });
       } catch (error) {
         reject(new Error(`Failed to read Python analysis result file: ${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`));
@@ -1446,6 +1479,30 @@ ipcMain.handle('read-posthoc-analysis-result', async (_event, sessionFolderPath,
   const folder = sessionFolderPath || sessionFolder || lastSessionFolder;
   if (!folder) return null;
   return readPersistedAnalysisResult(folder, subdir);
+});
+
+ipcMain.handle('open-external-path', async (_event, targetPath) => {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) {
+    return { opened: false, error: 'No path provided.' };
+  }
+
+  const resolved = path.resolve(targetPath);
+  if (!fs.existsSync(resolved)) {
+    return { opened: false, error: `Path no longer exists: ${resolved}` };
+  }
+
+  try {
+    if (fs.statSync(resolved).isDirectory()) {
+      const error = await shell.openPath(resolved);
+      if (error) return { opened: false, error };
+    } else {
+      shell.showItemInFolder(resolved);
+    }
+    return { opened: true };
+  } catch (error) {
+    console.error('[main] Failed to open path:', error);
+    return { opened: false, error: error.message };
+  }
 });
 
 ipcMain.handle('select-analysis-result-folder', async () => {

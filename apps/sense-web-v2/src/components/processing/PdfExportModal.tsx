@@ -9,6 +9,7 @@ export interface PdfExportRange {
 	startSec: number
 	endSec: number
 	includeAnalysis: boolean
+	observations: string
 }
 
 interface PdfExportModalProps {
@@ -48,6 +49,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	const [startDraft, setStartDraft] = useState("0")
 	const [endDraft, setEndDraft] = useState("30")
 	const [includeAnalysis, setIncludeAnalysis] = useState(true)
+	const [observations, setObservations] = useState("")
 
 	const maxSeconds = segmentSeconds[segment - 1] || 0
 
@@ -153,6 +155,17 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 				</label>
 				)}
 
+				<label className="mt-3 flex flex-col gap-1 text-xs text-over-background-medium">
+					Observations (optional)
+					<textarea
+						value={observations}
+						onChange={e => setObservations(e.target.value)}
+						rows={3}
+						placeholder="Notes to print on the report, e.g. recording conditions or anything unusual."
+						className="resize-none rounded border border-background-accent bg-background-accent px-2 py-1.5 text-xs text-over-background-highest outline-none focus:border-primary"
+					/>
+				</label>
+
 				{error && <p className="mt-2 text-xs text-red-500">{error}</p>}
 
 				<div className="mt-6 flex justify-end gap-3">
@@ -168,7 +181,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						size="base"
 						className={`!text-sm${generating ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 						disabled={!!error || generating}
-						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd, includeAnalysis })}
+						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd, includeAnalysis, observations })}
 					>
 						<span className="inline-flex items-center justify-center gap-2">
 							{generating && <LoadingDots />}

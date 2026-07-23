@@ -57,7 +57,7 @@ declare global {
       onAnalysisProgress?: (callback: (data: { percentage: number; signalKind: string; startTime: number }) => void) => () => void;
       readPostHocAnalysisResult?: (sessionFolderPath: string, subdir?: string) => Promise<any>;
       selectAnalysisResultFolder?: () => Promise<{ folderPath: string; folderName: string; result: any; error?: string } | null>;
-      openExternalPath?: (path: string) => Promise<void>;
+      openExternalPath?: (path: string) => Promise<{ opened: boolean; error?: string }>;
       acquisitionError?: (sessionPath: string) => Promise<void>;
       onShowCloseWarning?: (callback: () => void) => () => void;
       confirmClose?: (shouldClose: boolean) => void;

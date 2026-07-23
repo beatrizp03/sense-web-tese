@@ -135,7 +135,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 }) => {
 	const [editing, setEditing] = useState(false)
 	const [editorAutoAdd, setEditorAutoAdd] = useState(false)
-	const [helpOpen, setHelpOpen] = useState(true)
+	const [helpOpen, setHelpOpen] = useState(false)
 	const [capTooltip, setCapTooltip] = useState<{ x: number; y: number } | null>(null)
 
 	const openLabelsEditor = (autoAdd: boolean) => {
@@ -503,18 +503,10 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					})}
 					<button
 						type="button"
-						onClick={() => {
-							if (atLabelCap) return
-							openLabelsEditor(true)
-						}}
-						aria-disabled={atLabelCap}
+						onClick={() => openLabelsEditor(true)}
 						onMouseMove={atLabelCap ? event => setCapTooltip({ x: event.clientX, y: event.clientY }) : undefined}
 						onMouseLeave={atLabelCap ? () => setCapTooltip(null) : undefined}
-						className={`flex items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 text-left text-xs transition-colors ${
-							atLabelCap
-								? "cursor-not-allowed border-background-accent text-over-background-low opacity-60"
-								: "border-background-accent text-over-background-medium hover:border-primary hover:text-primary"
-						}`}
+						className="flex items-center gap-2 rounded-lg border border-dashed border-background-accent px-2 py-1.5 text-left text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
 					>
 						<span className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs leading-none">+</span>
 						New label
@@ -560,10 +552,10 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 			{capTooltip && typeof document !== "undefined" &&
 				createPortal(
 					<div
-						className="pointer-events-none fixed z-[100] rounded-md border border-background-accent bg-background px-2 py-1 text-xs text-over-background-highest shadow-lg"
-						style={{ left: capTooltip.x + 12, top: capTooltip.y + 12 }}
+						className="pointer-events-none fixed z-[100] w-max max-w-[18rem] rounded-md border border-background-accent bg-background px-2 py-1 text-xs text-over-background-highest shadow-lg"
+						style={{ left: capTooltip.x - 12, top: capTooltip.y + 12, transform: "translateX(-100%)" }}
 					>
-						Label limit reached ({MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS}) - remove or edit one to add another
+						{MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS} window labels taken - this one will be a segment label
 					</div>,
 					document.body
 				)}

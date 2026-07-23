@@ -9,12 +9,19 @@ interface ProgressState {
   errorMessage?: string
 }
 
+export interface AnalysisOutputFile {
+  name: string
+  kind?: "file" | "directory"
+  description?: string
+}
+
 interface AnalysisProgressPanelProps {
   isVisible: boolean
   onCancel?: () => void
   onRetry?: () => void
   totalTime?: number
   resultPath?: string
+  outputFiles?: AnalysisOutputFile[]
   startTime?: number | null
 }
 
@@ -24,6 +31,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   onRetry,
   totalTime,
   resultPath,
+  outputFiles,
   startTime,
 }) => {
   const [progress, setProgress] = useState<ProgressState>({
@@ -34,6 +42,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
     isRunning: true,
   })
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isVisible) return
@@ -148,24 +157,66 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   }
 
   if (progress.percentage === 100) {
+    const handleOpenResults = async () => {
+      if (!resultPath) return
+      setOpenError(null)
+      const open = window.electronAPI?.openExternalPath
+      if (!open) {
+        setOpenError("Opening the results folder is not available in this build.")
+        return
+      }
+      try {
+        const outcome = await open(resultPath)
+        if (outcome && outcome.opened === false) {
+          setOpenError(outcome.error || "Could not open the results folder.")
+        }
+      } catch (error) {
+        setOpenError(error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    const describedFiles = (outputFiles || []).filter((file) => file.description)
+
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-        <div className="w-full max-w-md rounded-lg bg-background-accent-dark p-6 shadow-lg dark:bg-background-accent-light">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+        <div className="flex max-h-full w-full max-w-lg flex-col rounded-lg bg-background-accent-dark p-6 shadow-lg dark:bg-background-accent-light">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-2xl text-over-background-highest-dark dark:text-over-background-highest-light">✓</span>
             <h2 className="text-xl font-semibold text-over-background-highest-dark dark:text-over-background-highest-light">Analysis Complete</h2>
           </div>
-          <p className="text-sm text-over-background-medium-dark dark:text-over-background-medium-light mb-6">
+          <p className="text-sm text-over-background-medium-dark dark:text-over-background-medium-light mb-4">
             Total time: <span className="font-medium">{formatTime(progress.elapsedSeconds)}</span>
           </p>
-          <div className="flex gap-3">
+
+          {describedFiles.length > 0 && (
+            <div className="mb-4 min-h-0 flex-1 overflow-y-auto [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-background-accent-dark [&::-webkit-scrollbar-track]:bg-background-accent-dark [&::-webkit-scrollbar]:w-2 dark:[&::-webkit-scrollbar-thumb]:bg-background-accent-light dark:[&::-webkit-scrollbar-track]:bg-background-accent-light">
+              <p className="mb-2 text-xs uppercase tracking-wider text-over-background-highest-dark dark:text-over-background-highest-light">
+                Generated files
+              </p>
+              <ul className="space-y-2">
+                {describedFiles.map((file) => (
+                  <li key={file.name} className="rounded-lg bg-over-background-low-dark px-3 py-2 dark:bg-over-background-low-light">
+                    <p className="font-mono text-sm font-medium text-over-background-highest-dark dark:text-over-background-highest-light">
+                      {file.name}
+                      {file.kind === "directory" ? "/" : ""}
+                    </p>
+                    <p className="mt-0.5 text-xs text-over-background-medium-dark dark:text-over-background-medium-light">
+                      {file.description}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {openError && (
+            <p className="mb-3 text-xs text-over-background-medium-dark dark:text-over-background-medium-light">{openError}</p>
+          )}
+
+          <div className="flex shrink-0 gap-3">
             {resultPath && (
               <button
-                onClick={() => {
-                  if (window.electronAPI?.openExternalPath) {
-                    window.electronAPI.openExternalPath(resultPath)
-                  }
-                }}
+                onClick={handleOpenResults}
                 className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
               >
                 Open Results
@@ -173,7 +224,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
             )}
             <button
               onClick={onCancel}
-              className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
+              className="flex-1 rounded-lg border border-over-background-highest-dark bg-transparent px-4 py-2 text-sm font-medium text-over-background-highest-dark hover:bg-black/5 dark:border-over-background-highest-light dark:text-over-background-highest-light dark:hover:bg-white/5"
             >
               Close
             </button>

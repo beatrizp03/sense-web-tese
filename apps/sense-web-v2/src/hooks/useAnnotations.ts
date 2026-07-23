@@ -413,7 +413,9 @@ export function useAnnotations({ sessionFolder, enabled, labels, sampleRate, seg
 
 			if (mode === "interval") {
 				if (!draft) {
-					setDraft({ startSec: dataX })
+					// Snapped on the way in, like the closing click, so both ends of
+					// the interval land on the same grid.
+					setDraft({ startSec: snap(dataX) })
 					return
 				}
 				const labelId = resolveLabelId()
