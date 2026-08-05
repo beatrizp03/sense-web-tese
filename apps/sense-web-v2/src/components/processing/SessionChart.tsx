@@ -423,7 +423,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					fontFamily="Lexend"
 					lineColor={lineColor}
 					outlineColor={outlineColor}
-					xTicks={6}
+					xTicks={5}
 					yTicks={5}
 					xTickFormat={xTickFormat}
 					annotations={annotations}
@@ -433,6 +433,10 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					onAnnotationDragBound={onAnnotationDragBound}
 					onAnnotationMove={onAnnotationMove}
 					placingCursor={placingCursor}
+					topMargin={34}
+					rightMargin={16}
+					bottomMargin={20}
+					leftMargin={12}
 				/>
 			)}
 

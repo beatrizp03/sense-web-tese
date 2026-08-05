@@ -214,14 +214,15 @@ const Page = () => {
 
 	const [status, setStatus] = useState(STATUS.DISCONNECTED);
 	const [connectWarning, setConnectWarning] = useState<string | null>(null);
-
+	
 	useBusyGuard(
 		status === STATUS.ACQUIRING || status === STATUS.PAUSED ? "Recording" : null
 	);
-
 	const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null);
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
 	const acquisitionStartedRef = useRef(false);
+	const [connectedDeviceLabel, setConnectedDeviceLabel] = useState<string>("Unknown");
+
 
 	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
 	const channelBucketsRef = useRef<Map<string, MinMaxBucketState>>(new Map());
@@ -440,7 +441,6 @@ const Page = () => {
 
 	const persistSessionMetadata = useCallback(() => {
 		const device = deviceRef.current;
-		print("persistSessionMetadata: device=%o", device);
 		if (!device) return;
 		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 		const configuredSignalKinds =
@@ -488,11 +488,14 @@ const Page = () => {
 		setAcquisitionStarted(false)
 		cleanupPipeline(); // Reset all state and BufferManager before connect
 
-		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>;
+		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 
 		try {
+			let selectedPort
+			let deviceLabel
 			if (window.electronAPI?.listSerialPorts) {
 				let ports: any[] = []
+
 				try {
 					ports = (await window.electronAPI.listSerialPorts()) ?? []
 				} catch {
@@ -511,6 +514,18 @@ const Page = () => {
 						"No Bluetooth device detected. If your board connects over Bluetooth, turn it on and pair it — otherwise pick your wired port below."
 					)
 				}
+
+				const selectedPortPath = String((settings as any).port ?? "")
+				selectedPort =
+					ports.find(port => String(port?.path ?? "") === selectedPortPath) ??
+					ports.find(port => /bluetooth/i.test(String(port?.friendlyName ?? ""))) ??
+					null
+
+				deviceLabel = String(
+					selectedPort?.friendlyName ??
+					selectedPort?.path ??
+					"Unknown"
+				)
 			}
 
 			switch (settings.deviceType ?? "sense") {
@@ -565,6 +580,7 @@ const Page = () => {
 			window.electronAPI?.logPerfEvent?.('device_connect', Date.now() - connectStart);
 
 			segmentRef.current = 1
+			setConnectedDeviceLabel(deviceLabel ?? "Unknown")
 			setFirmwareVersion(deviceRef.current.getFirmwareVersion()?.version ?? null)
 
 			// Only set buffer size if valid
@@ -758,7 +774,7 @@ const Page = () => {
 			console.log("\n[start] Connection failed, updating status\n");
 			setStatus(STATUS.CONNECTION_LOST);
 		}
-	}, [initializePipeline, persistSessionMetadata, handleUnexpectedAcquisitionStop])
+	}, [initializePipeline, persistSessionMetadata, handleUnexpectedAcquisitionStop, connectedDeviceLabel])
 
 	const pause = useCallback(async () => {
 		console.log("\n[pause] Pausing acquisition\n");
@@ -926,8 +942,12 @@ const Page = () => {
 		>
 			{status === STATUS.CONNECTED && (
                 <div className="rounded-lg border border-background-accent bg-background-accent px-3 py-2 text-sm text-over-background-highest">
-					Connected device: <span className="font-medium">{deviceRef.current ? String(deviceRef.current) : "Unknown"}</span>
-                    {firmwareVersion !== null && <span className="ml-3 text-over-background-medium">Firmware: {firmwareVersion}</span>}
+                    <span className="font-medium text-sm">{connectedDeviceLabel}</span>
+                    {firmwareVersion !== null && (
+                        <span className="ml-3 text-over-background-medium text-sm">
+                            Firmware: {firmwareVersion}
+                        </span>
+                    )}
                 </div>
             )}
 			<div className="relative flex w-full flex-row items-center justify-center gap-4">				{(status === STATUS.DISCONNECTED ||

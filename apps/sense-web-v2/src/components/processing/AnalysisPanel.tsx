@@ -803,7 +803,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 					) : null}
 
 					<div className="space-y-2">
-						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to leave it out of the analysis entirely — only its raw series is exported, and it appears in no results or metrics.</p>
+						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to leave it out of the analysis entirely, only its raw series is exported, and it appears in no results or metrics.</p>
 						{channels.length > 0 ? (
 							channels.map(channel => {
 								const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""

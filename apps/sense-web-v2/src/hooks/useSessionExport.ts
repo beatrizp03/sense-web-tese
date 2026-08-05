@@ -435,7 +435,17 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 				const DOCUMENT_MARGIN = 25.4
 				const TEXT_PRIMARY: [number, number, number] = [0, 0, 0]
 				const TEXT_SECONDARY: [number, number, number] = [138, 138, 138]
+				const FOOTER_TEXT = "The PDF continues below. Scroll to see the full content."
 
+				const addPageFooter = () => {
+                    pdf.setFont("Lexend", "light")
+                    pdf.setFontSize(6)
+                    pdf.setTextColor(...TEXT_SECONDARY)
+                    pdf.text(FOOTER_TEXT, DOCUMENT_WIDTH / 2, DOCUMENT_HEIGHT - 4.5, {
+                        align: "center",
+                        baseline: "bottom"
+                    })
+                }
 				// Fonts (same as the CSV/annotated PDF export).
 				const loadFont = async (url: string) =>
 					Buffer.from(
@@ -674,6 +684,7 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						DOCUMENT_HEIGHT - DOCUMENT_MARGIN - 2.5,
 						{ align: "right", baseline: "bottom" }
 					)
+					addPageFooter()
 				}
 
 				// ---- Annotation table page ----
@@ -753,6 +764,7 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 							pdf.line(DOCUMENT_MARGIN, ty - 1.5, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ty - 1.5)
 						}
 					}
+					addPageFooter()
 				}
 
 				// ---- Analysis summary ----
@@ -870,6 +882,7 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						pdf.setDrawColor(238, 238, 238)
 						pdf.line(DOCUMENT_MARGIN, ay - 2, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay - 2)
 					}
+					addPageFooter()
 				}
 
 				const timestampISO = new Date(timestamp).toISOString()

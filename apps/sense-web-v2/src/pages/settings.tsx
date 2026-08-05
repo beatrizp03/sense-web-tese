@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import Image from "next/image"
 
 import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
-import { faToolbox, faWaveSquare } from "@fortawesome/free-solid-svg-icons"
+import { faCheck, faToolbox, faWaveSquare } from "@fortawesome/free-solid-svg-icons"
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
 import {
 	ButtonCheckboxGroupField,
@@ -116,6 +116,9 @@ const backgroundAccentLightColor =
 const Page = () => {
 	const isDark = useDarkTheme()
 	const { labels: annotationLabels } = useAnnotationLabels()
+	const [showSaved, setShowSaved] = useState(false)
+	const savedHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const firstSubmitRef = useRef(true)
 	const [loaded, setLoaded] = useState(false)
 	const [showLabelEditor, setShowLabelEditor] = useState(false)
 	const [showHistoryModal, setShowHistoryModal] = useState(false)
@@ -152,6 +155,13 @@ const Page = () => {
 			setLoaded(true)
 		})()
 	}, [loaded])
+
+	useEffect(
+		() => () => {
+			if (savedHideTimer.current) clearTimeout(savedHideTimer.current)
+		},
+		[]
+	)
 
 	const formatSavedAt = (savedAt: number): string => {
 		const date = new Date(savedAt)
@@ -206,6 +216,7 @@ const Page = () => {
 									["x", "y", "z"].includes(axis)
 							)
 						)
+
 						const eegChannels = getOrderedEegChannels(
 							channelSignalKinds,
 							selectedChannels
@@ -217,6 +228,20 @@ const Page = () => {
 							channelSignalKinds,
 							channelSignalAxes
 						} as SessionSettingsSnapshot["settings"])
+
+						// FormikAutoSubmit fires once on mount; skip that so the
+						// "Saved" indicator only shows after a real change.
+						if (firstSubmitRef.current) {
+							firstSubmitRef.current = false
+							return
+						}
+
+						setShowSaved(true)
+						if (savedHideTimer.current) clearTimeout(savedHideTimer.current)
+						savedHideTimer.current = setTimeout(
+							() => setShowSaved(false),
+							2000
+						)
 					}}
 				>
 					{({ values, setValues }) => (
@@ -225,6 +250,23 @@ const Page = () => {
 							className="relative flex w-full flex-col items-center rounded-xl p-6"
 						>
 							<FormikAutoSubmit delay={100} />
+							<div
+								role="status"
+								aria-live="polite"
+								className={clsx(
+									"absolute left-4 top-12 z-10 flex -translate-y-1/2 items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium shadow-sm transition-opacity duration-300",
+									showSaved ? "opacity-100" : "pointer-events-none opacity-0"
+								)}
+								style={{
+									backgroundColor: isDark
+										? primaryLightColor
+										: primaryDarkColor,
+									color: isDark ? primaryDarkColor : primaryLightColor
+								}}
+							>
+								<FontAwesomeIcon icon={faCheck} className="h-3.5 w-3.5" />
+								Settings saved
+							</div>
 							<div className="absolute right-4 top-12 z-10 -translate-y-1/2">
 								<TextButton
 									size={"base"}

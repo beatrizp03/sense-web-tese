@@ -17,6 +17,7 @@ interface AnnotationLabelsEditorProps {
 	value?: AnnotationLabel[]
 	onSave?: (labels: AnnotationLabel[]) => void
 	autoAddOnOpen?: boolean
+	autoAddOnOpenAppliesTo?: AnnotationAppliesTo
 }
 
 export const MAX_CHANNEL_LABELS = 9
@@ -30,6 +31,22 @@ const SECTIONS: { value: AnnotationAppliesTo; title: string; empty: string }[] =
 	{ value: "channel", title: "Window labels", empty: "No window labels yet." },
 	{ value: "segment", title: "Segment labels", empty: "No segment labels yet." }
 ]
+
+const SECTION_PANEL_STYLES: Record<
+	AnnotationAppliesTo,
+	{ shell: string; header: string; badge: string }
+> = {
+	channel: {
+		shell: "border-background-accent bg-background-accent/40 dark:bg-background-accent-dark/40",
+		header: "text-over-background-highest",
+		badge: "border-background-accent bg-background-accent-light text-over-background-medium"
+	},
+	segment: {
+		shell: "border-background-accent bg-background-accent/40 dark:bg-background-accent-dark/40",
+		header: "text-over-background-highest",
+		badge: "border-background-accent bg-background-accent-light text-over-background-medium"
+	}
+}
 
 const fieldClasses =
 	"h-[1.875rem] min-w-0 rounded-md border border-background-accent bg-background px-2 text-xs text-over-background-highest outline-none focus:border-primary"
@@ -48,7 +65,7 @@ const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
 /**
  * Pop-up editor for annotation labels (add / rename / recolor / delete).
  */
-const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave, autoAddOnOpen }) => {
+const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, onClose, value, onSave, autoAddOnOpen, autoAddOnOpenAppliesTo }) => {
 	const [draft, setDraft] = useState<AnnotationLabel[]>([])
 	const [lastAddedId, setLastAddedId] = useState<number | null>(null)
 	const [openPickerFor, setOpenPickerFor] = useState<number | null>(null)
@@ -70,9 +87,13 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 		const channelActive = base.filter(label => label.appliesTo === "channel" && !label.retired).length
 		if (autoAddOnOpen) {
 			const id = nextLabelId(base)
+			const appliesTo =
+				autoAddOnOpenAppliesTo === "channel" && channelActive >= MAX_CHANNEL_LABELS
+					? "segment"
+					: autoAddOnOpenAppliesTo ?? (channelActive >= MAX_CHANNEL_LABELS ? "segment" : "channel")
 			setDraft([
 				...base,
-				{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: channelActive >= MAX_CHANNEL_LABELS ? "segment" : "channel", predefined: false, retired: false }
+				{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo, predefined: false, retired: false }
 			])
 			setLastAddedId(id)
 		} else {
@@ -119,11 +140,20 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 	const removeDraft = (id: number) =>
 		setDraft(current => current.map(label => (label.id === id ? { ...label, retired: true } : label)))
 
-	const addDraft = () => {
+	const addDraft = (appliesTo?: AnnotationAppliesTo) => {
 		const id = nextLabelId(draft)
 		setDraft(current => [
 			...current,
-			{ id, name: "new label", category: "custom", description: "", color: "#888888", appliesTo: activeChannelCount(current) >= MAX_CHANNEL_LABELS ? "segment" : "channel", predefined: false, retired: false }
+			{
+				id,
+				name: "new label",
+				category: "custom",
+				description: "",
+				color: "#888888",
+				appliesTo: appliesTo ?? (activeChannelCount(current) >= MAX_CHANNEL_LABELS ? "segment" : "channel"),
+				predefined: false,
+				retired: false
+			}
 		])
 		setLastAddedId(id)
 	}
@@ -139,13 +169,13 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 		onClose()
 	}
 
-		const renderRow = (label: AnnotationLabel) => {
-			const windowOptionLocked = atChannelCap && label.appliesTo !== "channel"
-			return (
+	const renderRow = (label: AnnotationLabel) => {
+		const windowOptionLocked = atChannelCap && label.appliesTo !== "channel"
+		return (
 			<div
 				key={label.id}
 				ref={label.id === lastAddedId ? newRowRef : undefined}
-				className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-2.5 dark:bg-background-accent-dark"
+				className="flex flex-col gap-2 rounded-xl border border-background-accent bg-background-accent-light p-2.5 dark:bg-background-accent-dark/40"
 			>
 				<div className="flex items-end gap-2">
 					<div className="flex flex-col gap-1">
@@ -312,19 +342,35 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 				<div ref={listRef} className="table-scroll mt-4 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
 					{SECTIONS.map(section => {
 						const rows = visible.filter(label => label.appliesTo === section.value)
+						const panel = SECTION_PANEL_STYLES[section.value]
+
 						return (
-							<section key={section.value} className="flex flex-col gap-2">
-								<div className="sticky top-0 z-10 -mx-0.5 flex items-baseline justify-between gap-2 bg-background px-0.5 py-1">
-									<h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-over-background-low">{section.title}</h3>
+							<section
+								key={section.value}
+								className={`flex flex-col gap-2 rounded-xl border p-3 ${panel.shell}`}
+							>
+								<div className="flex items-center justify-between gap-2">
+									<div className="flex items-center gap-2">
+										<h3 className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${panel.header}`}>
+											{section.title}
+										</h3>
+									</div>
+
 									<span className="text-[10px] text-over-background-low">
 										{section.value === "channel" ? `${channelCount}/${MAX_CHANNEL_LABELS} · keys 1-9` : `${rows.length}`}
 									</span>
 								</div>
-								{rows.length === 0 ? (
-									<p className="rounded-xl border border-dashed border-background-accent p-3 text-xs text-over-background-medium">{section.empty}</p>
-								) : (
-									rows.map(renderRow)
-								)}
+
+								<div className="mt-1 flex flex-col gap-2">
+									{rows.length === 0 ? (
+										<p className="rounded-xl border border-dashed border-background-accent p-3 text-xs text-over-background-medium">
+											{section.empty}
+										</p>
+									) : (
+										rows.map(renderRow)
+									)}
+
+								</div>
 							</section>
 						)
 					})}
@@ -334,7 +380,7 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 					<div className="flex items-center gap-2">
 						<button
 							type="button"
-							onClick={addDraft}
+							onClick={() => addDraft()}
 							title={atChannelCap ? "Window labels are full — the new label will be a segment label" : undefined}
 							className="rounded-md border border-background-accent px-3 py-1.5 text-xs font-medium text-over-background-highest transition-colors hover:border-primary hover:text-primary"
 						>

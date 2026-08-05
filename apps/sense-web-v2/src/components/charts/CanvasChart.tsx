@@ -294,12 +294,12 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			}
 
 			if ((annotations && annotations.length > 0) || draftIntervalStart != null) {
-				const overhang = 15 * pixelRatio
-				// The selected annotation rises higher so it stands out from the rest.
-				const selectedOverhang = overhang + 12 * pixelRatio
+				const overhang = 10 * pixelRatio
+				const selectedOverhang = overhang + 8 * pixelRatio
+				const clipTop = Math.max(selectedOverhang, scaledTopMargin)
 				context.save()
 				context.beginPath()
-				context.rect(0, -selectedOverhang, plotWidth, plotHeight + selectedOverhang)
+				context.rect(0, -clipTop, plotWidth, plotHeight + clipTop)
 				context.clip()
 
 				const isBand = (a: CanvasAnnotation) => a.t0 !== a.t1
@@ -345,16 +345,22 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				const selForHandles = ordered.find(a => a.selected)
 				if (selForHandles) {
 					const ho = selectedOverhang
-					const hw = 4 * pixelRatio
+					const tabW = 14 * pixelRatio
+					const tabH = 2 * pixelRatio
+					const radius = tabH / 2
 					const tops = isBand(selForHandles)
 						? [xScale(selForHandles.t0), xScale(selForHandles.t1)]
 						: [xScale(selForHandles.t0)]
 					context.lineWidth = 1.5 * pixelRatio
+					context.fillStyle = "#ffffff"
+					context.strokeStyle = selForHandles.color
 					for (const hx of tops) {
-						context.fillStyle = selForHandles.color
-						context.strokeStyle = "#ffffff"
 						context.beginPath()
-						context.rect(hx - hw, -ho - hw, hw * 2, hw * 2)
+						if (typeof context.roundRect === "function") {
+							context.roundRect(hx - tabW / 2, -ho, tabW, tabH, radius)
+						} else {
+							context.rect(hx - tabW / 2, -ho, tabW, tabH)
+						}
 						context.fill()
 						context.stroke()
 					}
@@ -382,7 +388,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				plotHeight,
 				leftMargin: scaledLeftMargin,
 				topMargin: scaledTopMargin,
-				overhang: (15 + 12) * pixelRatio,
+				overhang: (10 + 8) * pixelRatio,
 				annotations: annotations ?? []
 			}
 		}
@@ -424,6 +430,8 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	const pressRef = useRef<{ x: number; y: number; time: number } | null>(null)
 	const [dragCursor, setDragCursor] = useState<string | null>(null)
 	const [hover, setHover] = useState<{ x: number; y: number; label: string; description: string } | null>(null)
+	const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+	const [dragMode, setDragMode] = useState<"pan" | "move-annotation" | null>(null)
 
 	useEffect(
 		() => () => {
@@ -540,8 +548,15 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 	const handlePointerDown = useCallback(
 		(event: React.PointerEvent<HTMLCanvasElement>) => {
-			pressRef.current = { x: event.clientX, y: event.clientY, time: Date.now() }
-			if (!onAnnotationDragBound && !onAnnotationMove) return
+			if (event.button !== 0) return
+
+			if (selectedAnnotationId) {
+				event.preventDefault()
+				setDragMode("move-annotation")
+				return
+			}
+
+			setDragMode("pan")
 			const geom = geomRef.current
 			const canvas = event.currentTarget
 			const rect = canvas.getBoundingClientRect()

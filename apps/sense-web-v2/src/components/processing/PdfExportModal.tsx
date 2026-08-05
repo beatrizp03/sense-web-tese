@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
 import LoadingDots, { LOADING_BUTTON_CLASS } from "./LoadingDots"
+import { Text as ChakraText } from "@chakra-ui/react"
 
 export interface PdfExportRange {
 	segment: number
@@ -189,6 +190,12 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						</span>
 					</TextButton>
 				</div>
+
+				{showAnnotationInfo && showAnalysisToggle && (
+					<ChakraText fontSize="xs" color="gray.500" mt={2}>
+						The PDF continues below. Scroll to see the full content.
+					</ChakraText>
+				)}
 			</div>
 		</div>
 	)

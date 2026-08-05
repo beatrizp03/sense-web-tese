@@ -135,11 +135,13 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 }) => {
 	const [editing, setEditing] = useState(false)
 	const [editorAutoAdd, setEditorAutoAdd] = useState(false)
+	const [editorAutoAddAppliesTo, setEditorAutoAddAppliesTo] = useState<"channel" | "segment" | null>(null)
 	const [helpOpen, setHelpOpen] = useState(false)
 	const [capTooltip, setCapTooltip] = useState<{ x: number; y: number } | null>(null)
 
-	const openLabelsEditor = (autoAdd: boolean) => {
+	const openLabelsEditor = (autoAdd: boolean, appliesTo: "channel" | "segment" | null = null) => {
 		setEditorAutoAdd(autoAdd)
+		setEditorAutoAddAppliesTo(appliesTo)
 		setEditing(true)
 	}
 
@@ -503,10 +505,10 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					})}
 					<button
 						type="button"
-						onClick={() => openLabelsEditor(true)}
+						onClick={() => openLabelsEditor(true, "channel")}
 						onMouseMove={atLabelCap ? event => setCapTooltip({ x: event.clientX, y: event.clientY }) : undefined}
 						onMouseLeave={atLabelCap ? () => setCapTooltip(null) : undefined}
-						className="flex items-center gap-2 rounded-lg border border-dashed border-background-accent px-2 py-1.5 text-left text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
+						className="inline-flex items-center gap-2 rounded-full border border-dashed border-background-accent px-3 py-1.5 text-left text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
 					>
 						<span className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs leading-none">+</span>
 						New label
@@ -532,6 +534,17 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 							</HelpHint>
 						</span>
 					))}
+
+					<button
+						type="button"
+						onClick={() => openLabelsEditor(true, "segment")}
+						onMouseMove={atLabelCap ? event => setCapTooltip({ x: event.clientX, y: event.clientY }) : undefined}
+						onMouseLeave={atLabelCap ? () => setCapTooltip(null) : undefined}
+						className="inline-flex items-center gap-2 rounded-full border border-dashed border-background-accent px-3 py-1.5 text-left text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
+					>
+						<span className="inline-flex h-4 w-4 items-center justify-center rounded-full text-xs leading-none">+</span>
+						New label
+					</button>
 				</div>
 				<p className="mt-1.5 text-[10px] text-over-background-low">
 					Click on a segment to set or change its label
@@ -543,10 +556,12 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				onClose={() => {
 					setEditing(false)
 					setEditorAutoAdd(false)
+					setEditorAutoAddAppliesTo(null)
 				}}
 				value={labels}
 				onSave={onLabelsChange}
 				autoAddOnOpen={editorAutoAdd}
+				autoAddOnOpenAppliesTo={editorAutoAddAppliesTo ?? undefined}
 			/>
 
 			{capTooltip && typeof document !== "undefined" &&
