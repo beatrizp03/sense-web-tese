@@ -34,16 +34,12 @@ interface SessionMeta {
 }
 
 export class BufferManager {
-  private finalChunkPromise: Promise<void> | null = null;
-  private finalChunkResolver: (() => void) | null = null;
-  private finalChunkPending: boolean = false;
-  
-  // Config/state
   private processingBufferLimit: number;
   private storageChunkThreshold: number;
   private chunkIndex = 0;
   private sessionMeta: SessionMeta | null = null;
   private frameSequence = 0;
+  private sampleRate = 1000;
 
   /**
    * @param options Optional configuration for the BufferManager
@@ -66,11 +62,9 @@ export class BufferManager {
     this.storageChunkBuffer = [];
   }
 
-  // Buffers: Only processing/storage are needed
   private processingBuffer: any[];
   private storageChunkBuffer: any[];
 
-  // Subscribers
   private processingSubscribers: BufferManagerSubscriber<any[]>[] = [];
   private storageSubscribers: BufferManagerSubscriber<BufferManagerChunkPayload>[] = [];
 
@@ -82,9 +76,20 @@ export class BufferManager {
     this.storageChunkThreshold = size;
   }
 
-  // Add method to update chunk threshold after disk write
+  /**
+   * Set the sample rate the adaptive threshold is measured against, so the
+   * 5-10 second bound in updateChunkThreshold holds at any acquisition rate.
+   * Non-destructive by design: unlike startSession() this does not reset the
+   * buffers, so it is safe to call while a session is running.
+   */
+  setSampleRate(rate: number) {
+    if (Number.isFinite(rate) && rate > 0) {
+      this.sampleRate = rate;
+    }
+  }
+
   updateChunkThreshold(saveTime: number) {
-    const sampleRate = this.sessionMeta?.sampleRate || 1000;
+    const sampleRate = this.sampleRate;
     this.storageChunkThreshold = Math.max(
       sampleRate * 5,
       Math.min(
@@ -101,6 +106,9 @@ export class BufferManager {
     this.reset();
     this.sessionMeta = meta || null;
     this.frameSequence = 0;
+    if (meta?.sampleRate) {
+      this.setSampleRate(Number(meta.sampleRate));
+    }
   }
 
   ingest(frame: any | any[]) {
@@ -112,18 +120,13 @@ export class BufferManager {
   }
 
   private _ingestFrame(frame: any) {
-    // Stamp frame with monotonic sequence for x-axis
     const managedFrame = {
       ...frame,
       __seq: this.frameSequence++
     };
 
-    // Storage chunk buffer: linear accumulator (always active).
     this.storageChunkBuffer.push(managedFrame);
 
-    // Processing buffer: bounded rolling window for live processing consumers.
-    // Skip maintenance entirely when no consumers are subscribed — the
-    // extension point has zero runtime cost while unused.
     if (this.processingSubscribers.length > 0) {
       this.processingBuffer.push(managedFrame);
       if (this.processingBuffer.length > this.processingBufferLimit) {
@@ -132,7 +135,6 @@ export class BufferManager {
       this.processingSubscribers.forEach(cb => cb([...this.processingBuffer]));
     }
 
-    // Chunking logic
     if (this.storageChunkBuffer.length >= this.storageChunkThreshold) {
       this.flushChunk(false);
     }
@@ -140,18 +142,14 @@ export class BufferManager {
 
   flushChunk(finalize: boolean = false) {
     if (this.storageChunkBuffer.length === 0) {
-      // Do not increment chunkIndex if no chunk is flushed
       return;
     }
-    // Prepare chunk payload
     const chunkPayload = {
       frames: [...this.storageChunkBuffer],
       final: finalize,
       meta: finalize ? this.sessionMeta : undefined
     };
-    // Notify storage subscribers with finalized chunk
     this.storageSubscribers.forEach(cb => cb(chunkPayload));
-    // Do not adjust chunk threshold here; update after disk write via IPC
     this.storageChunkBuffer = [];
     this.chunkIndex++;
     if (process.env.BUFFER_MANAGER_LOGS === '1') {
@@ -160,57 +158,14 @@ export class BufferManager {
   }
 
   reset() {
-    
     this.processingBuffer = [];
     this.storageChunkBuffer = [];
     this.chunkIndex = 0;
     this.sessionMeta = null;
     this.frameSequence = 0;
-
-    this.finalChunkPromise = null;
-    this.finalChunkResolver = null;
-    this.finalChunkPending = false;
   }
 
-  /**
-   * Stop session and return a Promise that resolves when the final chunk is acknowledged as written.
-   * Call notifyFinalChunkWritten() when the final chunk is confirmed written.
-   */
-  stopSession(): Promise<void> {
-    if (this.finalChunkPromise) {
-      // Already stopping
-      return this.finalChunkPromise;
-    }
-    if (this.storageChunkBuffer.length === 0) {
-      this.reset();
-      return Promise.resolve();
-    }
-    // Set up promise and resolver BEFORE flushing
-    this.finalChunkPromise = new Promise<void>((resolve) => {
-      this.finalChunkResolver = () => {
-        this.reset();
-        this.finalChunkPending = false;
-        this.finalChunkPromise = null;
-        this.finalChunkResolver = null;
-        resolve();
-      };
-    });
-    this.finalChunkPending = true;
-    this.flushChunk(true);
-    return this.finalChunkPromise;
-  }
-
-  /**
-   * Call this when the final chunk is confirmed written (e.g., from Electron chunk-write-complete event).
-   */
-  notifyFinalChunkWritten() {
-    if (this.finalChunkPending && this.finalChunkResolver) {
-      this.finalChunkResolver();
-    }
-  }
-
-  // Subscription methods
-
+ 
   subscribeProcessing(cb: BufferManagerSubscriber<any[]>) {
     this.processingSubscribers.push(cb);
     return () => {
@@ -225,7 +180,6 @@ export class BufferManager {
     };
   }
 
-  // Optionally: expose chunkIndex, sessionMeta
   getChunkIndex() {
     return this.chunkIndex;
   }

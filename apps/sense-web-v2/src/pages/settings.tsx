@@ -229,8 +229,6 @@ const Page = () => {
 							channelSignalAxes
 						} as SessionSettingsSnapshot["settings"])
 
-						// FormikAutoSubmit fires once on mount; skip that so the
-						// "Saved" indicator only shows after a real change.
 						if (firstSubmitRef.current) {
 							firstSubmitRef.current = false
 							return

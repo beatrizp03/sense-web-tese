@@ -45,12 +45,12 @@ The guiding principle of the current architecture is **separation of concerns**:
 
 | Component | Responsibility |
 |---|---|
-| **FramePublisher** | Emits parsed frames as events the instant they arrive. Decouples frame arrival from consumers. Publishes to the UI directly (low latency) and to `BufferManager`. |
-| **BufferManager** | Single source of truth for streaming state. Owns the storage chunk buffer and the processing window buffer, and notifies subscribers. Handles session start/stop, buffer reset, and chunk finalization. |
+| **FramePublisher** | Emits parsed frames as events the instant they arrive, for the live chart only. It does **not** feed `BufferManager` - the fork to storage happens upstream in `live.tsx`, and the two paths share no state. |
+| **BufferManager** | Owns the storage chunk buffer in the main process: accumulates frames, flushes a chunk when the threshold is reached, retunes that threshold from each write's duration, and notifies subscribers. Also owns the processing window buffer, which is only maintained when a processing consumer is subscribed. End-of-session teardown is driven from the renderer, not from here. |
 | **StorageSubscriber** | Stateless adapter that receives finalized chunks from `BufferManager` and writes them to disk via the Electron `ChunkedDataWriter`. |
 | **ProcessingSubscriber** | Stateless adapter that receives the processing window and calls `SignalProcessor` for real-time analysis. *(Scaffolded; no live consumers in current scope, feature extraction is currently post-hoc.)* |
 | **SignalProcessor** | Pure signal-processing functions: filtering, feature extraction, and the extensible analysis pipeline. |
-| **SessionManager** | Session metadata and segment persistence (localStorage on web / Electron on desktop). Abstracts persistence from the page/components. |
+| **SessionManager** | Session metadata and segment persistence. Main-process module (`src/SessionManager.js`, plain CommonJS - there is no compiled counterpart) that owns `session.json` and writes it with `fs.writeFileSync` after every change. |
 | **ChunkedDataWriter** (Electron) | Writes acquisition frames to disk in chunked JSON files; manages session folders and chunk-file naming. |
 
 **Maintainability invariants:**
@@ -64,57 +64,92 @@ The guiding principle of the current architecture is **separation of concerns**:
 
 ## Acquisition Workflow (Data Flow)
 
-The renderer handles **visualization only**. Heavy lifting (buffering, chunking,
-storage, processing) happens in the Electron main process and the
-`BufferManager`/subscriber layer. The UI is fed directly from `FramePublisher`
-so chart updates never block on storage or analysis.
+The renderer does more than draw: device I/O runs in its preload context (which
+is where `serialport` is required) and frame decoding, CRC-4 validation and ADC
+conversion run in the device API it imports. What it does **not** do is buffer or
+write - chunking, disk writes and manifest persistence all happen in the Electron
+main process, reached only over IPC. That boundary is what keeps chart updates
+from blocking on storage.
+
+The fork happens in `live.tsx`, **before** either dispatcher — not downstream of
+`FramePublisher`. `FramePublisher` feeds the UI and nothing else; `BufferManager`
+lives in the Electron main process and is reached only over IPC. The two paths
+share no buffer, which is what keeps disk activity off the render path.
 
 ```
+                                    ─── interface process ───
 Device (Serial/Bluetooth)
     ↓
-Frame Parser
+preload.js  (serialport read)
     ↓
-FramePublisher
-    ├→ UI (real-time visualization only, low latency)
-    ├→ BufferManager
-    │    ├→ StorageSubscriber  → ChunkedDataWriter (chunked disk write)
-    │    └→ ProcessingSubscriber → SignalProcessor (real-time analysis window)
-    └→ Electron IPC (if applicable)
+ScientISSTFrameReader  (decode, CRC-4, ADC conversion)
+    ↓
+live.tsx — onFrames  ◄── the fork: one frame, two independent copies
+    ├→ FramePublisher → ring buffer → chart      (live path, stays in-process)
+    └→ electronAPI.sendFrame
+             │
+             │  IPC  ─────────────────────────────────────────
+             ↓                  ─── Electron main process ───
+        BufferManager  (accumulates to the current chunk threshold)
+             ↓
+        StorageSubscriber
+             ↓
+        ChunkedDataWriter → sample<N>_chunk<M>.json
+             ↓
+        SessionManager.appendChunkRecord → session.json
+             ↓
+        chunk-write-complete ──IPC──→ interface
+        (the write duration sets the next chunk threshold)
 ```
 
 ```mermaid
 flowchart TD
-    Device -->|Frames| FrameParser
-    FrameParser -->|Parsed Frames| FramePublisher
-    FramePublisher -->|UI Direct| UI
-    FramePublisher -->|Frames| BufferManager
-    BufferManager -->|Chunks| StorageSubscriber
-    BufferManager -->|Processing Window| ProcessingSubscriber
-    BufferManager -->|Session Meta| SessionManager
-    StorageSubscriber -->|Finalized Chunks| ChunkedDataWriter
-    ProcessingSubscriber -->|Analysis| SignalProcessor
+    subgraph interface["Interface process"]
+        Device[Device: serial/Bluetooth] -->|bytes| Preload[preload.js · serialport]
+        Preload -->|bytes| Reader[ScientISSTFrameReader]
+        Reader -->|decoded frames| Fork[live.tsx · onFrames]
+        Fork -->|live path| FramePublisher
+        FramePublisher -->|events| UI[Ring buffer → chart]
+    end
+    subgraph main["Electron main process"]
+        BufferManager -->|finalized chunk| StorageSubscriber
+        StorageSubscriber -->|write| ChunkedDataWriter
+        ChunkedDataWriter -->|filename| SessionManager
+        BufferManager -.->|scaffolded, no consumers| ProcessingSubscriber
+        ProcessingSubscriber -.-> SignalProcessor
+    end
+    Fork -->|send-frame over IPC| BufferManager
+    ChunkedDataWriter -->|chunk-write-complete: write duration| Fork
 ```
 
 ### Step by step
 
 1. **Acquisition start** - user connects a device and starts acquisition from
    the web UI. Electron creates a new session folder and initializes
-   `ChunkedDataWriter`; buffers are initialized.
-2. **Frame reception** - frames are published; the UI updates immediately while
-   `BufferManager` queues them for storage and processing.
-3. **Storage** - frames are buffered until a threshold is reached, then flushed
-   to Electron in chunks and written to disk.
-4. **Processing** - the real-time analysis window is fed to `SignalProcessor`;
-   results are available for downstream analysis.
+   `ChunkedDataWriter` and `BufferManager`. The renderer then creates the session
+   manifest and sends `set-buffer-size` with the starting chunk size and the
+   sample rate.
+2. **Frame reception** - each decoded frame is forked in `live.tsx`: one copy to
+   `FramePublisher` for the chart, one over IPC to `BufferManager`.
+3. **Storage** - frames accumulate in the main process until the threshold is
+   reached, then the chunk is written to disk and recorded in the manifest.
+4. **Processing** - nothing happens here in the current scope. The rolling
+   processing window is only maintained when a consumer is subscribed, and none
+   is; feature extraction is post-hoc. See *Known Limitations*.
 5. **Pause / Resume** - a new segment is started; buffers are maintained; no
    data loss.
-6. **Stop** - a final flush is performed, the session is finalized, and metadata
-   is saved.
+6. **Stop** - the renderer sends `flush-chunk` with `final=true`, waits for the
+   matching `chunk-write-complete` (bounded by a 200 ms timeout, after which it
+   proceeds regardless), then calls `finalizeSession` to stamp the end time and
+   close the writer.
 
-### Reconnection
+### Connection loss
 
-- Automatic reconnection with exponential backoff in the transport layer.
-- `BufferManager` and subscribers reset on reconnect.
+There is **no automatic reconnection**. The transport surfaces the failure, the
+renderer reports it and calls `acquisition-error`, and the main process
+finalizes the chunk currently open so that everything acquired up to the failure
+is on disk and recorded in the manifest. Resuming means starting acquisition
+again, which begins a new segment.
 
 ---
 
@@ -122,16 +157,28 @@ flowchart TD
 
 There is a deliberate split between **metadata** and **frame data**:
 
-- **Session metadata** - stored in localStorage (web) / Electron (desktop) by
-  `SessionManager`. `session.json` mirrors `SessionManager.createSession`:
+- **Session metadata** - written to `session.json` in the session folder by
+  `SessionManager`, in the main process, after every change. `session.json`
+  mirrors `SessionManager.createSession`:
   `sessionId, startedAt, endedAt, deviceType, sampleRate, channels[],
   channelNames, channelSignalKinds, adcChars, segments[], chunks[], csvHeader`.
 - **Chunked frame storage** - written to disk by Electron, separate from
   metadata.
 
 **Chunking.** Frames are split into `sample1_chunk{0..N-1}.json` files at the
-threshold the live `BufferManager` uses, **10,000 frames per chunk** by default
-(10 s at 1 kHz). A 60 s session produces 6 chunk files; a 2-hour session ~720.
+threshold the live `BufferManager` uses. The threshold starts at the value the
+renderer sends before acquisition (`samplingRate * 5` for ScientISST, 200 frames
+for Maker) and is then **retuned after every write** from how long that write
+took, clamped to **5-10 seconds of recording** at the session's sample rate.
+Slower storage moves it up, so fewer and larger writes are made.
+
+The rate the clamp is measured against reaches the main process through
+`set-buffer-size`, which carries `{ size, sampleRate }` and is sent by the
+renderer on connect and again at acquisition start; `BufferManager.setSampleRate`
+applies it without resetting the buffers. Until it arrives the buffer assumes
+1 kHz. The handler still accepts a bare number for the size, so a mismatched
+renderer degrades to the old behaviour rather than failing.
+
 Each chunk file is a top-level JSON array of frames. The worker reads all of them
 via `manifest.chunks`.
 

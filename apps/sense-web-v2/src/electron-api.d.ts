@@ -19,7 +19,7 @@ declare global {
       stopAcquisition?: () => void;
       finalizeSession?: (endedAt: number) => Promise<void>;
       flushChunk?: (final?: boolean) => void;
-      setBufferSize?: (size: number) => void;
+      setBufferSize?: (size: number, sampleRate?: number) => void;
       sendFrame?: (frame: any) => void;
       onChunkWriteComplete?: (callback: (info: { saveTime: number, chunkIndex: number, final: boolean, filename?: string }) => void) => () => void;
       updateSessionManifest?: (manifest: any) => void;
@@ -40,6 +40,7 @@ declare global {
         sampleRate: number;
         totalSamples: number;
         series: Record<string, [number, number][]>;
+        chunkLengths?: { file: string; frames: number }[];
       }>;
       selectAnalysisSessionFolder?: () => Promise<string | null>;
       openSerialPort?: (path: string, options?: any) => Promise<void>;

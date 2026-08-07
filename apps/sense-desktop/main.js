@@ -149,7 +149,6 @@ function normalizeEmgWindow(windowMs, stepMs) {
   return { emgWindowMs: window, emgWindowStepMs: step };
 }
 
-// ECG/PPG HRV/PRV window length and step (seconds).
 function normalizeHrvWindow(windowSec, stepSec) {
   const window = Number(windowSec);
   if (!Number.isFinite(window) || window <= 0) return undefined;
@@ -245,8 +244,6 @@ function resolveAnalysisWorkerCommand(preferredExecutable) {
     );
   }
 
-  // Dev / unpackaged runs: developers are expected to have Python available.
-  // Probe PATH so we don't assume a bare `python` exists (it usually doesn't on Linux).
   const systemPython = findSystemPython();
   if (!systemPython) {
     throw new Error(
@@ -600,7 +597,7 @@ function createWindow() {
   });
 
   win.webContents.on('will-prevent-unload', (event) => {
-    if (!busyReason) return; // not busy → allow unload as usual
+    if (!busyReason) return;
     const choice = dialog.showMessageBoxSync(win, {
       type: 'warning',
       buttons: ['Stay', 'Leave anyway'],
@@ -610,7 +607,7 @@ function createWindow() {
       message: `${busyReason} in progress — leaving will discard live state.`,
       detail: 'Click "Stay" to remain on the page, or "Leave anyway" to reload/navigate (data already written to disk is safe).',
     });
-    if (choice === 0) event.preventDefault(); // Stay → block unload
+    if (choice === 0) event.preventDefault(); 
   });
 
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
@@ -637,7 +634,6 @@ app.whenReady().then(() => {
     callback(false);
   });
 
-  // show a simple chooser dialog for ports
   ipcMain.handle("show-port-dialog", async (_event, buttons) => {
     const labels = Array.isArray(buttons) ? buttons.map(b => String(b)) : [];
     const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
@@ -761,7 +757,6 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
-  // IPC handler to log a named event (with optional duration) from the renderer
   ipcMain.on('log-perf-event', (_event, { name, durationMs }) => {
     if (!perfLogger) return;
 
@@ -799,14 +794,12 @@ app.whenReady().then(() => {
     return { stopped: !perfLogger };
   });
 
-  // IPC handler to flush BufferManager chunk (e.g., on pause/stop)
   ipcMain.on('flush-chunk', (_event, { final }) => {
     if (bufferManager && typeof bufferManager.flushChunk === 'function') {
       bufferManager.flushChunk(!!final);
     }
   });
 
-  // IPC handler to read a chunk file by path (from renderer)
   ipcMain.handle('read-chunk-file', async (_event, filePath, baseFolder) => {
     try {
       let absPath = filePath;
@@ -847,7 +840,6 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// BufferManager/StorageSubscriber for main-process acquisition
 let bufferManager = null;
 let segmentNumber = 1;
 let sessionFolder = undefined;
@@ -859,7 +851,6 @@ let exportEventsCompleted = { csv: false, pdf: false };
 let lastSelectedPortLabel = '';
 
 ipcMain.handle('start-acquisition', async (_event, startTime) => {
-  // Only create session folder if not already set (first acquisition)
   if (!sessionFolder) {
     if (perfLogger) {
       perfLogger.stop();
@@ -869,11 +860,9 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
     sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
     segmentNumber = 1;
     exportEventsCompleted = { csv: false, pdf: false };
-    // Start performance logging once per session (not on each resume)
     perfLogger = new PerformanceLogger(path.join(sessionFolder, 'performance.csv'), 1000);
     perfLogger.start();
   } else {
-    // On resume, finalize previous writer before incrementing segmentNumber
     if (sampleWriter) {
       sampleWriter.finalizeChunk();
     }
@@ -895,7 +884,6 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
       const final = !!chunkToWrite.final;
       try {
         sampleWriter.writeChunk(chunkToWrite, (filename) => {
-          // Now guaranteed the file is flushed and closed
           if (filename && fs.existsSync(filename)) {
             SessionManager.appendChunkRecord(path.basename(filename), segment, final);
             console.log(`[main] Chunk ${chunkIndex} for segment ${segment} written to ${filename} (final: ${final}).`);
@@ -922,14 +910,12 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
   return sessionFolder;
 });
 
-// IPC: Receive frames from renderer and ingest into BufferManager
 ipcMain.on('send-frame', (_event, frame) => {
   if (bufferManager) {
     bufferManager.ingest(frame);
   }
 });
 
-// IPC handlers for session/manifest management
 ipcMain.handle('createSession', (_event, meta) => {
   try {
     if ((!meta || !meta.device || meta.device === '') && lastSelectedPortLabel) {
@@ -998,12 +984,10 @@ ipcMain.handle('clear-session-settings-history', () => {
 
 ipcMain.handle('finalizeSession', (_event, endedAt) => {
   SessionManager.finalizeSession(endedAt);
-  // Acquisition is fully saved — clear the close guard so the window can close normally
   if (sampleWriter) {
     sampleWriter.finalizeSession();
     sampleWriter = undefined;
   }
-  // Keep perfLogger running for CSV/PDF exports on summary page
   lastSessionFolder = sessionFolder;
   sessionFolder = undefined;
 });
@@ -1022,11 +1006,9 @@ ipcMain.on('reset-session', () => {
   segmentNumber = 1;
 });
 
-// IPC handler to finalize chunk on acquisition error
 ipcMain.handle('acquisition-error', async (_event, errorMsg) => {
   if (sampleWriter) {
     sampleWriter.finalizeChunk();
-    // Update session.json manifest if available
     if (sessionFolder) {
       const manifestPath = path.join(sessionFolder, 'session.json');
       try {
@@ -1041,7 +1023,6 @@ ipcMain.handle('acquisition-error', async (_event, errorMsg) => {
   }
 });
 
-// Handle manifest/session.json updates from renderer
 ipcMain.on('update-session-manifest', (_event, manifest) => {
   if (!sessionFolder) return;
   const manifestPath = path.join(sessionFolder, 'session.json');
@@ -1057,7 +1038,6 @@ ipcMain.on('port-selected', (_event, portEntry) => {
     if (!portEntry || !portEntry.path) return;
     let friendly = portEntry.friendlyName || portEntry.name || portEntry.path;
     if (typeof friendly === 'string') {
-      // strip occasional "Bluetooth: " prefix so stored device is just the name
       friendly = friendly.replace(/^\s*Bluetooth:\s*/i, '').trim();
     }
     lastSelectedPortLabel = friendly || '';
@@ -1073,7 +1053,6 @@ ipcMain.handle('get-current-session-folder', async () => {
   return sessionFolder || lastSessionFolder || null;
 });
 
-// Handler to load manifest for summary page — no frame data, just session.json
 ipcMain.handle('load-all-chunks', async () => {
   const folder = sessionFolder || lastSessionFolder;
   if (!folder) return { meta: null };
@@ -1087,7 +1066,6 @@ ipcMain.handle('load-all-chunks', async () => {
   }
 });
 
-// Load only the last N frames from a specific sample number's chunks (for PDF preview)
 ipcMain.handle('load-preview-frames', async (_event, { sampleNum, frameCount }) => {
   const folder = sessionFolder || lastSessionFolder;
   if (!folder) return [];
@@ -1100,7 +1078,6 @@ ipcMain.handle('load-preview-frames', async (_event, { sampleNum, frameCount }) 
         return nA - nB;
       });
     const frames = [];
-    // Read from the end until we have enough frames for the preview
     for (let i = files.length - 1; i >= 0 && frames.length < frameCount; i--) {
       const chunkData = JSON.parse(fs.readFileSync(path.join(folder, files[i]), 'utf-8'));
       const chunkFrames = Array.isArray(chunkData.frames) ? chunkData.frames : (Array.isArray(chunkData) ? chunkData : []);
@@ -1113,8 +1090,12 @@ ipcMain.handle('load-preview-frames', async (_event, { sampleNum, frameCount }) 
   }
 });
 
-// Listen for buffer size updates from renderer
-ipcMain.on('set-buffer-size', (_event, size) => {
+ipcMain.on('set-buffer-size', (_event, payload) => {
+  // Accepts both the bare number this used to take and the { size, sampleRate }
+  // object, so a stale renderer or preload cannot break acquisition.
+  const size = typeof payload === 'number' ? payload : payload?.size;
+  const sampleRate = typeof payload === 'object' && payload !== null ? payload.sampleRate : undefined;
+
   if (sampleWriter && typeof size === 'number' && sampleWriter.chunkSize !== size) {
     sampleWriter.chunkSize = size;
     if (process.env.BUFFER_MANAGER_LOGS === '1') {
@@ -1127,20 +1108,25 @@ ipcMain.on('set-buffer-size', (_event, size) => {
       console.log(`[electron] Updated BufferManager chunk size: ${size}`);
     }
   }
+  // Without this the adaptive threshold is measured against a default 1 kHz,
+  // so its 5-10 second bound only holds for 1 kHz sessions.
+  if (bufferManager && typeof sampleRate === 'number' && sampleRate > 0) {
+    bufferManager.setSampleRate(sampleRate);
+    if (process.env.BUFFER_MANAGER_LOGS === '1') {
+      console.log(`[electron] BufferManager sample rate: ${sampleRate} Hz`);
+    }
+  }
 });
 
-// Listen for session finalization from renderer
 ipcMain.on('finalize-session', () => {
   if (sampleWriter) {
     sampleWriter.finalizeSession();
     segmentNumber++;
-    // Save last session folder before resetting
     lastSessionFolder = sessionFolder;
     sessionFolder = undefined;
   }
 });
 
-// IPC handler for read-session-manifest to allow renderer to read session.json from disk
 ipcMain.handle('read-session-manifest', async (_event, sessionPath) => {
   try {
     const manifest = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
@@ -1416,6 +1402,7 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
 
   let globalIdx = 0;
   let currentBucket = 0;
+  const chunkLengths = [];
   for (const chunk of chunks) {
     let data;
     try {
@@ -1425,9 +1412,11 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
       ));
     } catch (e) {
       console.error('[decimate-session] Failed to read chunk', chunk.file, e);
+      chunkLengths.push({ file: path.basename(String(chunk.file)), frames: 0 });
       continue;
     }
     const frames = Array.isArray(data?.frames) ? data.frames : Array.isArray(data) ? data : [];
+    chunkLengths.push({ file: path.basename(String(chunk.file)), frames: frames.length });
     for (const frame of frames) {
       const bucket = Math.floor(globalIdx / bucketSamples);
       if (bucket !== currentBucket) {
@@ -1451,7 +1440,7 @@ ipcMain.handle('decimate-session', async (_event, sessionFolderPath, targetPoint
   }
   for (const ch of channels) flush(ch);
 
-  return { sampleRate, totalSamples: globalIdx, series };
+  return { sampleRate, totalSamples: globalIdx, series, chunkLengths };
 });
 
 ipcMain.handle('run-posthoc-analysis', async (_event, payload = {}) => {

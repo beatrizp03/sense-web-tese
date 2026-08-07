@@ -239,7 +239,6 @@ const Page = () => {
 	const uiWindowFramesRef = useRef(0);
 	const xAxisOffsetFramesRef = useRef(0);
 
-	// Use setInterval to update the graph UI even when window is not focused
     useEffect(() => {
         let intervalId: NodeJS.Timeout | null = null;
         function updateUI() {
@@ -290,7 +289,6 @@ const Page = () => {
 	useEffect(() => {
 		if (!window.electronAPI?.onChunkWriteComplete) return;
 		const unsubscribe = window.electronAPI.onChunkWriteComplete((_info) => {
-			// Manifest update now handled in main process
 		});
 		return unsubscribe;
 	}, []);
@@ -486,7 +484,7 @@ const Page = () => {
 		setConnectWarning(null)
 		setStatus(STATUS.CONNECTING)
 		setAcquisitionStarted(false)
-		cleanupPipeline(); // Reset all state and BufferManager before connect
+		cleanupPipeline(); 
 
 		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 
@@ -569,7 +567,6 @@ const Page = () => {
 			const connectStart = Date.now();
 			await deviceRef.current.connect()
 			
-			// Only save to history if valid configuration
 			const isValidConfig = 
 				(settings.deviceType === "sense" && Array.isArray(settings.channels) && settings.channels.length > 0) ||
 				(settings.deviceType === "maker")
@@ -583,9 +580,11 @@ const Page = () => {
 			setConnectedDeviceLabel(deviceLabel ?? "Unknown")
 			setFirmwareVersion(deviceRef.current.getFirmwareVersion()?.version ?? null)
 
-			// Only set buffer size if valid
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
-				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current)
+				window.electronAPI?.setBufferSize?.(
+					storeBufferThresholdRef.current,
+					deviceRef.current.getSamplingRate?.() || undefined
+				)
 			}
 			setConnectWarning(null)
 			setStatus(STATUS.CONNECTED)
@@ -611,7 +610,6 @@ const Page = () => {
 		} catch {
 			// ignore disconnect errors
 		} finally {
-			framePublisher.reset();
 			cleanupPipeline();
 			deviceRef.current = null;
 			setStatus(STATUS.DISCONNECTED);
@@ -735,9 +733,8 @@ const Page = () => {
 				endedAt: null
 			});
 
-			// Only set buffer size if valid
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
-				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current);
+				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current, sampleRate);
 			}
 
 			persistSessionMetadata();
@@ -748,7 +745,6 @@ const Page = () => {
 					const validFrames = data.filter(Boolean);
 					validFrames.forEach(frame => {
 						window.electronAPI?.sendFrame?.(frame);
-						// Publish to framePublisher for UI graph
 						framePublisher.publishFrame(frame);
 					});
 				} else {

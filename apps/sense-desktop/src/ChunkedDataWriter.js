@@ -25,13 +25,11 @@ class ChunkedDataWriter {
   }
 
   writeChunk(chunk, onFinish) {
-    // Accept both array and {frames, ...} object
     let frames = chunk;
     if (chunk && typeof chunk === 'object' && Array.isArray(chunk.frames)) {
       frames = chunk.frames;
     }
     if (!Array.isArray(frames) || frames.length === 0) return;
-    // If currentStream is null (after finalizeChunk), create a new chunk file
     if (!this.currentStream) {
       this.currentStream = this._createChunkStream();
     }
@@ -63,8 +61,6 @@ class ChunkedDataWriter {
     }
     this.chunkIndex++;
     console.log(`[MAIN] Finalized chunk ${this.chunkIndex - 1}`);
-    // Only create a new chunk file if more data will be written later
-    // (i.e., do not pre-create an empty chunk file)
     this.currentStream = null;
     this.currentChunkHasData = false;
   }

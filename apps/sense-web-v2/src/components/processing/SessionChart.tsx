@@ -32,6 +32,31 @@ function sortChunks(chunks: any[]): any[] {
 	})
 }
 
+function baseName(file: string): string {
+	const parts = file.split(/[\\/]/)
+	return parts[parts.length - 1] || file
+}
+
+function findChunkRange(
+	offsets: number[],
+	lens: number[],
+	startFrame: number,
+	endFrame: number
+): [number, number] | null {
+	if (offsets.length === 0 || endFrame <= startFrame) return null
+	let first = -1
+	let last = -1
+	for (let i = 0; i < offsets.length; i++) {
+		const chunkStart = offsets[i]
+		const chunkEnd = chunkStart + lens[i]
+		if (chunkEnd <= startFrame) continue
+		if (chunkStart >= endFrame) break
+		if (first === -1) first = i
+		last = i
+	}
+	return first === -1 ? null : [first, last]
+}
+
 function computeTotalSeconds(manifest: any, sampleRate: number): number {
 	const segments = Array.isArray(manifest?.segments) ? manifest.segments : []
 	let ms = 0
@@ -650,6 +675,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		sampleRate: number
 		totalSamples: number
 		series: Record<string, [number, number][]>
+		chunkLengths?: { file: string; frames: number }[]
 	} | null>(null)
 	const [overviewLoading, setOverviewLoading] = useState(false)
 
@@ -714,6 +740,28 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		MIN_WINDOW_SECONDS
 	)
 
+	const chunkOffsets = useMemo(() => {
+		const lengths = overview?.chunkLengths
+		if (!Array.isArray(lengths) || chunks.length === 0) return null
+		const byFile = new Map<string, number>()
+		for (const entry of lengths) {
+			const file = baseName(String(entry?.file ?? ""))
+			const frames = Number(entry?.frames)
+			if (file && Number.isFinite(frames)) byFile.set(file, frames)
+		}
+		const offsets: number[] = []
+		const lens: number[] = []
+		let acc = 0
+		for (const chunk of chunks) {
+			const len = byFile.get(baseName(String(chunk?.file ?? "")))
+			if (len == null) return null
+			offsets.push(acc)
+			lens.push(len)
+			acc += len
+		}
+		return { offsets, lens, total: acc }
+	}, [overview, chunks])
+
 	const onWindowChange = useCallback((startSec: number, secLen: number) => {
 		setWindowStartSec(startSec)
 		setWindowSec(secLen)
@@ -746,31 +794,37 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		setLoadError(null)
 		const cache = cacheRef.current
 
+		const readChunkInto = async (idx: number): Promise<boolean> => {
+			if (cache.vals[idx]) return true
+			const data = await window.electronAPI?.readChunkFile?.(
+				chunks[idx].file,
+				sessionFolder
+			)
+			if (cancelled) return false
+			const frames = Array.isArray(data?.frames)
+				? data.frames
+				: Array.isArray(data)
+				? data
+				: []
+			const perChannel: Record<string, Float32Array> = {}
+			for (const ch of channels) perChannel[ch] = new Float32Array(frames.length)
+			for (let i = 0; i < frames.length; i++) {
+				const fc = frames[i]?.channels
+				for (const ch of channels) {
+					const v = Number(fc?.[ch])
+					perChannel[ch][i] = Number.isFinite(v) ? v : NaN
+				}
+			}
+			cache.vals[idx] = perChannel
+			cache.lens[idx] = frames.length
+			return true
+		}
+
 		const readUpTo = async (targetEnd: number): Promise<boolean> => {
 			while (cache.cumLen < targetEnd && cache.loaded < chunks.length) {
 				const idx = cache.loaded
-				const data = await window.electronAPI?.readChunkFile?.(
-					chunks[idx].file,
-					sessionFolder
-				)
-				if (cancelled) return false
-				const frames = Array.isArray(data?.frames)
-					? data.frames
-					: Array.isArray(data)
-					? data
-					: []
-				const perChannel: Record<string, Float32Array> = {}
-				for (const ch of channels) perChannel[ch] = new Float32Array(frames.length)
-				for (let i = 0; i < frames.length; i++) {
-					const fc = frames[i]?.channels
-					for (const ch of channels) {
-						const v = Number(fc?.[ch])
-						perChannel[ch][i] = Number.isFinite(v) ? v : NaN
-					}
-				}
-				cache.vals[idx] = perChannel
-				cache.lens[idx] = frames.length
-				cache.cumLen += frames.length
+				if (!(await readChunkInto(idx))) return false
+				cache.cumLen += cache.lens[idx] ?? 0
 				cache.loaded += 1
 			}
 			return !cancelled
@@ -804,11 +858,86 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			return decimateSlice(seg, startFrame, MAIN_BUCKETS, sampleRate)
 		}
 
+		const buildWindowAt = (
+			ch: string,
+			startFrame: number,
+			endFrame: number,
+			first: number,
+			last: number,
+			offsets: number[]
+		): Point[] => {
+			const sliceLen = Math.max(0, endFrame - startFrame)
+			const seg = new Float32Array(sliceLen).fill(NaN)
+			for (let idx = first; idx <= last; idx++) {
+				const src = cache.vals[idx]?.[ch]
+				if (!src) continue
+				const chunkStart = offsets[idx]
+				const from = Math.max(startFrame, chunkStart)
+				const to = Math.min(endFrame, chunkStart + src.length)
+				if (to > from) {
+					seg.set(
+						src.subarray(from - chunkStart, to - chunkStart),
+						from - startFrame
+					)
+				}
+			}
+			return decimateSlice(seg, startFrame, MAIN_BUCKETS, sampleRate)
+		}
+
 		void (async () => {
 			try {
 				const startFrame = Math.max(0, Math.round(windowStartSec * sampleRate))
 				const count = Math.round(windowSec * sampleRate)
 				const endFrame = startFrame + count
+
+				if (chunkOffsets) {
+					const { offsets, lens, total } = chunkOffsets
+					const realEnd = Math.min(endFrame, total)
+					const range = findChunkRange(offsets, lens, startFrame, realEnd)
+					if (!range) {
+						setWindowByChannel({})
+						return
+					}
+					const [first, last] = range
+
+					let missing = false
+					for (let i = first; i <= last && !missing; i++) {
+						if (!cache.vals[i]) missing = true
+					}
+					if (missing) setWinLoading(true)
+					for (let i = first; i <= last; i++) {
+						if (!(await readChunkInto(i))) return
+					}
+
+					const next: Record<string, Point[]> = {}
+					for (const ch of channels) {
+						next[ch] = buildWindowAt(
+							ch,
+							startFrame,
+							realEnd,
+							first,
+							last,
+							offsets
+						)
+					}
+					setWindowByChannel(next)
+					setWinLoading(false)
+
+					const pad = count * PREFETCH_WINDOWS
+					const warm = findChunkRange(
+						offsets,
+						lens,
+						Math.max(0, startFrame - pad),
+						Math.min(total, realEnd + pad)
+					)
+					if (warm) {
+						for (let i = warm[0]; i <= warm[1]; i++) {
+							if (cancelled) return
+							if (!(await readChunkInto(i))) return
+						}
+					}
+					return
+				}
 
 				const needsRead =
 					cache.cumLen < endFrame && cache.loaded < chunks.length
@@ -836,7 +965,7 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		return () => {
 			cancelled = true
 		}
-	}, [channels, chunks, windowStartSec, windowSec, sampleRate])
+	}, [channels, chunks, windowStartSec, windowSec, sampleRate, chunkOffsets])
 
 	if (loadError) {
 		return (

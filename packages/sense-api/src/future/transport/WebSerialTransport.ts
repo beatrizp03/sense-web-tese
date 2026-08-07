@@ -23,17 +23,10 @@ export class WebSerialTransport implements Transport {
 	private reader?: ReadableStreamDefaultReader<unknown>
 	private writer?: WritableStreamDefaultWriter<unknown>
 
-	// when running inside Electron we prefer the injected node API. the
-	// browser Web‑Serial implementation is usable but the desktop bridge
-	// allows auto‑detecting the board and avoids the weird native chooser.
 	private isElectron =
 		typeof window !== "undefined" &&
 		typeof (window as any).electronAPI !== "undefined"
 	private electronPortPath: string | null = null
-	// always use native transport when we're inside the Electron shell
-	// (the `useNative` flag no longer depends on navigator.serial). this
-	// keeps behaviour consistent regardless of the availability of the
-	// browser API.
 	private useNative = this.isElectron
 
 	/**
@@ -146,7 +139,6 @@ export class WebSerialTransport implements Transport {
 	}
 
 	async close() {
-		// existing browser implementation
 		// If the serial port is already closed, do nothing
 		if (!this.device) return
 		const device = this.device

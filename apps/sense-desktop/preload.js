@@ -72,7 +72,7 @@ function clearRingBuffer() {
 }
 
 async function listPorts() {
-  clearRingBuffer(); // Always clear buffer before listing ports
+  clearRingBuffer();
   
   let ports = await SerialPort.list();
   
@@ -92,7 +92,6 @@ async function listPorts() {
   try {
     btNames = await getBtNames();
   } catch (e) {
-    // if Bluetooth lookup fails, just continue with generic names
     console.log('could not query BT names', e.message);
   }
 
@@ -105,12 +104,10 @@ async function listPorts() {
   }
   console.log('parsed bluetooth addresses', btList);
   return ports.map(p => {
-    // re-compute the normalized path here just in case
     const portPath = p.path ?? p.comName ?? p.name;
     let name = p.friendlyName || p.manufacturer || portPath;
     console.log('examining port', portPath, 'pnpId', p.pnpId);
 
-    // try to match against parsed addresses first
     if (p.pnpId) {
       const pid = p.pnpId.toLowerCase();
       for (const bt of btList) {
@@ -121,7 +118,6 @@ async function listPorts() {
       }
     }
 
-    // fallback to simple substring matching against the instance id string
     if (p.pnpId) {
       for (const [inst, fn] of btNames) {
         if (inst.includes(p.pnpId.toLowerCase()) || p.pnpId.toLowerCase().includes(inst)) {
@@ -152,7 +148,6 @@ async function choosePort() {
   if (response === -1) {
     throw new Error('Cancelled');
   }
-  // Notify main process of the selected port so it can persist the friendly name
   try {
     ipcRenderer.send('port-selected', ports[response]);
   } catch (e) {
@@ -176,7 +171,6 @@ async function openSerialPort(path, options = {}) {
   const baudRate = Number(options.baudRate ?? 9600);
   if (!Number.isFinite(baudRate)) throw new Error(`Invalid baudRate: ${options.baudRate}`);
 
-  // Clean up any existing port
   const existing = openPorts.get(path);
   if (existing) {
     await closeSerialPort(path);
@@ -187,7 +181,6 @@ async function openSerialPort(path, options = {}) {
   serialBuffers[path] = Buffer.alloc(0);
   closingPorts.delete(path);
 
-  // Attach one data listener per port
   const onData = (chunk) => {
     serialBuffers[path] = Buffer.concat([serialBuffers[path], chunk]);
   };
@@ -217,7 +210,6 @@ async function openSerialPort(path, options = {}) {
 }
 
 async function readSerialPort(path, bytes, timeout) {
-  // Only consume from serialBuffers[path], never attach listeners here
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
@@ -231,7 +223,6 @@ async function readSerialPort(path, bytes, timeout) {
         serialBuffers[path] = buf.slice(bytes);
         resolve(new Uint8Array(out));
       } else if (Date.now() - start > timeout) {
-        // Return whatever is available
         const out = buf;
         serialBuffers[path] = Buffer.alloc(0);
         resolve(new Uint8Array(out));
@@ -294,25 +285,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     port.on('data', handler);
     return () => port.off('data', handler);
   },
-  // Acquisition/session control
   startAcquisition: async (startTime) => {
     return await ipcRenderer.invoke('start-acquisition', startTime);
   },
   stopAcquisition: () => ipcRenderer.send('stop-acquisition'),
-  // Remove legacy writeChunk and flushSamples APIs
   finalizeSession: (endedAt) => ipcRenderer.invoke('finalizeSession', endedAt),
-  // Session/manifest management
   createSession: (meta) => ipcRenderer.invoke('createSession', meta),
   registerSegment: (segmentInfo) => ipcRenderer.invoke('registerSegment', segmentInfo),
   updateSessionMeta: (patch) => ipcRenderer.invoke('updateSessionMeta', patch),
   updateSegmentEndedAt: (index, endedAt) => ipcRenderer.invoke('updateSegmentEndedAt', index, endedAt),
   setChannelNames: (names) => ipcRenderer.invoke('setChannelNames', names),
-  // New: flush BufferManager chunk in main process
   flushChunk: (final = false) => ipcRenderer.send('flush-chunk', { final }),
-  setBufferSize: (size) => ipcRenderer.send('set-buffer-size', size),
-  // Send a frame to main process BufferManager
+  setBufferSize: (size, sampleRate) => ipcRenderer.send('set-buffer-size', { size, sampleRate }),
   sendFrame: (frame) => ipcRenderer.send('send-frame', frame),
-  // Listen for chunk write completion (info object)
   onChunkWriteComplete: (cb) => {
     ipcRenderer.on('chunk-write-complete', (_event, info) => cb(info));
     return () => ipcRenderer.removeAllListeners('chunk-write-complete');
