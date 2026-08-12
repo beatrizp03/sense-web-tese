@@ -23,43 +23,32 @@ export class WebSerialTransport implements Transport {
 	private reader?: ReadableStreamDefaultReader<unknown>
 	private writer?: WritableStreamDefaultWriter<unknown>
 
-	private isElectron =
-		typeof window !== "undefined" &&
-		typeof (window as any).electronAPI !== "undefined"
-	private electronPortPath: string | null = null
-	private useNative = this.isElectron
-
 	/**
 	 * Create a new WebSerialTransport.
 	 * @param {number} baudRate the baud rate to use
 	 * @param {number} bufferSize the size of the read buffer, in bytes
 	 */
 	constructor(baudRate: number, bufferSize: number) {
-		// escalate validations only when not using the native electron
-		// transport.  the browser API (including when running inside
-		// Electron) will enforce its own constraints.
-		if (!this.useNative) {
-			// Check if we're running in a browser
-			if (typeof window === "undefined") {
-				throw new Error("WebSerialTransport is only available in a browser")
-			}
+		// Check if we're running in a browser
+		if (typeof window === "undefined") {
+			throw new Error("WebSerialTransport is only available in a browser")
+		}
 
-			// Check if the Web Serial API is available
-			if (!("serial" in navigator)) {
-				throw new Error(
-					"WebSerialTransport is not available in this browser"
-				)
-			}
+		// Check if the Web Serial API is available
+		if (!("serial" in navigator)) {
+			throw new Error(
+				"WebSerialTransport is not available in this browser"
+			)
+		}
 
-			// Check if baudRate is a positive integer
-			if (!Number.isInteger(baudRate) || baudRate <= 0) {
-				throw new Error("baudRate must be a positive integer")
-			}
+		// Check if baudRate is a positive integer
+		if (!Number.isInteger(baudRate) || baudRate <= 0) {
+			throw new Error("baudRate must be a positive integer")
+		}
 
-			// Check if bufferSize is a positive integer
-			if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
-				throw new Error("bufferSize must be a positive integer")
-			}
+		// Check if bufferSize is a positive integer
+		if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+			throw new Error("bufferSize must be a positive integer")
 		}
 
 		this.baudRate = baudRate

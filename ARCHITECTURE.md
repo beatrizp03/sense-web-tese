@@ -143,13 +143,25 @@ flowchart TD
    proceeds regardless), then calls `finalizeSession` to stamp the end time and
    close the writer.
 
-### Connection loss
+### Connecting, and losing the connection
 
-There is **no automatic reconnection**. The transport surfaces the failure, the
-renderer reports it and calls `acquisition-error`, and the main process
-finalizes the chunk currently open so that everything acquired up to the failure
-is on disk and recorded in the manifest. Resuming means starting acquisition
-again, which begins a new segment.
+These are two different behaviours and it is easy to conflate them.
+
+**Opening the port retries with backoff.** `NodeSerialTransport.open()` makes up
+to five attempts, sleeping 500, 1000, 2000, 4000 and 8000 ms between them. Only
+errors matching `busy | 1167 | disconnected or unavailable | port is not open |
+networkerror` are retried; anything else fails immediately, and an "invalid byte"
+error is reported as needing a hardware reset. After the final attempt the
+transport throws `ConnectionFailedException`, having logged a diagnostic specific
+to the cause. This is what makes connecting to a Bluetooth board reliable when
+the OS has not yet released the port.
+
+**Losing the connection mid-session does not retry.** There is no automatic
+reconnection once acquisition is under way. `ConnectionLostException` is raised
+from the transport's read/write path, the renderer reports it and calls
+`acquisition-error`, and the main process finalizes the chunk currently open so
+that everything acquired up to the failure is on disk and recorded in the
+manifest. Resuming means starting acquisition again, which begins a new segment.
 
 ---
 

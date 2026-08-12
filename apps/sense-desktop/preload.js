@@ -211,25 +211,33 @@ async function openSerialPort(path, options = {}) {
 
 async function readSerialPort(path, bytes, timeout) {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    let lastProgress = Date.now();
+    let lastLength = (serialBuffers[path] || Buffer.alloc(0)).length;
+
     const check = () => {
       if (closingPorts.has(path)) {
         reject(new Error(`Read aborted: port ${path} is closing`));
         return;
       }
+
       const buf = serialBuffers[path] || Buffer.alloc(0);
+
+      if (buf.length !== lastLength) {
+        lastLength = buf.length;
+        lastProgress = Date.now();
+      }
+
       if (buf.length >= bytes) {
         const out = buf.slice(0, bytes);
         serialBuffers[path] = buf.slice(bytes);
         resolve(new Uint8Array(out));
-      } else if (Date.now() - start > timeout) {
-        const out = buf;
-        serialBuffers[path] = Buffer.alloc(0);
-        resolve(new Uint8Array(out));
+      } else if (Date.now() - lastProgress > timeout) {
+        reject(new Error(`Serial read timed out on ${path}: no data for ${timeout} ms (wanted ${bytes}, have ${buf.length})`));
       } else {
         setTimeout(check, 2);
       }
     };
+
     check();
   });
 }

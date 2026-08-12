@@ -94,36 +94,85 @@ def _tag(tag):
     return f"[{tag}]".ljust(8)
 
 
-def _print_gaps(gaps, tag, label, modulo):
-    """Print a 'no gaps' line, or the first few gaps plus '...and N more'."""
+def _print_gaps(gaps, corrupt, tag, label, modulo):
+    """Print a 'no gaps' line, or the first few anomalies plus '...and N more'."""
     where = f" (modulo={modulo})" if modulo else ""
-    if not gaps:
+    if not gaps and not corrupt:
         print(f"  {_tag(tag)}✅ No gaps inside {label}{where}")
         return
-    print(f"  {_tag(tag)}❌ {len(gaps)} gap(s) inside {label}{where}:")
-    for i, prev, curr, d in gaps[:5]:
-        print(f"          frame {i}: {prev} → {curr}  (diff={d}, lost={step(1, d, modulo)})")
-    if len(gaps) > 5:
-        print(f"          ...and {len(gaps) - 5} more")
+
+    if corrupt:
+        print(f"  {_tag(tag)}⚠️  {len(corrupt)} corrupted value(s) inside {label}{where}:")
+        for i, prev, bad, nxt in corrupt[:3]:
+            print(f"          frame {i}: {prev} → {bad} → {nxt}  (implausible; counted as 1 bad frame, not {step(1, step(prev, bad, modulo), modulo)} lost)")
+        if len(corrupt) > 3:
+            print(f"          ...and {len(corrupt) - 3} more")
+
+    if gaps:
+        print(f"  {_tag(tag)}❌ {len(gaps)} gap(s) inside {label}{where}:")
+        for i, prev, curr, d in gaps[:5]:
+            print(f"          frame {i}: {prev} → {curr}  (diff={d}, lost={step(1, d, modulo)})")
+        if len(gaps) > 5:
+            print(f"          ...and {len(gaps) - 5} more")
 
 
 def check_internal(frames, label, field, tag, modulo=None):
     """Check that `field` steps by exactly 1 within a single file.
 
-    Returns (lost_frame_count, first_value, last_value).
+    This is the discrete-derivative test: take the difference between
+    consecutive values of the index column and require it to be 1 everywhere.
+
+    For the wrapping device counter a further distinction is needed, because a
+    single corrupted value produces two anomalies, one into it and one out of
+    it, and scoring both as loss inflates the total by orders of magnitude. A
+    frame whose neighbours step by exactly 2 across it is a corrupted value, not
+    thousands of missing frames. A step implying a loss of more than half the
+    wrap size cannot be distinguished from a smaller one anyway - the counter
+    has already wrapped - so it is reported as suspect rather than quantified.
+
+    Returns (lost_frame_count, corrupt_count, suspect_count, first, last).
     """
     seqs = [f[field] for f in frames if field in f]
     if not seqs:
         print(f"  {_tag(tag)}⚠️  No '{field}' field found in {label}")
-        return 0, None, None
+        return 0, 0, 0, None, None
 
-    gaps = [(i, a, b, d)
-            for i, (a, b) in enumerate(zip(seqs, seqs[1:]))
-            if (d := step(a, b, modulo)) != 1]
-    _print_gaps(gaps, tag, label, modulo)
+    anomalies = {i: d for i, (a, b) in enumerate(zip(seqs, seqs[1:]))
+                 if (d := step(a, b, modulo)) != 1}
 
-    lost = sum(step(1, d, modulo) for *_, d in gaps)
-    return lost, seqs[0], seqs[-1]
+    corrupt = []
+    bridged_loss = 0
+    if modulo:
+        # A corrupted value at index i+1 breaks the step twice: i→i+1 and
+        # i+1→i+2. If the counter either side of it is still consistent - that
+        # is, i→i+2 spans a plausible distance - then the run is intact and only
+        # that one value is wrong. The span tells us how many frames the pair
+        # really accounts for: 2 means just the bad frame, more means the bad
+        # frame plus genuine losses alongside it.
+        for i in sorted(anomalies):
+            if i + 1 not in anomalies or i + 2 >= len(seqs):
+                continue
+            bridge = step(seqs[i], seqs[i + 2], modulo)
+            if 2 <= bridge <= modulo // 2 and bridge < max(anomalies[i], anomalies[i + 1]):
+                corrupt.append((i + 1, seqs[i], seqs[i + 1], seqs[i + 2]))
+                bridged_loss += bridge - 2
+
+    corrupt_at = {i for i, *_ in corrupt}
+    skip = corrupt_at | {i - 1 for i in corrupt_at}
+
+    gaps, lost, suspect = [], bridged_loss, 0
+    for i, d in sorted(anomalies.items()):
+        if i in skip:
+            continue
+        missing = step(1, d, modulo)
+        if modulo and missing > modulo // 2:
+            suspect += 1
+            continue
+        gaps.append((i, seqs[i], seqs[i + 1], d))
+        lost += missing
+
+    _print_gaps(gaps, corrupt, tag, label, modulo)
+    return lost, len(corrupt), suspect, seqs[0], seqs[-1]
 
 
 def check_transition(prev_last, curr_first, prev_label, curr_label, tag, modulo=None):
@@ -190,6 +239,8 @@ def main():
 
     total_bm_lost = 0
     total_dev_lost = 0
+    total_dev_corrupt = 0
+    total_dev_suspect = 0
     prev_segment = prev_bm_last = prev_dev_last = prev_filepath = None
 
     for (filepath, segment), frames in zip(chunks, frames_list):
@@ -201,10 +252,13 @@ def main():
             prev_segment, prev_bm_last, prev_dev_last, prev_filepath = segment, None, None, filepath
             continue
 
-        bm_lost, bm_first, bm_last = check_internal(frames, label, "__seq", "__seq")
-        dev_lost, dev_first, dev_last = check_internal(frames, label, "sequence", "seq", modulo)
+        bm_lost, _, _, bm_first, bm_last = check_internal(frames, label, "__seq", "__seq")
+        dev_lost, dev_corrupt, dev_suspect, dev_first, dev_last = check_internal(
+            frames, label, "sequence", "seq", modulo)
         total_bm_lost += bm_lost
         total_dev_lost += dev_lost
+        total_dev_corrupt += dev_corrupt
+        total_dev_suspect += dev_suspect
 
         if prev_segment == segment:
             total_bm_lost += check_transition(prev_bm_last, bm_first, prev_filepath, filepath, "__seq")
@@ -221,6 +275,10 @@ def main():
           else f"  [__seq]  ❌ ~{total_bm_lost} frame(s) lost at IPC/buffer level")
     print("  [seq]    ✅ No frames lost at device/transmission level" if total_dev_lost == 0
           else f"  [seq]    ❌ ~{total_dev_lost} frame(s) lost at device/transmission level")
+    if total_dev_corrupt:
+        print(f"  [seq]    ⚠️  {total_dev_corrupt} corrupted value(s) - one bad frame each, not lost frames")
+    if total_dev_suspect:
+        print(f"  [seq]    ⚠️  {total_dev_suspect} step(s) beyond half the wrap size - amount lost cannot be determined")
     print(bar)
 
 

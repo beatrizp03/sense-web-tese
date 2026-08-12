@@ -69,6 +69,7 @@ const Page = () => {
 	}, []);
 
 	const noData = !loading && !manifest?.chunks?.length;
+	const interrupted = router.query.interrupted === "1";
 
 	// Warnings derived from manifest alone — no frame data needed
 	const mappingWarnings = useMemo(() => {
@@ -127,6 +128,12 @@ const Page = () => {
 			returnHref="/live"
 			className="flex w-[640px] flex-col items-center justify-center gap-8 py-8 px-8 sm:w-[960px]"
 		>
+			{interrupted && (
+				<div className="text-amber-700 text-center text-base border border-amber-300 rounded p-4 bg-amber-50 max-w-full">
+					<b>The connection to the device was lost.</b>
+					<div className="mt-2 text-xs">Recording stopped when the device stopped responding. Everything acquired up to that point was saved and is available below.</div>
+				</div>
+			)}
 			{loading ? (
 				<span className="text-lg">Loading session data... (Attempt {loadAttempts + 1} of {MAX_ATTEMPTS})</span>
 			) : noData ? (

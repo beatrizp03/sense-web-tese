@@ -141,7 +141,7 @@ export default class ScientISST {
     try {
       // Bluetooth serial mode
       if (this.#mode == BTH) {
-        await this.#port.open({ baudRate: 9600 });
+        await this.#port.open({ baudRate: 115200 });
 
         // start serial writer and reader
         this.#writer = this.#port.writable.getWriter();

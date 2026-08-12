@@ -14,11 +14,13 @@ import { FormikAutoSubmit } from "@scientisst/react-ui/components/utils"
 import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
 import {
 	CancelledByUserException,
+	ConnectionLostException,
 	Device,
 	Maker,
 	SCIENTISST_CHANNEL,
 	SCIENTISST_COMUNICATION_MODE,
-	ScientISST
+	ScientISST,
+	TooManyFramesLostException
 } from "@scientisst/sense/future"
 import { Form, Formik } from "formik"
 import resolveConfig from "tailwindcss/resolveConfig"
@@ -76,6 +78,14 @@ function getOrderedEegChannels(
 	channels: string[]
 ) {
 	return channels.filter(channel => channelSignalKinds[channel] === "eeg")
+}
+
+function isExpectedDeviceLoss(error: unknown): boolean {
+	return (
+		error instanceof TooManyFramesLostException ||
+		error instanceof ConnectionLostException ||
+		(error instanceof Error && error.message.includes("Serial read timed out"))
+	)
 }
 
 function writeLiveSettingsPatch(updates: Record<string, unknown>) {
@@ -226,6 +236,8 @@ const Page = () => {
 
 	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
 	const channelBucketsRef = useRef<Map<string, MinMaxBucketState>>(new Map());
+	const bucketListRef = useRef<MinMaxBucketState[]>([]);
+	const ringListRef = useRef<RingBuffer<ChannelPoint>[]>([]);
 	const [channelData, setChannelData] = useState<ChannelSeries>({});
 	const channelsRef = useRef<string[]>([]);
 	const [channels, setChannels] = useState<string[]>([]);
@@ -320,8 +332,11 @@ const Page = () => {
 				});
 				window.electronAPI?.logPerfEvent?.('acquisition_end', Date.now() - stopTime);
 				await window.electronAPI?.finalizeSession?.(Date.now());
-				setStatus(STATUS.STOPPED_AND_SAVED);
-				await router.push("/summary");
+				setStatus(STATUS.STOPPED_AND_SAVED);await router.push(
+					finalizingAfterErrorRef.current
+						? "/summary?interrupted=1"
+						: "/summary"
+				);
 			} catch (error) {
 				console.error("[finalizeStop]", error);
 				setStatus(STATUS.STOPPED_AND_SAVED);
@@ -342,6 +357,8 @@ const Page = () => {
 		channelBuffersRef.current.forEach(buffer => buffer.clear())
 		channelBuffersRef.current.clear()
 		channelBucketsRef.current.clear()
+		bucketListRef.current = []
+		ringListRef.current = []
 		channelsRef.current = [];
 		uiWindowFramesRef.current = 0
 		xAxisOffsetFramesRef.current = 0
@@ -364,7 +381,7 @@ const Page = () => {
 			)
 			uiWindowFramesRef.current = uiWindowFrames
 
-			const unsubscribeUIPublisher = framePublisher.subscribeFrame(frame => {
+			const ingestFrameForChart = (frame: any) => {
 				if (!frame) return;
 
 				const seq = frameSequenceRef.current++
@@ -375,30 +392,37 @@ const Page = () => {
 
 				if (channelsRef.current.length === 0 && frame.channels) {
 					channelsRef.current = Object.keys(frame.channels).sort();
+					bucketListRef.current = []
+					ringListRef.current = []
 					channelsRef.current.forEach(channel => {
-						channelBuffersRef.current.set(
-							channel,
-							new RingBuffer<ChannelPoint>(UI_BUCKETS * 2)
-						)
-						channelBucketsRef.current.set(channel, {
+						const ring = new RingBuffer<ChannelPoint>(UI_BUCKETS * 2)
+						const bucket: MinMaxBucketState = {
 							count: 0,
 							min: 0,
 							max: 0,
 							minSeq: 0,
 							maxSeq: 0
-						})
+						}
+						channelBuffersRef.current.set(channel, ring)
+						channelBucketsRef.current.set(channel, bucket)
+						ringListRef.current.push(ring)
+						bucketListRef.current.push(bucket)
 					})
 					setChannels([...channelsRef.current]);
 				}
 
-				for (const channel of channelsRef.current) {
-					const valueRaw = channelValues[channel]
+				const channelNames = channelsRef.current
+				const buckets = bucketListRef.current
+				const rings = ringListRef.current
+
+				for (let c = 0; c < channelNames.length; c++) {
+					const valueRaw = channelValues[channelNames[c]]
 					if (valueRaw == null) continue
 					const value = Number(valueRaw)
 					if (!Number.isFinite(value)) continue
 
-					let bucket = channelBucketsRef.current.get(channel)
-					const ring = channelBuffersRef.current.get(channel)
+					const bucket = buckets[c]
+					const ring = rings[c]
 					if (!ring) continue
 					if (!bucket) continue
 
@@ -427,6 +451,12 @@ const Page = () => {
 				if (!acquisitionStartedRef.current) {
 					acquisitionStartedRef.current = true;
 					setAcquisitionStarted(true);
+				}
+			};
+
+			const unsubscribeUIPublisher = framePublisher.subscribeFrames(frames => {
+				for (let i = 0; i < frames.length; i++) {
+					ingestFrameForChart(frames[i])
 				}
 			});
 
@@ -743,22 +773,24 @@ const Page = () => {
 				if (data == null) return;
 				if (Array.isArray(data)) {
 					const validFrames = data.filter(Boolean);
-					validFrames.forEach(frame => {
-						window.electronAPI?.sendFrame?.(frame);
-						framePublisher.publishFrame(frame);
-					});
+					if (validFrames.length === 0) return;
+					window.electronAPI?.sendFrame?.(validFrames);
+					framePublisher.publishFrames(validFrames);
 				} else {
 					window.electronAPI?.sendFrame?.(data);
-					framePublisher.publishFrame(data);
+					framePublisher.publishFrames([data]);
 				}
 			};
 
 			device.onError = error => {
-				console.error(error);
+				if (isExpectedDeviceLoss(error)) {
+					console.warn("[device.onError] Device stopped responding; ending the session and notifying the user.");
+				} else {
+					console.error("[device.onError] Unexpected acquisition error", error);
+				}
 				if (window.electronAPI?.acquisitionError && sessionFolder) {
 					window.electronAPI.acquisitionError(sessionFolder);
 				}
-				console.log("\n[device.onError] Device error, disconnecting and updating status\n");
 				handleUnexpectedAcquisitionStop()
 			};
 
@@ -813,6 +845,10 @@ const Page = () => {
 			initializePipeline(sampleRate)
 
 			await window.electronAPI?.startAcquisition?.(new Date().toISOString());
+
+			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
+				window.electronAPI?.setBufferSize?.(storeBufferThresholdRef.current, sampleRate);
+			}
 
 			const now = Date.now();
 			await window.electronAPI?.registerSegment?.({
