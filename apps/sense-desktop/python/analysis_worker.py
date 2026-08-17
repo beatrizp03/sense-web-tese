@@ -1042,7 +1042,7 @@ class AnalysisProgressTracker:
 def prune_bulky_arrays(value: Any, limit: int = ARRAY_PRESERVE_LIMIT) -> Any:
     if isinstance(value, list):
         if len(value) > limit:
-            return f"<array of {len(value)} items dropped — see channel CSV>"
+            return f"<array of {len(value)} items dropped, see channel CSV>"
         return [prune_bulky_arrays(item, limit) for item in value]
     if isinstance(value, dict):
         return {key: prune_bulky_arrays(item, limit) for key, item in value.items()}
@@ -2861,7 +2861,7 @@ def _compact_meta_value(value: Any, max_list: int = 25) -> Any:
         return {key: _compact_meta_value(item, max_list) for key, item in value.items()}
     if isinstance(value, list):
         if len(value) > max_list:
-            return f"<{len(value)} items omitted — see analysis.json>"
+            return f"<{len(value)} items omitted, see analysis.json>"
         return [_compact_meta_value(item, max_list) for item in value]
     return value
 
@@ -3248,7 +3248,7 @@ def append_features_readme_section(output_folder: Path) -> None:
         "RSP_Amplitude": "Interpolated respiratory amplitude per breath.",
         "RSP_Phase": "Binary respiratory phase signal (1=inspiration, 0=expiration).",
         "RSP_Phase_Completion": "Fractional completion of current respiratory phase (0..1).",
-        "RSP_RVT": "Respiratory Volume per Time (RVT) — volume*time index per sample.",
+        "RSP_RVT": "Respiratory Volume per Time (RVT), volume*time index per sample.",
         "RSP_Rate_Mean": "Mean respiration rate over the analyzed interval.",
         "RSP_Rate_SD": "Standard deviation of respiration rate over the interval.",
 
@@ -3266,7 +3266,7 @@ def append_features_readme_section(output_folder: Path) -> None:
         "RRV_HFn": "Normalized high-frequency power (RRV).",
         "RRV_SD1": "Poincaré plot short-term variability (SD1) of breath intervals.",
         "RRV_SD2": "Poincaré plot long-term variability (SD2) of breath intervals.",
-        "RRV_SD2SD1": "Ratio SD2/SD1 — long-to-short term variability ratio.",
+        "RRV_SD2SD1": "Ratio SD2/SD1, long-to-short term variability ratio.",
         "RRV_DFA_alpha1": "Detrended Fluctuation Analysis alpha1 (short-term fractal scaling).",
         "RRV_DFA_alpha2": "Detrended Fluctuation Analysis alpha2 (long-term fractal scaling).",
         "RRV_ApEn": "Approximate entropy of respiratory rate variability.",
@@ -3811,9 +3811,9 @@ export for the session.
 - `features.csv`: flattened feature table with a `library` column (biosppy/neurokit2).
 - `segment-<N>/channels/`: per-channel time series CSVs named `CHANNEL_KIND.csv` (e.g. `AI1_ECG.csv`).
 - `segment-<N>/signal.csv`: the segment's acquired frames in the ScientISST
-`sense.py` FileWriter layout (`mv=False` mode) — a `#{...}` Python-dict
+`sense.py` FileWriter layout (`mv=False` mode), a `#{...}` Python-dict
 metadata line, a tab-separated `#NSeq I1 I2 O1 O2 AI1_raw AI2_raw ...`
-column header, then one tab-separated row per frame — so it loads like a
+column header, then one tab-separated row per frame, so it loads like a
 recording produced by the sense.py CLI
 (github.com/scientisst/scientisst-sense-api-python).
 
@@ -3858,7 +3858,7 @@ CSV export is performed after analysis completes.
             logger.log_message(
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
-                f"— {chunk_count} chunks, {frame_count} frames"
+                f"- {chunk_count} chunks, {frame_count} frames"
                 f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}MB)",
                 step="complete",
@@ -3870,7 +3870,7 @@ CSV export is performed after analysis completes.
             logger.log_message(
                 f"[{session_name}] done in {total_seconds:.2f}s "
                 f"(analysis {analyze_seconds:.2f}s + outputs {total_seconds - analyze_seconds:.2f}s) "
-                f"— {chunk_count} chunks, {frame_count} frames"
+                f"- {chunk_count} chunks, {frame_count} frames"
                 f"{sample_rate_suffix} (library={eda_method}, "
                 f"result.json={result_size_mb:.1f}KB)",
                 step="complete",

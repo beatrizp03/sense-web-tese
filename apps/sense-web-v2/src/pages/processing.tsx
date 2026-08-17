@@ -12,12 +12,15 @@ import ProcessingSidePanel, { SidePanelTab } from "../components/processing/Proc
 import AnalysisPanel from "../components/processing/AnalysisPanel"
 import AnnotationsPanel from "../components/processing/AnnotationsPanel"
 import SessionExportBar from "../components/processing/SessionExportBar"
+import ProcessingHelpOverlay from "../components/processing/ProcessingHelpOverlay"
+import HelpHint from "../components/processing/HelpHint"
 import { toRecord, toAxisRecord } from "../components/processing/analysisShared"
 import { useBusyGuard } from "../hooks/useBusyGuard"
 import { useAnnotations } from "../hooks/useAnnotations"
 import { useAnnotationLabels } from "../utils/annotationLabels"
 
 const SESSION_STORAGE_KEY = "processing:session"
+const HELP_SEEN_STORAGE_KEY = "processing:helpSeen"
 
 const fullConfig = resolveConfig(tailwindConfig)
 const backgroundDarkColor =
@@ -39,6 +42,41 @@ function hexToRgba(hex: string, alpha: number): string {
 	return `rgba(${(int >> 16) & 255}, ${(int >> 8) & 255}, ${int & 255}, ${alpha})`
 }
 
+/** "2h 04m" / "12m 30s" / "45s" — how long the recording actually lasts. */
+function formatDuration(seconds: number): string {
+	if (!Number.isFinite(seconds) || seconds <= 0) return ""
+	const total = Math.round(seconds)
+	const h = Math.floor(total / 3600)
+	const m = Math.floor((total % 3600) / 60)
+	const s = total % 60
+	if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`
+	if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`
+	return `${s}s`
+}
+
+const SEGMENTS_HELP =
+	"Segments are the chunks of a single recording: a new one starts every time you pause and resume the acquisition. They are not channels, every channel is present in every segment."
+
+const ANNOTATION_TOOLS: { mode: "point" | "interval"; label: string; shortcut: string }[] = [
+	{ mode: "point", label: "Point", shortcut: "P" },
+	{ mode: "interval", label: "Interval", shortcut: "I" }
+]
+
+/** A dot for the point tool, a bounded bar for the interval tool. */
+const ToolIcon: React.FC<{ mode: "point" | "interval" }> = ({ mode }) => (
+	<svg viewBox="0 0 16 16" aria-hidden="true" className="h-3 w-3 shrink-0">
+		{mode === "point" ? (
+			<circle cx="8" cy="8" r="3.5" fill="currentColor" />
+		) : (
+			<>
+				<rect x="3" y="3" width="1.6" height="10" fill="currentColor" />
+				<rect x="11.4" y="3" width="1.6" height="10" fill="currentColor" />
+				<rect x="4.6" y="7.2" width="6.8" height="1.6" fill="currentColor" opacity="0.7" />
+			</>
+		)}
+	</svg>
+)
+
 const Page = () => {
 	const [sessionFolder, setSessionFolder] = useState("")
 	const [manifest, setManifest] = useState<any>(null)
@@ -53,6 +91,8 @@ const Page = () => {
 	const [selectedSegment, setSelectedSegment] = useState(1)
 	const [activeSideTab, setActiveSideTab] = useState<SidePanelTab>("analysis")
 	const [segLabelMenu, setSegLabelMenu] = useState<number | null>(null)
+	const [helpOpen, setHelpOpen] = useState(false)
+	const [bannerDismissed, setBannerDismissed] = useState(false)
 
 	const annotating = activeSideTab === "annotations"
 
@@ -308,6 +348,48 @@ const Page = () => {
 	const segments = useMemo(() => (Array.isArray(manifest?.segments) ? manifest.segments : []), [manifest])
 	const hasSession = channels.length > 0 && chunkCount > 0
 
+	const sessionSummary = useMemo(() => {
+		const parts: string[] = []
+		if (channels.length > 0) parts.push(`${channels.length} channel${channels.length === 1 ? "" : "s"}`)
+		const totalSeconds =
+			segments.reduce((acc: number, seg: any) => {
+				const start = Number(seg?.startedAt)
+				const end = Number(seg?.endedAt)
+				return Number.isFinite(start) && Number.isFinite(end) && end > start ? acc + (end - start) : acc
+			}, 0) / 1000
+		const duration = formatDuration(totalSeconds)
+		if (duration) parts.push(duration)
+		if (segments.length > 0) parts.push(`${segments.length} segment${segments.length === 1 ? "" : "s"}`)
+		const rate = Number(manifest?.sampleRate)
+		if (Number.isFinite(rate) && rate > 0) parts.push(`${rate} Hz`)
+		return parts.join(" · ")
+	}, [channels, segments, manifest])
+
+	useEffect(() => {
+		if (!hasSession) return
+		try {
+			if (window.localStorage.getItem(HELP_SEEN_STORAGE_KEY)) return
+			window.localStorage.setItem(HELP_SEEN_STORAGE_KEY, "1")
+		} catch {
+			return
+		}
+		setHelpOpen(true)
+	}, [hasSession])
+
+	useEffect(() => {
+		setBannerDismissed(false)
+	}, [annotating])
+
+	const annotationBannerMessage = useMemo(() => {
+		if (annotations.mode === "point") return "Point tool on - click on the graph to place a point."
+		if (annotations.mode === "interval") {
+			return annotations.draft
+				? "Interval tool on - click on the graph again to set the end of the interval. Esc cancels."
+				: "Interval tool on - click on the graph to set the start of the interval (not on the minimap below it)."
+		}
+		return "Annotation mode is on. Pick Point or Interval, then click on the graph. With no tool picked, clicking only selects existing annotations."
+	}, [annotations.mode, annotations.draft])
+
 	useEffect(() => {
 		setSelectedSegment(1)
 	}, [sessionFolder])
@@ -337,6 +419,15 @@ const Page = () => {
 			returnHref="/"
 			className="container flex flex-col items-center justify-start gap-6 p-8"
 		>
+			<button
+				type="button"
+				onClick={() => setHelpOpen(true)}
+				title="Quick start: what this page does"
+				className="fixed right-5 top-20 z-20 inline-flex items-center gap-1.5 rounded-full border border-background-accent bg-background-accent px-2.5 py-1 text-xs uppercase tracking-[0.18em] text-over-background-medium shadow-sm transition-colors hover:border-primary hover:text-primary"
+			>
+				Help
+			</button>
+
 			<div className="w-full max-w-5xl space-y-6">
 				{hasSession ? (
 					<div className="grid grid-cols-3 gap-4">
@@ -346,6 +437,11 @@ const Page = () => {
 									<div className="min-w-0 space-y-0">
 										<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Imported session</p>
 										<p className="break-all text-sm text-over-background-highest">{sessionFolder}</p>
+										{sessionSummary && (
+											<p className="mt-0.5 text-xs font-medium tabular-nums text-over-background-medium">
+												{sessionSummary}
+											</p>
+										)}
 									</div>
 								</div>
 								<div className="col-span-1 flex items-center py-1 rounded-l">
@@ -357,7 +453,17 @@ const Page = () => {
 							<div className="flex flex-wrap items-center gap-2">
 								{segments.length > 0 && (
 									<>
-										<span className="text-xs uppercase tracking-[0.2em] text-over-background-low">Segment</span>
+										<span className="relative inline-flex items-center text-xs uppercase text-over-background-low">
+											<HelpHint
+												label="What is a segment?"
+												width="w-[22rem]"
+												className="absolute right-full mr-1.5"
+											>
+												<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Segments</p>
+												<p className="mt-1 text-xs text-over-background-medium">{SEGMENTS_HELP}</p>
+											</HelpHint>
+											<span className="tracking-[0.2em] text-sm">Segment</span>
+										</span>
 										{segments.map((_: any, i: number) => {
 											const seg = i + 1
 											const segLabel = labelById.get(annotations.segmentLabels[seg])
@@ -474,6 +580,58 @@ const Page = () => {
 									{annotating ? "Annotations ON" : "Annotations OFF"}
 								</button>
 							</div>
+							{annotating && !bannerDismissed && (
+								<div
+									role="status"
+									className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-primary/50 bg-primary/10 px-3 py-2 text-xs text-over-background-highest"
+								>
+									<span className="relative inline-flex h-2.5 w-2.5 shrink-0" aria-hidden="true">
+										<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+										<span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
+									</span>
+									<span className="min-w-0 flex-1 text-xs">{annotationBannerMessage}</span>
+									<span className="flex items-center gap-1.5">
+										{ANNOTATION_TOOLS.map(tool => {
+											const toolActive = annotations.mode === tool.mode
+											return (
+												<button
+													key={tool.mode}
+													type="button"
+													onClick={() => annotations.toggleMode(tool.mode)}
+													title={`${tool.label} tool (shortcut ${tool.shortcut})`}
+													className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
+														toolActive
+															? "border-primary bg-primary/20 text-over-background-highest"
+															: "border-background-accent bg-background text-over-background-medium hover:border-primary/60"
+													}`}
+												>
+													<ToolIcon mode={tool.mode} />
+													{tool.label}
+													<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-[10px] font-semibold">
+														{tool.shortcut}
+													</kbd>
+												</button>
+											)
+										})}
+										<button
+											type="button"
+											onClick={() => handleTabChange("analysis")}
+											className="rounded-md border border-background-accent bg-background px-2 py-1 text-xs text-over-background-medium transition-colors hover:border-primary hover:text-primary"
+										>
+											Turn off
+										</button>
+										<button
+											type="button"
+											onClick={() => setBannerDismissed(true)}
+											aria-label="Hide this message"
+											title="Hide this message"
+											className="rounded px-1 text-over-background-low transition-colors hover:text-over-background-highest"
+										>
+											✕
+										</button>
+									</span>
+								</div>
+							)}
 							<SessionChart
 								channels={channels}
 								manifest={manifest}
@@ -578,6 +736,8 @@ const Page = () => {
 					</div>
 				)}
 			</div>
+
+			<ProcessingHelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
 
 			{confirmLeave && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">

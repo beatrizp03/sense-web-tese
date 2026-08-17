@@ -175,7 +175,7 @@ def _correct_ecg_peak_outliers(signal: Any, result_mapping: Dict[str, Any], samp
 
 def _flatten_numeric(value: Any) -> List[float]:
     """Recursively collect finite numbers from a (possibly multi-dimensional)
-    sequence. Some BioSPPy outputs are 2-D — e.g. EEG band powers are
+    sequence. Some BioSPPy outputs are 2-D, e.g. EEG band powers are
     (windows x channels) and ECG/PPG templates are (beats x samples). Without
     flattening, only 1-D arrays (the time axes) yield stats, so the meaningful
     features are silently dropped."""

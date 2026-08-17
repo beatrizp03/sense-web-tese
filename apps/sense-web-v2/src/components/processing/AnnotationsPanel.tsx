@@ -67,6 +67,21 @@ const TOOLS: { mode: Exclude<AnnotationMode, "idle">; label: string; shortcut: s
 	{ mode: "interval", label: "Interval", shortcut: "I" }
 ]
 
+/** A dot for the point tool, a bounded bar for the interval tool. */
+const ToolIcon: React.FC<{ mode: Exclude<AnnotationMode, "idle"> }> = ({ mode }) => (
+	<svg viewBox="0 0 16 16" aria-hidden="true" className="h-3.5 w-3.5 shrink-0">
+		{mode === "point" ? (
+			<circle cx="8" cy="8" r="3.5" fill="currentColor" />
+		) : (
+			<>
+				<rect x="3" y="3" width="1.6" height="10" fill="currentColor" />
+				<rect x="11.4" y="3" width="1.6" height="10" fill="currentColor" />
+				<rect x="4.6" y="7.2" width="6.8" height="1.6" fill="currentColor" opacity="0.7" />
+			</>
+		)}
+	</svg>
+)
+
 const formatSeconds = (value: number): string => String(Math.round(value * 1000) / 1000)
 
 const TimeBoundInput: React.FC<{ label: string; value: number; onCommit: (value: number) => void }> = ({
@@ -138,6 +153,22 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 	const [editorAutoAddAppliesTo, setEditorAutoAddAppliesTo] = useState<"channel" | "segment" | null>(null)
 	const [helpOpen, setHelpOpen] = useState(false)
 	const [capTooltip, setCapTooltip] = useState<{ x: number; y: number } | null>(null)
+	const [savedToast, setSavedToast] = useState(false)
+	const toastTimerRef = useRef<number | null>(null)
+
+	useEffect(
+		() => () => {
+			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
+		},
+		[]
+	)
+
+	const handleSave = async () => {
+		await onSave?.()
+		setSavedToast(true)
+		if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
+		toastTimerRef.current = window.setTimeout(() => setSavedToast(false), 2400)
+	}
 
 	const openLabelsEditor = (autoAdd: boolean, appliesTo: "channel" | "segment" | null = null) => {
 		setEditorAutoAdd(autoAdd)
@@ -353,11 +384,11 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						disabled={items.length === 0}
 						className="flex h-12 flex-1 uppercase pl-2 pr-2 basis-0 min-w-0 px-6 items-center justify-center rounded-lg bg-over-background-low px-2 text-center text-xs leading-tight text-background-white transition hover:opacity-80 disabled:opacity-40"
 					>
-						Clear window annotations
+						Clear annotat. in view
 					</button>
 					<TextButton
 						size="base"
-						onClick={onSave}
+						onClick={handleSave}
 						disabled={saving || !dirty}
 						className={`flex h-12 flex-1 basis-0 pl-2 pr-2 min-w-0 items-center justify-center px-4 text-center !text-xs leading-tight motion-safe:hover:!scale-95 ${!dirty && !saving ? "opacity-30" : ""}`}
 					>
@@ -378,7 +409,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				{helpOpen && (
 				<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
 					<span className="basis-full text-[10px] font-semibold uppercase tracking-[0.18em] text-over-background-low">
-						Window annotations
+						Annotations on the graph
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
 						<kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent px-1 text-xs font-semibold">Point</kbd>
@@ -389,7 +420,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 						- I + click twice on the graph
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
-						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Window Label</kbd>
+						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Annotation label</kbd>
 						- Select 1-9 Label (keyboard shortcut) or click a colour swatch
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
@@ -418,7 +449,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</span>
 					<span className="inline-flex items-center gap-1.5 text-xs">
 						<kbd className="inline-flex items-center rounded border border-background-accent px-1 text-xs font-semibold leading-tight">Label segment</kbd>
-						- Click a segment at the top, then click it again to pick a label
+						- Click the arrow on a segment chip at the top of the page
 					</span>
 				</div>
 				)}
@@ -442,6 +473,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 										: "border-background-accent bg-background-accent text-over-background-medium hover:border-primary/60"
 								}`}
 							>
+								<ToolIcon mode={tool.mode} />
 								{tool.label}
 								<span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-background-accent-dark px-1 text-xs font-semibold dark:border-background-accent-light">
 									{tool.shortcut}
@@ -469,7 +501,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</button>
 				</div>
 				<p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
-					Window
+					Annotation labels
 				</p>
 				<div className="flex flex-col gap-1.5">
 					{channelLabels.map((label, index) => {
@@ -516,7 +548,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				</div>
 
 				<p className="mb-1.5 mt-4 text-[11px] font-medium uppercase tracking-[0.18em] text-over-background-low">
-					Segment
+					Segment labels
 				</p>
 				<div className="flex flex-wrap items-center gap-1.5">
 					{segmentLabels.map(label => (
@@ -547,7 +579,7 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 					</button>
 				</div>
 				<p className="mt-1.5 text-[10px] text-over-background-low">
-					Click on a segment to set or change its label
+					Click the arrow on a segment chip at the top of the page
 				</p>
 			</div>
 
@@ -564,13 +596,24 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 				autoAddOnOpenAppliesTo={editorAutoAddAppliesTo ?? undefined}
 			/>
 
+			{savedToast && typeof document !== "undefined" &&
+				createPortal(
+					<div
+						role="status"
+						className="pointer-events-none fixed left-1/2 top-20 z-[100] -translate-x-1/2 rounded-full bg-over-background-highest px-4 py-2 text-xs font-medium text-background shadow-xl"
+					>
+						✓ Annotations saved
+					</div>,
+					document.body
+				)}
+
 			{capTooltip && typeof document !== "undefined" &&
 				createPortal(
 					<div
 						className="pointer-events-none fixed z-[100] w-max max-w-[18rem] rounded-md border border-background-accent bg-background px-2 py-1 text-xs text-over-background-highest shadow-lg"
 						style={{ left: capTooltip.x - 12, top: capTooltip.y + 12, transform: "translateX(-100%)" }}
 					>
-						{MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS} window labels taken - this one will be a segment label
+						{MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS} annotation labels taken - this one will be a segment label
 					</div>,
 					document.body
 				)}

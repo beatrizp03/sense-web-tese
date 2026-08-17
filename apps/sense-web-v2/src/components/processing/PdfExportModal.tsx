@@ -41,7 +41,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	generating = false,
 	onGenerate,
 	title = "Export annotated PDF",
-	description = "Choose the time span to draw. Annotations inside the span are overlaid on the charts and listed in a table.",
+	description = "Choose the part of the recording to put in the report. Annotations inside that span are drawn on the charts and listed in a table underneath them.",
 	showAnnotationInfo = true,
 	showAnalysisToggle = true
 }) => {
@@ -190,12 +190,6 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						</span>
 					</TextButton>
 				</div>
-
-				{showAnnotationInfo && showAnalysisToggle && (
-					<ChakraText fontSize="xs" color="gray.500" mt={2}>
-						The PDF continues below. Scroll to see the full content.
-					</ChakraText>
-				)}
 			</div>
 		</div>
 	)

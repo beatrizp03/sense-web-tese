@@ -232,6 +232,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 		startX: number
 		startWindow: [number, number]
 	}>({ mode: null, startX: 0, startWindow: [0, 0] })
+	const suppressTrackClickRef = useRef(false)
 
 	const secAtClientX = (clientX: number): number => {
 		const el = trackRef.current
@@ -251,27 +252,23 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 			const [s0, w0] = drag.startWindow
 			const end0 = s0 + w0
 
+			const deltaSec = ((event.clientX - drag.startX) / rect.width) * rangeSeconds
+
 			if (drag.mode === "move") {
-				const deltaSec =
-					((event.clientX - drag.startX) / rect.width) * rangeSeconds
-				let s = s0 + deltaSec
-				s = Math.min(Math.max(0, s), Math.max(0, rangeSeconds - w0))
+				const s = Math.min(Math.max(0, s0 + deltaSec), Math.max(0, rangeSeconds - w0))
 				onWindowChange(s, w0)
 			} else if (drag.mode === "resize-left") {
-				const s = Math.min(
-					Math.max(0, secAtClientX(event.clientX)),
-					end0 - MIN_WINDOW_SECONDS
-				)
-				onWindowChange(s, Math.min(maxWindowSec, end0 - s))
+				let s = Math.min(Math.max(0, s0 + deltaSec), end0 - MIN_WINDOW_SECONDS)
+				if (end0 - s > maxWindowSec) s = end0 - maxWindowSec
+				onWindowChange(s, end0 - s)
 			} else if (drag.mode === "resize-right") {
-				const e = Math.max(
-					Math.min(rangeSeconds, secAtClientX(event.clientX)),
-					s0 + MIN_WINDOW_SECONDS
-				)
-				onWindowChange(s0, Math.min(maxWindowSec, e - s0))
+				let e = Math.max(Math.min(rangeSeconds, end0 + deltaSec), s0 + MIN_WINDOW_SECONDS)
+				if (e - s0 > maxWindowSec) e = s0 + maxWindowSec
+				onWindowChange(s0, e - s0)
 			}
 		}
 		const onUp = () => {
+			if (dragRef.current.mode) suppressTrackClickRef.current = true
 			dragRef.current.mode = null
 		}
 		window.addEventListener("pointermove", onMove)
@@ -508,7 +505,14 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 			<div
 				ref={trackRef}
 				className="relative h-12 w-full cursor-pointer overflow-hidden rounded-md bg-background"
+				onPointerDownCapture={() => {
+					suppressTrackClickRef.current = false
+				}}
 				onClick={event => {
+					if (suppressTrackClickRef.current) {
+						suppressTrackClickRef.current = false
+						return
+					}
 					if (event.target !== event.currentTarget || rangeSeconds <= 0) return
 					const sec = secAtClientX(event.clientX)
 					const start = Math.min(Math.max(0, sec - windowSec / 2), Math.max(0, rangeSeconds - windowSec))
@@ -550,7 +554,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					className="absolute top-0 h-full cursor-grab touch-none rounded-sm border-2 border-background-accent-dark bg-primary/25 active:cursor-grabbing dark:border-background-accent-light"
 					style={{ left: `${leftPct}%`, width: `${widthPct}%`, minWidth: `${MIN_BRUSH_PX}px` }}
 					onPointerDown={startDrag("move")}
-					title="Drag to move the window; drag an edge to resize it"
+					title="Drag the middle to move the window; drag an edge to resize it"
 				>
 					<div
 						className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize touch-none rounded-l-sm bg-background-accent-dark/60 dark:bg-background-accent-light/60"
@@ -733,12 +737,9 @@ const SessionChart: React.FC<SessionChartProps> = ({
 		overview && totalSamples > 0
 			? totalSamples / (overview.sampleRate || sampleRate)
 			: 0
-	const rangeSeconds = Math.max(
-		overviewSeconds,
-		totalSecondsEstimate,
-		windowStartSec + windowSec,
-		MIN_WINDOW_SECONDS
-	)
+	const rangeSeconds = Math.max(overviewSeconds, totalSecondsEstimate, MIN_WINDOW_SECONDS)
+	const rangeRef = useRef(rangeSeconds)
+	rangeRef.current = rangeSeconds
 
 	const chunkOffsets = useMemo(() => {
 		const lengths = overview?.chunkLengths
@@ -763,8 +764,11 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	}, [overview, chunks])
 
 	const onWindowChange = useCallback((startSec: number, secLen: number) => {
-		setWindowStartSec(startSec)
-		setWindowSec(secLen)
+		const range = rangeRef.current
+		const len = Math.min(Math.max(MIN_WINDOW_SECONDS, secLen), Math.max(MIN_WINDOW_SECONDS, range))
+		const start = Math.min(Math.max(0, startSec), Math.max(0, range - len))
+		setWindowStartSec(start)
+		setWindowSec(len)
 	}, [])
 
 	useEffect(() => {

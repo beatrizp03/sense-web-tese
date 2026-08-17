@@ -364,6 +364,62 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 						context.fill()
 						context.stroke()
 					}
+
+					if (isBand(selForHandles)) {
+						const left = Math.min(xScale(selForHandles.t0), xScale(selForHandles.t1))
+						const right = Math.max(xScale(selForHandles.t0), xScale(selForHandles.t1))
+						const midY = plotHeight / 2
+						const gripW = 5 * pixelRatio
+						const gripH = 22 * pixelRatio
+						context.lineWidth = 1.5 * pixelRatio
+						for (const gx of [left, right]) {
+							context.fillStyle = "#ffffff"
+							context.strokeStyle = selForHandles.color
+							context.beginPath()
+							if (typeof context.roundRect === "function") {
+								context.roundRect(gx - gripW / 2, midY - gripH / 2, gripW, gripH, gripW / 2)
+							} else {
+								context.rect(gx - gripW / 2, midY - gripH / 2, gripW, gripH)
+							}
+							context.fill()
+							context.stroke()
+						}
+
+						const pillW = 30 * pixelRatio
+						const pillH = 14 * pixelRatio
+						if (right - left > pillW + 4 * gripW) {
+							const cx = (left + right) / 2
+							context.fillStyle = selForHandles.color
+							context.beginPath()
+							if (typeof context.roundRect === "function") {
+								context.roundRect(cx - pillW / 2, midY - pillH / 2, pillW, pillH, pillH / 2)
+							} else {
+								context.rect(cx - pillW / 2, midY - pillH / 2, pillW, pillH)
+							}
+							context.fill()
+
+							const armX = 8 * pixelRatio
+							const head = 3.4 * pixelRatio
+							context.strokeStyle = "#ffffff"
+							context.fillStyle = "#ffffff"
+							context.lineWidth = 1.6 * pixelRatio
+							context.lineCap = "round"
+							context.beginPath()
+							context.moveTo(cx - armX + head, midY)
+							context.lineTo(cx + armX - head, midY)
+							context.stroke()
+							for (const dir of [-1, 1]) {
+								const tip = cx + dir * armX
+								context.beginPath()
+								context.moveTo(tip, midY)
+								context.lineTo(tip - dir * head, midY - head)
+								context.lineTo(tip - dir * head, midY + head)
+								context.closePath()
+								context.fill()
+							}
+							context.lineCap = "butt"
+						}
+					}
 				}
 
 				if (draftIntervalStart != null) {
@@ -430,8 +486,9 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	const pressRef = useRef<{ x: number; y: number; time: number } | null>(null)
 	const [dragCursor, setDragCursor] = useState<string | null>(null)
 	const [hover, setHover] = useState<{ x: number; y: number; label: string; description: string } | null>(null)
-	const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
-	const [dragMode, setDragMode] = useState<"pan" | "move-annotation" | null>(null)
+	const [picker, setPicker] = useState<
+		{ x: number; y: number; dataX: number; dataY: number; items: CanvasAnnotation[] } | null
+	>(null)
 
 	useEffect(
 		() => () => {
@@ -440,25 +497,38 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		[]
 	)
 
-	const hitIdAtPx = useCallback(
-		(px: number, geom: NonNullable<typeof geomRef.current>): string | null => {
+	useEffect(() => {
+		if (!picker) return
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setPicker(null)
+		}
+		window.addEventListener("keydown", onKeyDown)
+		return () => window.removeEventListener("keydown", onKeyDown)
+	}, [picker])
+
+	const hitsAtPx = useCallback(
+		(px: number, geom: NonNullable<typeof geomRef.current>): CanvasAnnotation[] => {
 			const hitTolerance = 4 * pixelRatio
+			const points: CanvasAnnotation[] = []
+			const bands: CanvasAnnotation[] = []
 			for (let i = geom.annotations.length - 1; i >= 0; i--) {
 				const ann = geom.annotations[i]
-				if (ann.t0 !== ann.t1) continue
-				const a0 = geom.xScale(ann.t0)
-				const triangle = (ann.selected ? 8 : 6) * pixelRatio
-				if (Math.abs(px - a0) <= Math.max(hitTolerance, triangle)) return ann.id
+				if (ann.t0 === ann.t1) {
+					const triangle = (ann.selected ? 8 : 6) * pixelRatio
+					if (Math.abs(px - geom.xScale(ann.t0)) <= Math.max(hitTolerance, triangle)) points.push(ann)
+				} else {
+					const a0 = geom.xScale(ann.t0)
+					const a1 = geom.xScale(ann.t1)
+					if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) bands.push(ann)
+				}
 			}
-			for (let i = geom.annotations.length - 1; i >= 0; i--) {
-				const ann = geom.annotations[i]
-				if (ann.t0 === ann.t1) continue
-				const a0 = geom.xScale(ann.t0)
-				const a1 = geom.xScale(ann.t1)
-				if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) return ann.id
-			}
-			return null
+			return [...points, ...bands]
 		},
+		[pixelRatio]
+	)
+
+	const edgeGrabPx = useCallback(
+		(width: number): number => Math.max(4 * pixelRatio, Math.min(8 * pixelRatio, width / 3)),
 		[pixelRatio]
 	)
 
@@ -496,9 +566,26 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 			const dataX = geom.xScale.invert(px)
 			const dataY = geom.yScale.invert(py)
-			const hitId = hitIdAtPx(px, geom)
+			const hits = hitsAtPx(px, geom)
+			const hitId = hits[0]?.id ?? null
 
 			if (!inPlotY && !hitId) return
+
+			if (!placingCursor && hits.length > 1) {
+				if (clickTimerRef.current) {
+					window.clearTimeout(clickTimerRef.current)
+					clickTimerRef.current = null
+				}
+				setHover(null)
+				setPicker({
+					x: event.clientX - rect.left,
+					y: event.clientY - rect.top,
+					dataX,
+					dataY,
+					items: hits
+				})
+				return
+			}
 
 			const deferForDoubleClick =
 				hitId != null && !!onDataDoubleClick && draftIntervalStart == null
@@ -513,7 +600,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 			onDataClick(dataX, dataY, hitId)
 		},
-		[onDataClick, onDataDoubleClick, draftIntervalStart, hitIdAtPx]
+		[onDataClick, onDataDoubleClick, draftIntervalStart, hitsAtPx, placingCursor]
 	)
 
 	const handleDoubleClick = useCallback(
@@ -530,10 +617,10 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			if (rect.width <= 0) return
 			const scaleX = canvas.width / rect.width
 			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
-			const hitId = hitIdAtPx(px, geom)
+			const hitId = hitsAtPx(px, geom)[0]?.id ?? null
 			if (hitId) onDataDoubleClick(hitId)
 		},
-		[onDataDoubleClick, hitIdAtPx]
+		[onDataDoubleClick, hitsAtPx]
 	)
 
 	// Map a pointer event's clientX to a data-x using the current geometry.
@@ -550,13 +637,8 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		(event: React.PointerEvent<HTMLCanvasElement>) => {
 			if (event.button !== 0) return
 
-			if (selectedAnnotationId) {
-				event.preventDefault()
-				setDragMode("move-annotation")
-				return
-			}
+			pressRef.current = { x: event.clientX, y: event.clientY, time: Date.now() }
 
-			setDragMode("pan")
 			const geom = geomRef.current
 			const canvas = event.currentTarget
 			const rect = canvas.getBoundingClientRect()
@@ -565,7 +647,9 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			const px = (event.clientX - rect.left) * scaleX - geom.leftMargin
 			const sel = geom.annotations.find(a => a.selected)
 			if (!sel) return
-			const grab = 8 * pixelRatio
+			const left = geom.xScale(Math.min(sel.t0, sel.t1))
+			const right = geom.xScale(Math.max(sel.t0, sel.t1))
+			const grab = sel.t0 === sel.t1 ? 8 * pixelRatio : edgeGrabPx(right - left)
 			let edge: "t0" | "t1" | "point" | null = null
 			if (sel.t0 === sel.t1) {
 				if (Math.abs(px - geom.xScale(sel.t0)) <= grab) edge = "point"
@@ -577,9 +661,6 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			if (edge && onAnnotationDragBound) {
 				resizeRef.current = { id: sel.id, edge }
 			} else if (onAnnotationMove && sel.t0 !== sel.t1) {
-				// Interior of a selected interval (between the edge grab zones): move it.
-				const left = geom.xScale(Math.min(sel.t0, sel.t1))
-				const right = geom.xScale(Math.max(sel.t0, sel.t1))
 				if (px <= left + grab || px >= right - grab) return
 				resizeRef.current = {
 					id: sel.id,
@@ -588,6 +669,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 					t0: sel.t0,
 					t1: sel.t1
 				}
+				setDragCursor("grabbing")
 			} else {
 				return
 			}
@@ -598,7 +680,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 			}
 			event.preventDefault()
 		},
-		[onAnnotationDragBound, onAnnotationMove, pixelRatio]
+		[onAnnotationDragBound, onAnnotationMove, pixelRatio, edgeGrabPx]
 	)
 
 	const findAnnotationAt = (clientX: number, canvas: HTMLCanvasElement): CanvasAnnotation | null => {
@@ -607,21 +689,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		if (!geom || rect.width <= 0) return null
 		const scaleX = canvas.width / rect.width
 		const px = (clientX - rect.left) * scaleX - geom.leftMargin
-		const tol = 4 * pixelRatio
-		for (let i = geom.annotations.length - 1; i >= 0; i--) {
-			const ann = geom.annotations[i]
-			if (ann.t0 !== ann.t1) continue
-			const tri = (ann.selected ? 8 : 6) * pixelRatio
-			if (Math.abs(px - geom.xScale(ann.t0)) <= Math.max(tol, tri)) return ann
-		}
-		for (let i = geom.annotations.length - 1; i >= 0; i--) {
-			const ann = geom.annotations[i]
-			if (ann.t0 === ann.t1) continue
-			const a0 = geom.xScale(ann.t0)
-			const a1 = geom.xScale(ann.t1)
-			if (px >= Math.min(a0, a1) && px <= Math.max(a0, a1)) return ann
-		}
-		return null
+		return hitsAtPx(px, geom)[0] ?? null
 	}
 
 	/**
@@ -637,15 +705,15 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		const sel = geom.annotations.find(a => a.selected)
 		if (!sel) return null
 		const px = (clientX - rect.left) * (canvas.width / rect.width) - geom.leftMargin
-		const grab = 8 * pixelRatio
 		if (sel.t0 === sel.t1) {
-			return Math.abs(px - geom.xScale(sel.t0)) <= grab ? "ew-resize" : null
-		}
-		if (Math.abs(px - geom.xScale(sel.t0)) <= grab || Math.abs(px - geom.xScale(sel.t1)) <= grab) {
-			return onAnnotationDragBound ? "ew-resize" : null
+			return Math.abs(px - geom.xScale(sel.t0)) <= 8 * pixelRatio ? "ew-resize" : null
 		}
 		const left = geom.xScale(Math.min(sel.t0, sel.t1))
 		const right = geom.xScale(Math.max(sel.t0, sel.t1))
+		const grab = edgeGrabPx(right - left)
+		if (Math.abs(px - geom.xScale(sel.t0)) <= grab || Math.abs(px - geom.xScale(sel.t1)) <= grab) {
+			return onAnnotationDragBound ? "ew-resize" : null
+		}
 		if (onAnnotationMove && px > left + grab && px < right - grab) return "grab"
 		return null
 	}
@@ -680,8 +748,10 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 
 	const endResize = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
 		if (!resizeRef.current) return
+		const wasMove = resizeRef.current.edge === "move"
 		resizeRef.current = null
 		justResizedRef.current = true
+		if (wasMove) setDragCursor("grab")
 		try {
 			event.currentTarget.releasePointerCapture(event.pointerId)
 		} catch {
@@ -710,7 +780,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 					setDragCursor(null)
 				}}
 			/>
-			{hover && (
+			{hover && !picker && (
 				<div
 					className="pointer-events-none absolute z-20 max-w-[16rem] rounded-md border border-background-accent bg-background px-2 py-1 text-xs shadow-lg"
 					style={{ left: hover.x + 12, top: hover.y + 12 }}
@@ -720,6 +790,38 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 						<span className="block text-xs text-over-background-medium">{hover.description}</span>
 					)}
 				</div>
+			)}
+			{picker && (
+				<>
+					<div className="fixed inset-0 z-20" onClick={() => setPicker(null)} role="presentation" />
+					<div
+						className="absolute z-30 min-w-[11rem] max-w-[16rem] rounded-lg border border-background-accent bg-background p-1.5 shadow-xl"
+						style={{ left: Math.max(0, picker.x - 8), top: picker.y + 10 }}
+					>
+						<p className="px-1.5 py-1 text-[10px] uppercase tracking-[0.18em] text-over-background-low">
+							{picker.items.length} annotations here
+						</p>
+						{picker.items.map(item => (
+							<button
+								key={item.id}
+								type="button"
+								onClick={() => {
+									setPicker(null)
+									onDataClick?.(picker.dataX, picker.dataY, item.id)
+								}}
+								className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors hover:bg-background-accent"
+							>
+								<span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+								<span className="truncate text-over-background-highest">{item.label || "annotation"}</span>
+								<span className="ml-auto shrink-0 tabular-nums text-over-background-low">
+									{item.t0 === item.t1
+										? `${item.t0.toFixed(1)}s`
+										: `${item.t0.toFixed(1)}–${item.t1.toFixed(1)}s`}
+								</span>
+							</button>
+						))}
+					</div>
+				</>
 			)}
 		</div>
 	)

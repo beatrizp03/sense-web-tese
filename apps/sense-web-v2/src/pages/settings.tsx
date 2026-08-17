@@ -118,7 +118,7 @@ const Page = () => {
 	const { labels: annotationLabels } = useAnnotationLabels()
 	const [showSaved, setShowSaved] = useState(false)
 	const savedHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-	const firstSubmitRef = useRef(true)
+	const lastSavedRef = useRef<Record<string, string>>({})
 	const [loaded, setLoaded] = useState(false)
 	const [showLabelEditor, setShowLabelEditor] = useState(false)
 	const [showHistoryModal, setShowHistoryModal] = useState(false)
@@ -222,17 +222,24 @@ const Page = () => {
 							selectedChannels
 						)
 
-						saveCurrentSettings({
+						const payload = {
 							...values,
 							...(eegChannels.length > 0 ? { eegChannels } : {}),
 							channelSignalKinds,
 							channelSignalAxes
-						} as SessionSettingsSnapshot["settings"])
+						} as SessionSettingsSnapshot["settings"]
 
-						if (firstSubmitRef.current) {
-							firstSubmitRef.current = false
-							return
+						saveCurrentSettings(payload)
+
+						const { deviceType, ...deviceSettings } = payload as Record<string, unknown>
+						const deviceKey = String(deviceType)
+						const serialized = JSON.stringify(deviceSettings)
+						if (typeof lastSavedRef.current !== "object" || lastSavedRef.current === null) {
+							lastSavedRef.current = {}
 						}
+						const previous = lastSavedRef.current[deviceKey]
+						lastSavedRef.current[deviceKey] = serialized
+						if (previous === undefined || previous === serialized) return
 
 						setShowSaved(true)
 						if (savedHideTimer.current) clearTimeout(savedHideTimer.current)
@@ -252,7 +259,7 @@ const Page = () => {
 								role="status"
 								aria-live="polite"
 								className={clsx(
-									"absolute left-4 top-12 z-10 flex -translate-y-1/2 items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium shadow-sm transition-opacity duration-300",
+									"fixed left-4 top-20 z-30 flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium shadow-lg transition-opacity duration-300",
 									showSaved ? "opacity-100" : "pointer-events-none opacity-0"
 								)}
 								style={{

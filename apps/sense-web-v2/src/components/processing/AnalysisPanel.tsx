@@ -125,6 +125,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 	const [selectedDetailEntry, setSelectedDetailEntry] = useState<any>(null)
 	const [showDetailModal, setShowDetailModal] = useState(false)
 	const [zoomedTable, setZoomedTable] = useState<"summary" | "outlier" | null>(null)
+	const [advancedOpen, setAdvancedOpen] = useState<Record<string, boolean>>({})
 	const [hydrated, setHydrated] = useState(false)
 	const [loadedFolder, setLoadedFolder] = useState<string>(FULL_SESSION_FOLDER)
 	const analysisInProgressRef = useRef(false)
@@ -227,6 +228,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 			return acc
 		}, {})
 	}, [assignedKinds, signalKindLibraries])
+
+	const overriddenKinds = useMemo(
+		() => allAssignedKinds.filter(kind => Boolean(signalKindLibraries[kind])),
+		[allAssignedKinds, signalKindLibraries]
+	)
 
 	const libraryConflicts = useMemo(() => {
 		return Object.entries(appliedSignalKindLibraries)
@@ -664,6 +670,78 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 		)
 	)
 
+	/**
+	 * Analysis parameters that only make sense for one signal type, shown right
+	 * under the first channel mapped to it so they are not mistaken for the
+	 * graph's window controls.
+	 */
+	const renderAdvancedForKind = (kind: string) => {
+		const spec =
+			kind === "emg"
+				? {
+						title: "Advanced: EMG feature epoch",
+						note: "Hudgins set (MAV/RMS/WL/ZC/SSC) + MNF/MDF are computed per epoch. Step < length means epochs overlap.",
+						fields: [
+							{ label: "ms length", value: emgWindowMs, set: setEmgWindowMs },
+							{ label: "ms step", value: emgWindowStepMs, set: setEmgWindowStepMs }
+						]
+					}
+				: {
+						title: "Advanced: HRV / PRV epoch",
+						note: "ECG HRV (and PPG pulse-rate variability) are computed per epoch via NeuroKit2. Default 300s / 300s = consecutive 5-min epochs.",
+						fields: [
+							{ label: "s length", value: hrvWindowSec, set: setHrvWindowSec },
+							{ label: "s step", value: hrvWindowStepSec, set: setHrvWindowStepSec }
+						]
+					}
+		const open = Boolean(advancedOpen[kind])
+		return (
+			<div className="ml-4 rounded-xl border border-background-accent">
+				<button
+					type="button"
+					onClick={() => setAdvancedOpen(current => ({ ...current, [kind]: !current[kind] }))}
+					aria-expanded={open}
+					className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+				>
+					<span className="text-xs font-medium text-over-background-highest">{spec.title}</span>
+					<span aria-hidden className="text-xs leading-none">{open ? "▾" : "▸"}</span>
+				</button>
+				{open && (
+					<div className="space-y-1 border-t border-background-accent px-3 py-3">
+						<div className="flex flex-wrap items-center gap-4">
+							{spec.fields.map(field => (
+								<label key={field.label} className="flex items-center gap-1">
+									<input
+										type="number"
+										min={1}
+										step={1}
+										value={field.value}
+										onChange={e => field.set(Math.max(1, Number(e.target.value) || 0))}
+										className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+									/>
+									<span className="text-xs">{field.label}</span>
+								</label>
+							))}
+						</div>
+						<p className="text-xs text-over-background-low">{spec.note}</p>
+					</div>
+				)}
+			</div>
+		)
+	}
+
+	/** The first channel carrying each kind owns that kind's advanced block. */
+	const advancedKindOwner = useMemo(() => {
+		const owner: Record<string, string> = {}
+		for (const channel of channels) {
+			if (excludedChannels[channel]) continue
+			const kind = appliedSignalKinds[channel]
+			const group = kind === "emg" ? "emg" : kind === "ecg" || kind === "ppg" ? "hrv" : null
+			if (group && !owner[group]) owner[group] = channel
+		}
+		return owner
+	}, [channels, excludedChannels, appliedSignalKinds])
+
 	return (
 		<div className="space-y-4 pr-0.5 text-over-background-highest">
 			{/* Settings / Results sub-tabs */}
@@ -696,112 +774,6 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 						<span className="text-xs">Enable Outlier Removal</span>
 					</label>
 
-					<div className="space-y-1">
-						<label className="flex items-center gap-2 text-sm">
-							<span className="text-xs">Library used:</span>
-							<select
-								value={edaMethodSelection}
-								onChange={e => setEdaMethodSelection(e.target.value as any)}
-								className="rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
-							>
-								<option value="auto" className="text-xs">Auto</option>
-								<option value="neurokit" className="text-xs">NeuroKit2</option>
-								<option value="biosppy" className="text-xs">BioSPPy</option>
-							</select>
-							<HelpHint label="Library selection" width="w-[26rem]">
-								<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Help</p>
-								<h3 className="mt-1 text-xs font-semibold">Library selection</h3>
-								<div className="mt-3 space-y-2 text-xs text-over-background-medium">
-									<p className="text-xs">
-										<span className="font-semibold text-xs">Auto</span> runs every library that supports each signal, so ECG,
-										EDA, PPG, EMG, RSP and EEG are analysed by both BioSPPy and NeuroKit2. The results are reported
-										side by side, not combined into one number: each feature keeps the name of the library that produced
-										it, in the <span className="font-mono text-xs">library</span> column of features.csv and in separate blocks
-										of analysis.json. That lets you compare the two.
-									</p>
-									<p className="text-xs">
-										Picking a specific library skips the other one entirely. Note that some signals are only supported by
-										one library, PCG and ACC by BioSPPy, EOG by NeuroKit2, so forcing the other library leaves those
-										channels with no results.
-									</p>
-								</div>
-							</HelpHint>
-						</label>
-						<p className="text-xs text-over-background-low">
-							Auto runs both libraries where supported and reports their results side by side.
-						</p>
-					</div>
-
-					{assignedKinds.includes("emg") ? (
-						<div className="space-y-1">
-							<div className="flex flex-col items-start gap-2 text-sm">
-								<span className="text-xs">EMG feature epoch:</span>
-								<div className="flex flex-wrap items-center gap-4">
-									<label className="flex items-center gap-1">
-										<input
-											type="number"
-											min={1}
-											step={1}
-											value={emgWindowMs}
-											onChange={e => setEmgWindowMs(Math.max(1, Number(e.target.value) || 0))}
-											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
-										/>
-										<span className="text-xs">ms length</span>
-									</label>
-									<label className="flex items-center gap-1">
-										<input
-											type="number"
-											min={1}
-											step={1}
-											value={emgWindowStepMs}
-											onChange={e => setEmgWindowStepMs(Math.max(1, Number(e.target.value) || 0))}
-											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
-										/>
-										<span className="text-xs">ms step</span>
-									</label>
-								</div>
-							</div>
-							<p className="text-xs text-over-background-low">
-								Hudgins set (MAV/RMS/WL/ZC/SSC) + MNF/MDF are computed per epoch. Step &lt; length means epochs overlap.
-							</p>
-						</div>
-					) : null}
-
-					{assignedKinds.includes("ecg") || assignedKinds.includes("ppg") ? (
-						<div className="space-y-1">
-							<div className="flex flex-col items-start gap-2 text-sm">
-								<span className="text-xs">HRV / PRV epoch:</span>
-								<div className="flex flex-wrap items-center gap-4">
-									<label className="flex items-center gap-1">
-										<input
-											type="number"
-											min={1}
-											step={1}
-											value={hrvWindowSec}
-											onChange={e => setHrvWindowSec(Math.max(1, Number(e.target.value) || 0))}
-											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
-										/>
-										<span className="text-xs">s length</span>
-									</label>
-									<label className="flex items-center gap-1">
-										<input
-											type="number"
-											min={1}
-											step={1}
-											value={hrvWindowStepSec}
-											onChange={e => setHrvWindowStepSec(Math.max(1, Number(e.target.value) || 0))}
-											className="w-16 rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
-										/>
-										<span className="text-xs">s step</span>
-									</label>
-								</div>
-							</div>
-							<p className="text-xs text-over-background-low">
-								ECG HRV (and PPG pulse-rate variability) are computed per epoch via NeuroKit2. Default 300s / 300s = consecutive 5-min epochs.
-							</p>
-						</div>
-					) : null}
-
 					<div className="space-y-2">
 						<p className="text-xs text-over-background-medium">Map each channel to a signal type. Uncheck a channel to leave it out of the analysis entirely, only its raw series is exported, and it appears in no results or metrics.</p>
 						{channels.length > 0 ? (
@@ -809,8 +781,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 								const selectedValue = signalKinds[channel] ?? toRecord(manifest?.channelSignalKinds)[channel] ?? ""
 								const selectedAxis = signalAxes[channel] ?? toAxisRecord(manifest?.channelSignalAxes)[channel] ?? ""
 								const isExcluded = Boolean(excludedChannels[channel])
+								const advancedKind =
+									advancedKindOwner.emg === channel ? "emg" : advancedKindOwner.hrv === channel ? "hrv" : null
 								return (
-									<div key={channel} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${isExcluded ? "opacity-60" : ""}`}>
+									<div key={channel} className="space-y-2">
+									<div className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${isExcluded ? "opacity-60" : ""}`}>
 										<label className="flex items-center gap-2">
 											<input
 												type="checkbox"
@@ -827,7 +802,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 											/>
 											<div>
 												<div className="text-xs font-medium">{channelNames[channel] ?? channel}</div>
-												<div className="text-xs text-over-background-low">Channel {channel}{isExcluded ? " · raw series only" : ""}</div>
+												<div className="text-xs text-over-background-low">Channel {channel}{isExcluded ? " · excluded" : ""}</div>
 											</div>
 										</label>
 										<div className="flex flex-wrap items-center justify-end gap-2">
@@ -874,6 +849,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 											) : null}
 										</div>
 									</div>
+									{advancedKind ? renderAdvancedForKind(advancedKind) : null}
+								</div>
 								)
 							})
 						) : (
@@ -883,38 +860,94 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 						)}
 					</div>
 
-					{allAssignedKinds.length > 0 ? (
-						<div className="space-y-2">
-							<p className="text-xs text-over-background-medium">Override the analysis library per signal type. &quot;Auto&quot; follows the global &quot;Library used&quot;.</p>
-							{allAssignedKinds.map(kind => {
-								const kindActive = assignedKinds.includes(kind)
-								return (
-									<div key={`lib-${kind}`} className={`flex items-center gap-2 rounded-xl border border-background-accent bg-background-accent-light p-3 dark:bg-background-accent-dark ${kindActive ? "" : "opacity-60"}`}>
-										<span className="min-w-[3rem] text-xs font-medium uppercase">{kind}</span>
-										<select
-											value={signalKindLibraries[kind] ?? ""}
-											disabled={!kindActive}
-											title={kindActive ? undefined : "All channels of this signal type are excluded from analysis"}
-											onChange={event => {
-												const nextValue = event.target.value
-												setSignalKindLibraries(current => {
-													const next = { ...current }
-													if (nextValue === "neurokit" || nextValue === "biosppy") next[kind] = nextValue
-													else delete next[kind]
-													return next
-												})
-											}}
-											className="min-w-[6rem] flex-1 rounded-full border border-background-accent bg-background px-3 py-2 text-xs outline-none disabled:cursor-not-allowed"
-										>
-											<option value="">Auto</option>
-											<option value="neurokit">NeuroKit2</option>
-											<option value="biosppy">BioSPPy</option>
-										</select>
+					<div className="rounded-xl border border-background-accent">
+						<div className={`space-y-1 p-3 ${overriddenKinds.length > 0 ? "opacity-60" : ""}`}>
+							<label className="flex items-center gap-2 text-sm">
+								<span className="text-xs font-medium">Library for every signal:</span>
+								<select
+									value={edaMethodSelection}
+									onChange={e => setEdaMethodSelection(e.target.value as any)}
+									className="rounded-full border border-background-accent bg-background px-2 py-1 text-xs"
+								>
+									<option value="auto" className="text-xs">Auto</option>
+									<option value="neurokit" className="text-xs">NeuroKit2</option>
+									<option value="biosppy" className="text-xs">BioSPPy</option>
+								</select>
+								<HelpHint label="Library selection" width="w-[26rem]">
+									<p className="text-[11px] uppercase tracking-[0.2em] text-over-background-low">Help</p>
+									<h3 className="mt-1 text-xs font-semibold">Library selection</h3>
+									<div className="mt-3 space-y-2 text-xs text-over-background-medium">
+										<p className="text-xs">
+											<span className="font-semibold text-xs">Auto</span> runs every library that supports each signal, so ECG,
+											EDA, PPG, EMG, RSP and EEG are analysed by both BioSPPy and NeuroKit2. The results are reported
+											side by side, not combined into one number: each feature keeps the name of the library that produced
+											it, in the <span className="font-mono text-xs">library</span> column of features.csv and in separate blocks
+											of analysis.json. That lets you compare the two.
+										</p>
+										<p className="text-xs">
+											Picking a specific library skips the other one entirely. Note that some signals are only supported by
+											one library, PCG and ACC by BioSPPy, EOG by NeuroKit2, so forcing the other library leaves those
+											channels with no results.
+										</p>
 									</div>
-								)
-							})}
+								</HelpHint>
+							</label>
+							<p className="text-xs text-over-background-low">
+								Auto runs both libraries where supported and reports their results side by side.
+							</p>
 						</div>
-					) : null}
+
+						{overriddenKinds.length > 0 && (
+							<p className="px-3 pb-2 text-xs text-primary">
+								Overridden below for {overriddenKinds.map(kind => kind.toUpperCase()).join(", ")}, the setting above no longer
+								applies to {overriddenKinds.length === 1 ? "it" : "them"}.
+							</p>
+						)}
+
+						{allAssignedKinds.length > 0 ? (
+							<div className="border-t border-background-accent p-3">
+								<p className="text-xs font-medium text-over-background-highest">Per-signal override</p>
+								<p className="mb-2 text-xs text-over-background-low">
+									&quot;Global setting&quot; leaves the signal on the setting above.
+								</p>
+								<div className="space-y-2 border-l-2 border-background-accent pl-3">
+								{allAssignedKinds.map(kind => {
+									const kindActive = assignedKinds.includes(kind)
+									return (
+										<div key={`lib-${kind}`} className={`flex items-center gap-2 rounded-xl border p-3 dark:bg-background-accent-dark ${signalKindLibraries[kind] ? "border-primary/60 bg-primary/5" : "border-background-accent bg-background-accent-light"} ${kindActive ? "" : "opacity-60"}`}>
+											<span className="min-w-[3rem] text-xs font-medium uppercase">{kind}</span>
+											<select
+												value={signalKindLibraries[kind] ?? ""}
+												disabled={!kindActive}
+												title={kindActive ? undefined : "All channels of this signal type are excluded from analysis"}
+												onChange={event => {
+													const nextValue = event.target.value
+													setSignalKindLibraries(current => {
+														const next = { ...current }
+														if (nextValue === "neurokit" || nextValue === "biosppy") next[kind] = nextValue
+														else delete next[kind]
+														return next
+													})
+												}}
+												className="min-w-[6rem] flex-1 rounded-full border border-background-accent bg-background px-3 py-2 text-xs outline-none disabled:cursor-not-allowed"
+											>
+												<option value="" className="text-xs">
+													Global setting
+												</option>
+												<option value="neurokit" className="text-xs">
+													NeuroKit2
+												</option>
+												<option value="biosppy" className="text-xs">
+													BioSPPy
+												</option>
+											</select>
+										</div>
+									)
+								})}
+								</div>
+							</div>
+						) : null}
+					</div>
 				</div>
 			) : (
 				<div className="space-y-3 text-sm">
@@ -931,7 +964,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							onClick={selectAnalysisFolder}
 							className="w-full uppercase rounded-lg bg-over-background-low-light p-1.5 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
 						>
-							Import another analysis' results
+							Import analysis from folder
 						</button>
 					</div>
 
@@ -1105,6 +1138,14 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 				isVisible={showProgressPanel}
 				startTime={analysisStartTime}
 				onRetry={() => proceedWithAnalysis(pendingRangeRef.current)}
+				onViewResults={
+					analysisResult
+						? () => {
+								setActiveTab("results")
+								setShowProgressPanel(false)
+							}
+						: undefined
+				}
 				onCancel={() => {
 					setShowProgressPanel(false)
 					window.electronAPI?.cancelPostHocAnalysis?.()
@@ -1283,7 +1324,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							<h2 className="text-xl font-semibold text-over-background-highest-light dark:text-over-background-highest-dark">Which library should be used?</h2>
 						</div>
 						<p className="text-sm text-over-background-medium-light dark:text-over-background-medium-dark mb-3">
-							The global library is <span className="font-medium">{librarySelectionName(edaMethodSelection)}</span>,
+							The global library is <span className="font-medium text-sm">{librarySelectionName(edaMethodSelection)}</span>,
 							but {libraryConflicts.length === 1 ? "one signal type asks" : "some signal types ask"} for a different one:
 						</p>
 						<ul className="mb-6 space-y-1">

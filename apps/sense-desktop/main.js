@@ -240,7 +240,7 @@ function resolveAnalysisWorkerCommand(preferredExecutable) {
     throw new Error(
       'Post-hoc analysis worker is unavailable: no bundled Python runtime was found in this build. ' +
       `Expected either ${frozenBinaryPath} (PyInstaller-frozen worker) or ${bundledPythonPath} (embedded CPython). ` +
-      'A packaged build must ship one of these — refusing to fall back to a system "python" on PATH.'
+      'A packaged build must ship one of these, refusing to fall back to a system "python" on PATH.'
     );
   }
 
@@ -604,7 +604,7 @@ function createWindow() {
       defaultId: 0,
       cancelId: 0,
       title: 'Operation in progress',
-      message: `${busyReason} in progress — leaving will discard live state.`,
+      message: `${busyReason} in progress, leaving will discard live state.`,
       detail: 'Click "Stay" to remain on the page, or "Leave anyway" to reload/navigate (data already written to disk is safe).',
     });
     if (choice === 0) event.preventDefault(); 
@@ -994,7 +994,7 @@ ipcMain.handle('finalizeSession', (_event, endedAt) => {
 
 ipcMain.on('reset-session', () => {
   if (!sessionFolder) return; 
-  console.log('[main] Session abandoned — resetting state for next acquisition');
+  console.log('[main] Session abandoned, resetting state for next acquisition');
   if (sampleWriter) {
     sampleWriter.finalizeSession();
     sampleWriter = undefined;
@@ -1091,8 +1091,6 @@ ipcMain.handle('load-preview-frames', async (_event, { sampleNum, frameCount }) 
 });
 
 ipcMain.on('set-buffer-size', (_event, payload) => {
-  // Accepts both the bare number this used to take and the { size, sampleRate }
-  // object, so a stale renderer or preload cannot break acquisition.
   const size = typeof payload === 'number' ? payload : payload?.size;
   const sampleRate = typeof payload === 'object' && payload !== null ? payload.sampleRate : undefined;
 
@@ -1108,8 +1106,6 @@ ipcMain.on('set-buffer-size', (_event, payload) => {
       console.log(`[electron] Updated BufferManager chunk size: ${size}`);
     }
   }
-  // Without this the adaptive threshold is measured against a default 1 kHz,
-  // so its 5-10 second bound only holds for 1 kHz sessions.
   if (bufferManager && typeof sampleRate === 'number' && sampleRate > 0) {
     bufferManager.setSampleRate(sampleRate);
     if (process.env.BUFFER_MANAGER_LOGS === '1') {

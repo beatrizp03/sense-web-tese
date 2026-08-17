@@ -88,7 +88,7 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 		{
 			id: "pdf",
 			label: annotatedPdfDownloading ? "Downloading PDF" : "Download as PDF",
-			description: "Pick a time span to render: the branded report draws each channel with its annotations overlaid, followed by a table of the annotations and their descriptions.",
+			description: "A report for the part of the recording you choose. Each channel is drawn with its annotations on top, followed by a table listing them, and a summary of the analysis is added automatically, you do not need to run the analysis first.",
 			onClick: () => setPdfModalOpen(true),
 			disabled: !hasSession || annotatedPdfDownloading,
 			loading: annotatedPdfDownloading

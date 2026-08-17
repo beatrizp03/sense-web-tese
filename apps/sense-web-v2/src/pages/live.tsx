@@ -539,7 +539,7 @@ const Page = () => {
 				const hasBluetooth = ports.some(port => /bluetooth/i.test(String(port?.friendlyName ?? "")))
 				if (!hasBluetooth) {
 					setConnectWarning(
-						"No Bluetooth device detected. If your board connects over Bluetooth, turn it on and pair it — otherwise pick your wired port below."
+						"No Bluetooth device detected. If your board connects over Bluetooth, turn it on and pair it, otherwise pick your wired port below."
 					)
 				}
 

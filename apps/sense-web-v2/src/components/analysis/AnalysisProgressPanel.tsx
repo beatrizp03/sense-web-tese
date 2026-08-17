@@ -19,6 +19,7 @@ interface AnalysisProgressPanelProps {
   isVisible: boolean
   onCancel?: () => void
   onRetry?: () => void
+  onViewResults?: () => void
   totalTime?: number
   resultPath?: string
   outputFiles?: AnalysisOutputFile[]
@@ -29,6 +30,7 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
   isVisible,
   onCancel,
   onRetry,
+  onViewResults,
   totalTime,
   resultPath,
   outputFiles,
@@ -219,14 +221,14 @@ export const AnalysisProgressPanel: React.FC<AnalysisProgressPanelProps> = ({
                 onClick={handleOpenResults}
                 className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/95"
               >
-                Open Results
+                Open Results folder
               </button>
             )}
             <button
-              onClick={onCancel}
+              onClick={onViewResults ?? onCancel}
               className="flex-1 rounded-lg border border-over-background-highest-dark bg-transparent px-4 py-2 text-sm font-medium text-over-background-highest-dark hover:bg-black/5 dark:border-over-background-highest-light dark:text-over-background-highest-light dark:hover:bg-white/5"
             >
-              Close
+              View Results in the app
             </button>
           </div>
         </div>

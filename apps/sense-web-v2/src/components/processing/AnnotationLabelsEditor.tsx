@@ -23,12 +23,12 @@ interface AnnotationLabelsEditorProps {
 export const MAX_CHANNEL_LABELS = 9
 
 const APPLIES_TO_OPTIONS: { value: AnnotationAppliesTo; label: string }[] = [
-	{ value: "channel", label: "Windows" },
+	{ value: "channel", label: "Annotations" },
 	{ value: "segment", label: "Segment" }
 ]
 
 const SECTIONS: { value: AnnotationAppliesTo; title: string; empty: string }[] = [
-	{ value: "channel", title: "Window labels", empty: "No window labels yet." },
+	{ value: "channel", title: "Annotation labels", empty: "No annotation labels yet." },
 	{ value: "segment", title: "Segment labels", empty: "No segment labels yet." }
 ]
 
@@ -57,7 +57,7 @@ const fieldLabelClasses = "text-[10px] font-medium uppercase tracking-wide text-
 const FIELD_GUIDE: { field: string; help: string; example: string }[] = [
 	{ field: "Color", help: "The marker color shown on the chart for this label.", example: "e.g. red for artifacts, green for events" },
 	{ field: "Label", help: "Short name you'll pick while annotating.", example: "e.g. noise, onset, peak" },
-	{ field: "Applies to", help: "Whether the label marks a point/interval on the windows, or a whole segment.", example: "e.g. Windows for a noisy stretch, Segment for \"healthy\"" },
+	{ field: "Applies to", help: "Whether the label marks a point/interval on the graph, or a whole acquisition segment.", example: "e.g. Annotations for a noisy stretch, Segment for \"healthy\"" },
 	{ field: "Category", help: "A group the label belongs to, for organisation.", example: "e.g. quality, event, feature, state, class" },
 	{ field: "Description", help: "A longer explanation, shown as a tooltip in the legend.", example: "e.g. \"Motion artifact\", \"Event start\"" }
 ]
@@ -381,13 +381,13 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 						<button
 							type="button"
 							onClick={() => addDraft()}
-							title={atChannelCap ? "Window labels are full — the new label will be a segment label" : undefined}
+							title={atChannelCap ? "Annotation labels are full, the new label will be a segment label" : undefined}
 							className="rounded-md border border-background-accent px-3 py-1.5 text-xs font-medium text-over-background-highest transition-colors hover:border-primary hover:text-primary"
 						>
 							+ Add label
 						</button>
 						<span className="text-[10px] text-over-background-low">
-							{channelCount}/{MAX_CHANNEL_LABELS} window labels (keys 1–9)
+							{channelCount}/{MAX_CHANNEL_LABELS} annotation labels (keys 1–9)
 						</span>
 					</div>
 					<div className="flex items-center gap-2">
@@ -414,7 +414,7 @@ const AnnotationLabelsEditor: React.FC<AnnotationLabelsEditorProps> = ({ open, o
 					className="pointer-events-none fixed z-[60] w-max max-w-[15rem] rounded-md border border-background-accent bg-background px-2 py-1 text-[11px] text-over-background-highest shadow-lg"
 					style={{ left: capNote.x + 12, top: capNote.y + 18 }}
 				>
-					{MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS} window labels taken - remove or edit one to free a slot
+					{MAX_CHANNEL_LABELS}/{MAX_CHANNEL_LABELS} annotation labels taken - remove or edit one to free a slot
 				</div>
 			)}
 		</div>,
