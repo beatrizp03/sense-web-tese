@@ -13,6 +13,31 @@ export interface PdfExportRange {
 	observations: string
 }
 
+/** Accepts "90", "1:30" and "1:02:03"; returns seconds, or null if unreadable. */
+function parseTimeInput(raw: string): number | null {
+	const trimmed = raw.trim()
+	if (!trimmed) return null
+	if (trimmed.includes(":")) {
+		const parts = trimmed.split(":")
+		if (parts.length !== 2 && parts.length !== 3) return null
+		const nums = parts.map(part => (part.trim() === "" ? NaN : Number(part)))
+		if (nums.some(n => !Number.isFinite(n) || n < 0)) return null
+		return parts.length === 2 ? nums[0] * 60 + nums[1] : nums[0] * 3600 + nums[1] * 60 + nums[2]
+	}
+	const seconds = Number(trimmed)
+	return Number.isFinite(seconds) ? seconds : null
+}
+
+/** Seconds as "m:ss", rolling over to "h:mm:ss" past an hour. */
+function formatTime(seconds: number): string {
+	if (!Number.isFinite(seconds) || seconds < 0) return "0:00"
+	const total = Math.round(seconds)
+	const s = String(total % 60).padStart(2, "0")
+	const m = Math.floor(total / 60) % 60
+	const h = Math.floor(total / 3600)
+	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`
+}
+
 interface PdfExportModalProps {
 	open: boolean
 	onClose: () => void
@@ -59,26 +84,29 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 		const seg = Math.min(Math.max(1, defaultSegment), segmentCount)
 		setSegment(seg)
 		const segMax = segmentSeconds[seg - 1] || 0
-		const start = defaultRange ? Math.max(0, defaultRange.startSec) : 0
-		const end = defaultRange ? defaultRange.endSec : segMax > 0 ? Math.min(30, segMax) : 30
-		setStartDraft(String(Math.round(start)))
-		setEndDraft(String(Math.round(end)))
+		const startSec = defaultRange ? Math.max(0, defaultRange.startSec) : 0
+		const endSec = defaultRange ? defaultRange.endSec : segMax > 0 ? Math.min(30, segMax) : 30
+		setStartDraft(formatTime(startSec))
+		setEndDraft(formatTime(endSec))
 	}, [open, defaultSegment, defaultRange, segmentCount, segmentSeconds])
 
-	const start = Number(startDraft)
-	const end = Number(endDraft)
+	const start = parseTimeInput(startDraft)
+	const end = parseTimeInput(endDraft)
 	const error = useMemo(() => {
-		if (!Number.isFinite(start) || !Number.isFinite(end)) return "Enter valid numbers."
+		if (start === null || end === null) return "Enter each time as m:ss (e.g. 30:01) or as plain seconds."
 		if (start < 0) return "Start must be ≥ 0."
 		if (end <= start) return "End must be after start."
 		if (maxSeconds > 0 && start >= maxSeconds) return "Start is past the end of the segment."
-		if (maxSeconds > 0 && end > maxSeconds) return `End must be within the acquisition length (${maxSeconds.toFixed(1)} s).`
+		if (maxSeconds > 0 && end > maxSeconds)
+			return `End must be within the acquisition length (${formatTime(maxSeconds)}).`
 		return null
 	}, [start, end, maxSeconds])
 
 	if (!open) return null
 
-	const clampedEnd = maxSeconds > 0 ? Math.min(end, maxSeconds) : end
+	const startSec = start ?? 0
+	const endSec = end ?? 0
+	const clampedEnd = maxSeconds > 0 ? Math.min(endSec, maxSeconds) : endSec
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
@@ -110,29 +138,31 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 
 				<div className="mt-4 grid grid-cols-2 gap-3">
 					<label className="flex flex-col gap-1 text-xs text-over-background-medium">
-						Start (s)
+						Start (hh:mm:ss)
 						<input
-							type="number"
-							min={0}
+							type="text"
+							inputMode="numeric"
 							value={startDraft}
 							onChange={e => setStartDraft(e.target.value)}
+							placeholder="0:00"
 							className="rounded border border-background-accent bg-background-accent px-2 py-1.5 text-sm tabular-nums text-over-background-highest outline-none focus:border-primary"
 						/>
 					</label>
 					<label className="flex flex-col gap-1 text-xs text-over-background-medium">
-						End (s)
+						End (hh:mm:ss)
 						<input
-							type="number"
-							min={0}
+							type="text"
+							inputMode="numeric"
 							value={endDraft}
 							onChange={e => setEndDraft(e.target.value)}
+							placeholder="0:30"
 							className="rounded border border-background-accent bg-background-accent px-2 py-1.5 text-sm tabular-nums text-over-background-highest outline-none focus:border-primary"
 						/>
 					</label>
 				</div>
 
 				<p className="mt-2 text-[11px] text-over-background-low">
-					{maxSeconds > 0 ? `Segment length: ${maxSeconds.toFixed(1)} s` : ""}
+					{maxSeconds > 0 ? `Segment length: ${formatTime(maxSeconds)} (${maxSeconds.toFixed(1)} s)` : ""}
 					{showAnnotationInfo
 						? `${maxSeconds > 0 ? " · " : ""}${annotationCount} annotation${annotationCount === 1 ? "" : "s"} on this segment`
 						: ""}
@@ -182,7 +212,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						size="base"
 						className={`!text-sm${generating ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 						disabled={!!error || generating}
-						onClick={() => onGenerate({ segment, startSec: Math.max(0, start), endSec: clampedEnd, includeAnalysis, observations })}
+						onClick={() => onGenerate({ segment, startSec: Math.max(0, startSec), endSec: clampedEnd, includeAnalysis, observations })}
 					>
 						<span className="inline-flex items-center justify-center gap-2">
 							{generating && <LoadingDots />}

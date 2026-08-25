@@ -335,11 +335,16 @@ const Page = () => {
 	}, [loadSessionBundle, requestDiscard])
 
 	// Auto-import when arriving from the summary page with ?session=<folder>.
+	// Consumed once per value: the parameter stays in the URL, so without this
+	// every later manual import would be undone by re-importing that folder.
+	const autoImportedRef = useRef<string | null>(null)
 	useEffect(() => {
 		if (!hydrated || !router.isReady) return
 		const q = router.query.session
 		const folder = Array.isArray(q) ? q[0] : q
-		if (folder && folder !== sessionFolder) {
+		if (!folder || autoImportedRef.current === folder) return
+		autoImportedRef.current = folder
+		if (folder !== sessionFolder) {
 			void loadSessionBundle(folder)
 		}
 	}, [hydrated, router.isReady, router.query.session, sessionFolder, loadSessionBundle])

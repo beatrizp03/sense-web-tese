@@ -193,7 +193,7 @@ const Page = () => {
 						generating={annotatedPdfDownloading}
 						onGenerate={handleGeneratePdf}
 						title="Export PDF"
-						description="Choose the segment and time span to render. Each channel is drawn for the selected seconds."
+						description="Choose the segment and time span to render. Each channel is drawn for the span you pick."
 						showAnnotationInfo={false}
 						showAnalysisToggle={false}
 					/>

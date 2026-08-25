@@ -784,10 +784,6 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 							if (analysisSrc) analysisOrigin = "from full-session analysis"
 						}
 					}
-					if (!analysisSrc && manifest?.analysis) {
-						analysisSrc = manifest.analysis
-						analysisOrigin = "from saved full-session analysis"
-					}
 
 					let rows: { channel: string; kind: string; summary: SummaryStats }[] = []
 					let sourceLabel = ""
