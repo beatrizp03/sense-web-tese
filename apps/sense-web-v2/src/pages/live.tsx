@@ -80,6 +80,26 @@ function getOrderedEegChannels(
 	return channels.filter(channel => channelSignalKinds[channel] === "eeg")
 }
 
+/** One channel as it will be recorded: port, custom name and configured signal type. */
+interface SetupReviewChannel {
+	channel: string
+	name: string
+	kind: string
+	axis: string
+}
+
+/** Snapshot of the settings the device was actually connected with. */
+interface SetupReview {
+	deviceType: string
+	connection: string
+	samplingRate: number | null
+	channels: SetupReviewChannel[]
+}
+
+function signalKindLabel(kind: string): string {
+	return LIVE_SIGNAL_TYPE_OPTIONS.find(option => option.value === kind && option.value !== "")?.label ?? ""
+}
+
 function isExpectedDeviceLoss(error: unknown): boolean {
 	return (
 		error instanceof TooManyFramesLostException ||
@@ -232,6 +252,7 @@ const Page = () => {
 	const [acquisitionStarted, setAcquisitionStarted] = useState(false);
 	const acquisitionStartedRef = useRef(false);
 	const [connectedDeviceLabel, setConnectedDeviceLabel] = useState<string>("Unknown");
+	const [setupReview, setSetupReview] = useState<SetupReview | null>(null);
 
 
 	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
@@ -514,7 +535,8 @@ const Page = () => {
 		setConnectWarning(null)
 		setStatus(STATUS.CONNECTING)
 		setAcquisitionStarted(false)
-		cleanupPipeline(); 
+		setSetupReview(null)
+		cleanupPipeline();
 
 		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
 
@@ -610,6 +632,41 @@ const Page = () => {
 			setConnectedDeviceLabel(deviceLabel ?? "Unknown")
 			setFirmwareVersion(deviceRef.current.getFirmwareVersion()?.version ?? null)
 
+			const deviceType = String(settings.deviceType ?? "sense")
+			const reviewKinds =
+				typeof settings.channelSignalKinds === "object" && settings.channelSignalKinds !== null
+					? (settings.channelSignalKinds as Record<string, string>)
+					: {}
+			const reviewAxes =
+				typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
+					? (settings.channelSignalAxes as Record<string, string>)
+					: {}
+			const reviewNames =
+				typeof settings.channelNames === "object" && settings.channelNames !== null
+					? (settings.channelNames as Record<string, string>)
+					: {}
+			const reviewRate = deviceRef.current.getSamplingRate?.() ?? null
+			setSetupReview({
+				deviceType: deviceType === "maker" ? "ScientISST Maker" : "ScientISST SENSE",
+				connection:
+					deviceType === "maker"
+						? `${settings.baudRate ?? 9600} baud`
+						: (settings.communication ?? SCIENTISST_COMUNICATION_MODE.WEBSERIAL) ===
+						  SCIENTISST_COMUNICATION_MODE.WEBSOCKET
+						? "WiFi"
+						: "Bluetooth",
+				samplingRate: Number.isFinite(reviewRate) ? (reviewRate as number) : null,
+				channels: (deviceRef.current.getChannels?.() ?? []).map(String).map(channel => ({
+					channel,
+					name: typeof reviewNames[channel] === "string" ? reviewNames[channel] : "",
+					kind: typeof reviewKinds[channel] === "string" ? reviewKinds[channel] : "",
+					axis:
+						reviewKinds[channel] === "acc" && typeof reviewAxes[channel] === "string"
+							? reviewAxes[channel]
+							: ""
+				}))
+			})
+
 			if (Number.isFinite(storeBufferThresholdRef.current) && storeBufferThresholdRef.current > 0) {
 				window.electronAPI?.setBufferSize?.(
 					storeBufferThresholdRef.current,
@@ -620,6 +677,7 @@ const Page = () => {
 			setStatus(STATUS.CONNECTED)
 		} catch (error) {
 			deviceRef.current = null
+			setSetupReview(null)
 
 			if (error instanceof CancelledByUserException) {
 				setStatus(STATUS.DISCONNECTED)
@@ -642,6 +700,7 @@ const Page = () => {
 		} finally {
 			cleanupPipeline();
 			deviceRef.current = null;
+			setSetupReview(null);
 			setStatus(STATUS.DISCONNECTED);
 		}
 	}, [cleanupPipeline]);
@@ -973,15 +1032,95 @@ const Page = () => {
 			returnHref="/"
 		>
 			{status === STATUS.CONNECTED && (
-                <div className="rounded-lg border border-background-accent bg-background-accent px-3 py-2 text-sm text-over-background-highest">
-                    <span className="font-medium text-sm">{connectedDeviceLabel}</span>
-                    {firmwareVersion !== null && (
-                        <span className="ml-3 text-over-background-medium text-sm">
-                            Firmware: {firmwareVersion}
-                        </span>
-                    )}
-                </div>
-            )}
+				<div className="w-full max-w-2xl rounded-lg border border-background-accent bg-background-accent px-4 py-3 text-sm text-over-background-highest">
+					<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+						<span>
+							<span className="font-medium">{connectedDeviceLabel}</span>
+							{firmwareVersion !== null && (
+								<span className="ml-3 text-over-background-medium">Firmware: {firmwareVersion}</span>
+							)}
+						</span>
+						<Link
+							href="/settings"
+							className="rounded-full bg-over-background-low-light px-3 py-1 text-xs font-medium uppercase tracking-wide text-over-background-high-light transition hover:opacity-80 dark:bg-over-primary-medium-light dark:text-over-background-highest-light"
+						>
+							Edit Settings
+						</Link>
+					</div>
+
+					{setupReview && (
+						<div className="mt-2 space-y-2 border-t border-background pt-2 text-xs">
+							<div className="flex flex-wrap gap-x-6 gap-y-1">
+								<span className="text-xs text-over-background-medium">
+									Device:{" "}
+									<span className="text-xs text-over-background-highest">{setupReview.deviceType}</span>
+								</span>
+								<span className="text-xs text-over-background-medium">
+									Connection:{" "}
+									<span className="text-xs text-over-background-highest">{setupReview.connection}</span>
+								</span>
+								{setupReview.samplingRate !== null && (
+									<span className="text-xs text-over-background-medium">
+										Sampling rate:{" "}
+										<span className="text-xs text-over-background-highest">
+											{setupReview.samplingRate} Hz
+										</span>
+									</span>
+								)}
+								{setupReview.channels.length > 0 && (
+									<span className="text-xs text-over-background-medium">
+										Channels:{" "}
+										<span className="text-xs text-over-background-highest">
+											{setupReview.channels.length}
+										</span>
+									</span>
+								)}
+							</div>
+
+							{setupReview.channels.length > 0 && (
+								<div className="flex flex-wrap gap-1.5">
+									{setupReview.channels.map(channel => {
+										const kindLabel = signalKindLabel(channel.kind)
+										return (
+											<span
+												key={channel.channel}
+												className="inline-flex items-center gap-1.5 rounded-full bg-background px-2.5 py-1 text-xs"
+											>
+												<span className="text-xs font-medium text-over-background-highest">
+													{channel.channel}
+												</span>
+												{channel.name && (
+													<span className="text-xs text-over-background-medium">{channel.name}</span>
+												)}
+												<span
+													className={
+														kindLabel
+															? "text-xs text-over-background-medium"
+															: "text-xs text-over-background-low"
+													}
+												>
+													{kindLabel
+														? `${kindLabel}${
+																channel.axis ? ` ${channel.axis.toUpperCase()}` : ""
+														  }`
+														: "no signal type"}
+												</span>
+											</span>
+										)
+									})}
+								</div>
+							)}
+
+							{setupReview.channels.length > 0 && (
+								<p className="text-xs text-over-background-low">
+									Check this before starting. Signal types are what the analysis on the processing
+									page uses, so channels left without one are recorded but not analysed.
+								</p>
+							)}
+						</div>
+					)}
+				</div>
+			)}
 			<div className="relative flex w-full flex-row items-center justify-center gap-4">				{(status === STATUS.DISCONNECTED ||
 					status === STATUS.CONNECTING ||
 					status === STATUS.CONNECTION_FAILED ||
