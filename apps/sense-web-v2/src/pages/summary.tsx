@@ -15,7 +15,8 @@ const Page = () => {
 	const [loading, setLoading] = useState(true);
 	const [loadAttempts, setLoadAttempts] = useState(0);
 	const [pdfModalOpen, setPdfModalOpen] = useState(false);
-	const { csvDownloading, annotatedPdfDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToRangePDF } = useSessionExport(manifest)
+	const [sessionFolder, setSessionFolder] = useState<string>("");
+	const { csvDownloading, annotatedPdfDownloading, csvExportedRef, pdfExportedRef, convertToCSV, convertToRangePDF } = useSessionExport(manifest, sessionFolder)
 	const MAX_ATTEMPTS = 8;
 
 	useEffect(() => {
@@ -53,6 +54,9 @@ const Page = () => {
 					const { meta } = await window.electronAPI.loadAllChunks();
 					if (!mounted) return;
 					if (meta) {
+						const folder = await window.electronAPI?.getCurrentSessionFolder?.();
+						if (!mounted) return;
+						if (folder) setSessionFolder(folder);
 						setManifest(meta);
 						setLoading(false);
 						return;
@@ -114,7 +118,7 @@ const Page = () => {
 	};
 
 	const goToProcessing = async () => {
-		const folder = await window.electronAPI?.getCurrentSessionFolder?.();
+		const folder = sessionFolder || (await window.electronAPI?.getCurrentSessionFolder?.());
 		if (!folder) {
 			alert("Could not locate the session folder for this acquisition.");
 			return;

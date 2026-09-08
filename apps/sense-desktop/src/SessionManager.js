@@ -117,10 +117,13 @@ class SessionManager {
         this.manifest.segments.push(segmentInfo);
         this._persistManifest();
     }
-    static appendChunkRecord(file, segment, final) {
+    static appendChunkRecord(file, segment, final, frames) {
         if (!this.manifest)
             return;
-        this.manifest.chunks.push({ file, segment, final });
+        const record = { file, segment, final };
+        if (Number.isFinite(frames) && frames >= 0)
+            record.frames = frames;
+        this.manifest.chunks.push(record);
         this._persistManifest();
     }
     static setChannelNames(names) {

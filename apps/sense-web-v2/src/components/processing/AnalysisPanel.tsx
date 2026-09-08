@@ -48,6 +48,23 @@ function formatLibraryName(value: unknown): string {
 	return value
 }
 
+const LIBRARY_SUPPORT: Record<string, { neurokit: boolean; biosppy: boolean }> = {
+	ecg: { neurokit: true, biosppy: true },
+	eda: { neurokit: true, biosppy: true },
+	ppg: { neurokit: true, biosppy: true },
+	emg: { neurokit: true, biosppy: true },
+	rsp: { neurokit: true, biosppy: true },
+	eeg: { neurokit: true, biosppy: true },
+	eog: { neurokit: true, biosppy: false },
+	pcg: { neurokit: false, biosppy: true },
+	acc: { neurokit: false, biosppy: true }
+}
+
+function librarySupports(kind: string, library: "neurokit" | "biosppy"): boolean {
+	const support = LIBRARY_SUPPORT[String(kind || "").trim().toLowerCase()]
+	return support ? support[library] : true
+}
+
 function librarySelectionName(value: string): string {
 	if (value === "auto") return "Auto (both libraries)"
 	if (value === "neurokit") return "NeuroKit2"
@@ -242,6 +259,47 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
 	const analysisSource = analysisResult ?? manifest?.analysis ?? null
 	const analysisPolicy = analysisSource?.analysisPolicy ?? analysisSource?.analysisConfig?.libraryPolicy ?? analysisSource?.worker?.libraryPolicy ?? null
+
+	const runLibraryRows = useMemo(() => {
+		const overrides: Record<string, string> =
+			analysisSource?.analysisConfig?.signalKindLibraries &&
+			typeof analysisSource.analysisConfig.signalKindLibraries === "object"
+				? analysisSource.analysisConfig.signalKindLibraries
+				: {}
+		const byKind = new Map<
+			string,
+			{ kind: string; libraries: string[]; overridden: boolean; warnings: string[] }
+		>()
+		for (const seg of Array.isArray(analysisSource?.segments) ? analysisSource.segments : []) {
+			for (const ch of Array.isArray(seg?.channels) ? seg.channels : []) {
+				if (ch?.excluded) continue
+				const kind = String(ch?.signalKind ?? "").trim().toLowerCase()
+				if (!kind || kind === "generic") continue
+				const used = Array.isArray(ch?.analysis?.libraries)
+					? ch.analysis.libraries.map((lib: any) => String(lib).toLowerCase())
+					: []
+				const notes = Array.isArray(ch?.analysis?.warnings)
+					? ch.analysis.warnings.map((note: any) => String(note)).filter(Boolean)
+					: []
+				const existing = byKind.get(kind)
+				if (existing) {
+					for (const lib of used) if (!existing.libraries.includes(lib)) existing.libraries.push(lib)
+					for (const note of notes) if (!existing.warnings.includes(note)) existing.warnings.push(note)
+				} else {
+					byKind.set(kind, {
+						kind,
+						libraries: [...used],
+						overridden: Boolean(overrides[kind]),
+						warnings: [...notes]
+					})
+				}
+			}
+		}
+		return [...byKind.values()].map(row => ({
+			...row,
+			libraries: row.libraries.sort((a, b) => a.localeCompare(b))
+		}))
+	}, [analysisSource])
 
 	const summaryRows = useMemo(() => {
 		return analysisSource?.segments?.flatMap?.((seg: any) => {
@@ -913,8 +971,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 								<div className="space-y-2 border-l-2 border-background-accent pl-3">
 								{allAssignedKinds.map(kind => {
 									const kindActive = assignedKinds.includes(kind)
+									const selected = signalKindLibraries[kind]
+									const staleSelection = Boolean(selected && !librarySupports(kind, selected))
+									
 									return (
-										<div key={`lib-${kind}`} className={`flex items-center gap-2 rounded-xl border p-3 dark:bg-background-accent-dark ${signalKindLibraries[kind] ? "border-primary/60 bg-primary/5" : "border-background-accent bg-background-accent-light"} ${kindActive ? "" : "opacity-60"}`}>
+										<div key={`lib-${kind}`} className={`flex flex-wrap items-center gap-2 rounded-xl border p-3 dark:bg-background-accent-dark ${staleSelection ? "border-primary/60 bg-primary/5" : "border-background-accent bg-background-accent-light"} ${kindActive ? "" : "opacity-60"}`}>
 											<span className="min-w-[3rem] text-xs font-medium uppercase">{kind}</span>
 											<select
 												value={signalKindLibraries[kind] ?? ""}
@@ -934,13 +995,28 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 												<option value="" className="text-xs">
 													Global setting
 												</option>
-												<option value="neurokit" className="text-xs">
-													NeuroKit2
-												</option>
-												<option value="biosppy" className="text-xs">
-													BioSPPy
-												</option>
+												{(["neurokit", "biosppy"] as const).map(library => {
+													const supported = librarySupports(kind, library)
+													return (
+														<option
+															key={`lib-${kind}-${library}`}
+															value={library}
+															disabled={!supported}
+															className={`text-xs${supported ? "" : " text-over-background-low"}`}
+														>
+															{library === "neurokit" ? "NeuroKit2" : "BioSPPy"}
+															{supported ? "" : ` - not supported for ${kind.toUpperCase()}`}
+														</option>
+													)
+												})}
 											</select>
+											{staleSelection ? (
+												<p className="w-full text-xs text-primary">
+													{selected === "neurokit" ? "NeuroKit2" : "BioSPPy"} cannot analyse {kind.toUpperCase()}.
+													Change this to Global setting or the other library, or the run will
+													extract no features for it.
+												</p>
+											) : null}
 										</div>
 									)
 								})}
@@ -957,6 +1033,38 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 							? <p className="mt-2 text-xs text-primary">{error}</p>
 							: <p className="mt-2 text-xs text-over-background-highest">{status}</p>}
 					</div>
+
+					{analysisOutputs?.resultPath && (
+						<div className="rounded-xl border border-background-accent bg-background-accent p-3">
+							<p className="text-xs uppercase tracking-[0.2em] text-over-background-low">
+								More in the session folder
+							</p>
+							<p className="mt-2 text-xs text-over-background-medium">
+								This is a summary. The folder has the full results:
+							</p>
+							<ul className="mt-1.5 space-y-1 text-xs">
+								<li className="flex gap-2 text-xs text-over-background-medium">
+									<span className="shrink-0 font-mono text-xs text-over-background-highest">features.csv</span>
+									<span className="text-xs">all features, per channel</span>
+								</li>
+								<li className="flex gap-2 text-xs text-over-background-medium">
+									<span className="shrink-0 font-mono text-xs text-over-background-highest">summary.csv</span>
+									<span className="text-xs">the statistics shown here</span>
+								</li>
+								<li className="flex gap-2 text-xs text-over-background-medium">
+									<span className="shrink-0 font-mono text-xs text-over-background-highest">analysis.json</span>
+									<span className="text-xs">everything, plus how it was processed</span>
+								</li>
+							</ul>
+							<button
+								type="button"
+								onClick={() => void window.electronAPI?.openExternalPath?.(analysisOutputs.resultPath as string)}
+								className="mt-2 w-full uppercase rounded-lg bg-over-background-low-light p-1.5 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
+							>
+								Open results folder
+							</button>
+						</div>
+					)}
 
 					<div className="px-5">
 						<button
@@ -1008,17 +1116,56 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 										</div>
 									</HelpHint>
 								</div>
-								<p className="py-2 text-xs text-over-background-highest">{analysisPolicy?.summary || "BioSPPy primary + NeuroKit2 secondary on overlapping signals"}</p>
-								<div className="flex flex-col gap-2">
-									<div className="flex items-center justify-between gap-3 rounded-lg border border-background-accent px-1 py-1">
-										<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary</div>
-										<div className="text-xs font-medium">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+								{runLibraryRows.length > 0 ? (
+									<div className="mt-2 flex flex-col gap-2">
+										{runLibraryRows.map(row => (
+											<div
+												key={`lib-policy-${row.kind}`}
+												className="rounded-lg border border-background-accent px-1 py-1"
+											>
+												<div className="flex items-center justify-between gap-3">
+													<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">
+														{row.kind.toUpperCase()}
+														{row.overridden ? (
+															<span className="ml-1.5 normal-case tracking-normal text-xs text-over-background-low">
+																(set for this signal)
+															</span>
+														) : null}
+													</div>
+													<div className={`text-xs font-medium${row.libraries.length === 0 ? " text-primary" : ""}`}>
+														{row.libraries.length > 0
+															? row.libraries.map(formatLibraryName).join(" + ")
+															: "No library ran"}
+													</div>
+												</div>
+												{row.libraries.length === 0 &&
+													row.warnings.map(note => (
+														<p
+															key={`lib-policy-${row.kind}-${note}`}
+															className="mt-1 text-xs text-over-background-medium"
+														>
+															{note}
+														</p>
+													))}
+											</div>
+										))}
 									</div>
-									<div className="flex items-center justify-between gap-3 rounded-lg border border-background-accent px-1 py-1">
-										<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary</div>
-										<div className="text-xs font-medium">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+								) : (
+									<div className="flex flex-col gap-2">
+										<p className="py-2 text-xs text-over-background-highest">
+											{analysisPolicy?.summary ??
+												"BioSPPy primary + NeuroKit2 secondary on overlapping signals"}
+										</p>
+										<div className="flex items-center justify-between gap-3 rounded-lg border border-background-accent px-1 py-1">
+											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Primary</div>
+											<div className="text-xs font-medium">{formatLibraryName(analysisPolicy?.primaryLibrary ?? "biosppy")}</div>
+										</div>
+										<div className="flex items-center justify-between gap-3 rounded-lg border border-background-accent px-1 py-1">
+											<div className="text-xs uppercase tracking-[0.15em] text-over-background-low">Secondary</div>
+											<div className="text-xs font-medium">{formatLibraryName(analysisPolicy?.secondaryLibrary ?? "neurokit2")}</div>
+										</div>
 									</div>
-								</div>
+								)}
 							</div>
 
 							<div className="rounded-xl border border-background-accent bg-background-accent p-3">

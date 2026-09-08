@@ -52,6 +52,44 @@ function hexToRgb(hex: string): [number, number, number] {
 const chunkNumber = (c: any): number =>
 	Number(String(c && c.file).match(/chunk(\d+)/)?.[1] ?? 0)
 
+const baseName = (file: string): string => {
+	const parts = String(file).split(/[\\/]/)
+	return parts[parts.length - 1] || String(file)
+}
+
+function buildChunkOffsets(
+	segmentChunks: any[],
+	chunkLengths?: { file: string; frames: number }[] | null
+): { offsets: number[]; lens: number[]; total: number } | null {
+	const byFile = new Map<string, number>()
+	for (const chunk of segmentChunks) {
+		const file = baseName(String(chunk?.file ?? ""))
+		const frames = Number(chunk?.frames)
+		if (file && Number.isFinite(frames) && frames >= 0) byFile.set(file, frames)
+	}
+	if (byFile.size < segmentChunks.length) {
+		if (!Array.isArray(chunkLengths) || chunkLengths.length === 0) return null
+		for (const entry of chunkLengths) {
+			const file = baseName(String(entry?.file ?? ""))
+			const frames = Number(entry?.frames)
+			if (file && Number.isFinite(frames) && !byFile.has(file)) byFile.set(file, frames)
+		}
+	}
+	const offsets: number[] = []
+	const lens: number[] = []
+	let acc = 0
+	for (const chunk of segmentChunks) {
+		const len = byFile.get(baseName(String(chunk?.file ?? "")))
+		// A chunk missing from the index makes every later offset wrong, so the
+		// whole index is abandoned rather than trusted in part.
+		if (len == null) return null
+		offsets.push(acc)
+		lens.push(len)
+		acc += len
+	}
+	return { offsets, lens, total: acc }
+}
+
 function decimateByIndex(
 	values: number[],
 	maxPoints: number
@@ -95,9 +133,12 @@ function decimateByIndex(
 
 function formatClock(seconds: number): string {
 	const sec = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-	const m = Math.floor(sec / 60)
-	const s = sec % 60
-	return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`
+	const total = Math.round(sec * 10) / 10
+	const s = total % 60
+	const m = Math.floor(total / 60) % 60
+	const h = Math.floor(total / 3600)
+	const ss = s.toFixed(1).padStart(4, "0")
+	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`
 }
 
 interface SummaryStats {
@@ -107,6 +148,9 @@ interface SummaryStats {
 	min: number
 	max: number
 }
+
+export const SUMMARY_STAT_KEYS = ["mean", "median", "std", "min", "max"] as const
+export type SummaryStatKey = (typeof SUMMARY_STAT_KEYS)[number]
 
 function statsOf(values: number[]): SummaryStats {
 	const v = values.filter(x => Number.isFinite(x))
@@ -132,12 +176,75 @@ function statsOf(values: number[]): SummaryStats {
 const fmtStat = (v: unknown): string =>
 	typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "--"
 
-/**
- * Session export logic shared by the acquisition summary page and the processing
- * page. CSV streams every chunk file into one CSV per segment (zipped); PDF
- * renders a ten-second preview per channel via d3 + jsPDF. Both read from the
- * manifest and the Electron file APIs, so they work for live and imported sessions.
- */
+
+const FEATURE_BLOCKS: [library: string, key: string][] = [
+	["biosppy", "biosppyFeatures"],
+	["neurokit2", "neurokit2Features"],
+	["derived", "derivedFeatures"]
+]
+
+export interface AnalysisFeatureRow {
+	channel: string
+	kind: string
+	library: string
+	feature: string
+	value: number | string
+}
+
+export async function findAnalysisResult(
+	folder: string,
+	segment: number,
+	startSec: number,
+	endSec: number
+): Promise<{ result: any; origin: string } | null> {
+	const read = window.electronAPI?.readPostHocAnalysisResult
+	if (!folder || !read) return null
+	const windowSub = `seg${segment}-analysis-window-${Math.round(startSec)}-${Math.round(endSec)}`
+	try {
+		const windowed = await read(folder, windowSub)
+		if (windowed) return { result: windowed, origin: `from window analysis (${windowSub})` }
+	} catch {
+		// fall through to the full-session run
+	}
+	try {
+		const full = await read(folder, "full-session-analysis")
+		if (full) return { result: full, origin: "from full-session analysis" }
+	} catch {
+		// no analysis available
+	}
+	return null
+}
+
+export function collectAnalysisFeatures(result: any, segment: number): AnalysisFeatureRow[] {
+	const segments = Array.isArray(result?.segments) ? result.segments : []
+	if (segments.length === 0) return []
+	const matching = segments.filter((s: any) => Number(s?.segment) === segment)
+	const useSegs = matching.length > 0 ? matching : segments
+	const out: AnalysisFeatureRow[] = []
+	for (const seg of useSegs) {
+		for (const ch of Array.isArray(seg?.channels) ? seg.channels : []) {
+			const analysis = ch?.analysis
+			if (!analysis || typeof analysis !== "object") continue
+			for (const [library, key] of FEATURE_BLOCKS) {
+				const block = (analysis as any)[key]
+				if (!block || typeof block !== "object") continue
+				for (const [feature, value] of Object.entries(block)) {
+					if (value === null || value === undefined) continue
+					if (typeof value !== "number" && typeof value !== "string") continue
+					out.push({
+						channel: String(ch?.channel ?? ""),
+						kind: typeof ch?.signalKind === "string" ? ch.signalKind : "",
+						library,
+						feature,
+						value
+					})
+				}
+			}
+		}
+	}
+	return out
+}
+
 export function useSessionExport(manifest: any, sessionFolder?: string) {
 	const [csvDownloading, setCsvDownloading] = useState(false)
 	const [annotationsDownloading, setAnnotationsDownloading] = useState(false)
@@ -243,7 +350,10 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						for (let j = 0; j < frames.length; j++) {
 							const seq = frames[j].__seq ?? frames[j].sequence
 							const frameContent: (number | string)[] = [seq];
-							for (let p = 0; p < IO_PORTS.length; p++) frameContent.push(0);
+							for (const port of IO_PORTS) {
+								const raw = frames[j].channels?.[port]
+								frameContent.push(raw == null ? 0 : Number(raw) ? 1 : 0);
+							}
 							for (let k = 0; k < channels.length; k++) {
 								frameContent.push(frames[j].channels[channels[k]]);
 							}
@@ -354,6 +464,9 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 			includeAnalysis?: boolean
 			skipAnnotationTable?: boolean
 			observations?: string
+			summaryStats?: string[]
+			analysisFeatures?: string[]
+			chunkLengths?: { file: string; frames: number }[] | null
 		}) => {
 			if (annotatedPdfDownloading) return
 			setAnnotatedPdfDownloading(true)
@@ -361,6 +474,28 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 			try {
 				const channels = opts.channels
 				const storedChannelNames = opts.channelNames ?? manifest.channelNames ?? {}
+				const storedSignalKinds: Record<string, string> =
+					(manifest.channelSignalKinds && typeof manifest.channelSignalKinds === "object"
+						? manifest.channelSignalKinds
+						: {}) as Record<string, string>
+				const storedSignalAxes: Record<string, string> =
+					(manifest.channelSignalAxes && typeof manifest.channelSignalAxes === "object"
+						? manifest.channelSignalAxes
+						: {}) as Record<string, string>
+				
+				const kindLabel = (ch: string, fallbackKind?: string) => {
+					const kind = storedSignalKinds[ch] || fallbackKind || ""
+					if (!kind) return ""
+					const axis = storedSignalAxes[ch]
+					return kind.toLowerCase() === "acc" && axis
+						? `ACC ${axis.toUpperCase()}`
+						: kind.toUpperCase()
+				}
+				const channelHeading = (ch: string) => {
+					const name = storedChannelNames[ch]
+					const inside = [ch, kindLabel(ch) || null].filter(Boolean).join(", ")
+					return name ? `${name} (${inside})` : inside
+				}
 				const deviceType = manifest.deviceType
 				const samplingRate = manifest.sampleRate
 				const segmentsMeta = manifest.segments || []
@@ -392,9 +527,16 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 					.sort((a: any, b: any) => chunkNumber(a) - chunkNumber(b))
 				const perChannel: Record<string, number[]> = {}
 				for (const ch of channels) perChannel[ch] = []
-				let idx = 0
-				for (const c of segmentChunks) {
+
+				const chunkIndex = buildChunkOffsets(segmentChunks, opts.chunkLengths)
+				const firstChunk = chunkIndex
+					? chunkIndex.offsets.findIndex((start, i) => start + chunkIndex.lens[i] > startFrame)
+					: 0
+				let idx = chunkIndex && firstChunk > 0 ? chunkIndex.offsets[firstChunk] : 0
+				for (let i = Math.max(0, firstChunk); i < segmentChunks.length; i++) {
 					if (idx >= endFrame) break
+					if (chunkIndex && chunkIndex.offsets[i] >= endFrame) break
+					const c = segmentChunks[i]
 					const data = await window.electronAPI?.readChunkFile?.(c.file, opts.sessionFolder || sessionFolder)
 					const frames = Array.isArray(data?.frames) ? data.frames : (Array.isArray(data) ? data : [])
 					for (let j = 0; j < frames.length; j++) {
@@ -543,7 +685,7 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						pdf.setFontSize(6)
 						pdf.setTextColor(...TEXT_SECONDARY)
 						pdf.text(
-							storedChannelNames[ch] ? `${storedChannelNames[ch]} (${ch})` : ch,
+							channelHeading(ch),
 							DOCUMENT_MARGIN,
 							DOCUMENT_MARGIN + offset,
 							{ align: "left", baseline: "top" }
@@ -566,18 +708,39 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						const ticks = 6
 						for (let i = 0; i <= ticks; i++) {
 							pdf.text(
-								(startSec + (spanSec * i) / ticks).toFixed(1),
+								formatClock(startSec + (spanSec * i) / ticks),
 								DOCUMENT_MARGIN + ((DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2) * i) / ticks,
 								DOCUMENT_MARGIN + offset + (smallChart ? 32.5 : 45.5),
 								{ align: i === 0 ? "left" : i === ticks ? "right" : "center", baseline: "top" }
 							)
 						}
+						// The caption names the format rather than a unit, since the axis
+						// now reads as a clock and matches the annotations table below it.
 						pdf.text(
-							"SECONDS",
+							startSec + spanSec >= 3600 ? "H:MM:SS.s" : "M:SS.s",
 							DOCUMENT_WIDTH - DOCUMENT_MARGIN,
 							DOCUMENT_MARGIN + offset + (smallChart ? 36.5 : 49.5),
 							{ align: "right", baseline: "top" }
 						)
+
+						const plotWidthMm = DOCUMENT_WIDTH - DOCUMENT_MARGIN * 2
+						const traceTopMm =
+							DOCUMENT_MARGIN + offset + 3.5 + plotWidthMm / (1282 / 16.25)
+						const traceHeightMm = plotWidthMm / svgAspectRatio
+						for (const [value, yMm] of [
+							[4095, traceTopMm],
+							[2048, traceTopMm + traceHeightMm / 2],
+							[0, traceTopMm + traceHeightMm]
+						] as [number, number][]) {
+							pdf.text(String(value), DOCUMENT_MARGIN - 1.5, yMm, {
+								align: "right",
+								baseline: "middle"
+							})
+						}
+						pdf.text("ADC", DOCUMENT_MARGIN - 1.5, traceTopMm - 3.5, {
+							align: "right",
+							baseline: "middle"
+						})
 
 						const svg = d3.create("svg").attr("viewBox", [0, 0, svgWidth, svgHeight] as any).attr("font-family", "Imagine")
 
@@ -769,21 +932,15 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 
 				// ---- Analysis summary ----
 				if (opts.includeAnalysis !== false) {
-					// Prefer this window's saved analysis, then the full-session
-					// analysis, then descriptive stats computed from the window.
-					let analysisSrc: any = null
-					let analysisOrigin = ""
 					const folder = opts.sessionFolder || ""
-					const windowSub = `seg${segment}-analysis-window-${Math.round(startSec)}-${Math.round(endSec)}`
-					if (folder && window.electronAPI?.readPostHocAnalysisResult) {
-						try { analysisSrc = await window.electronAPI.readPostHocAnalysisResult(folder, windowSub) } catch { /* ignore */ }
-						if (analysisSrc) {
-							analysisOrigin = `from window analysis (${windowSub})`
-						} else {
-							try { analysisSrc = await window.electronAPI.readPostHocAnalysisResult(folder, "full-session-analysis") } catch { /* ignore */ }
-							if (analysisSrc) analysisOrigin = "from full-session analysis"
-						}
-					}
+					const found = await findAnalysisResult(folder, segment, startSec, endSec)
+					const analysisSrc: any = found?.result ?? null
+					const analysisOrigin = found?.origin ?? ""
+					const chosenStats: string[] =
+						opts.summaryStats && opts.summaryStats.length > 0
+							? opts.summaryStats
+							: [...SUMMARY_STAT_KEYS]
+					const chosenFeatures = new Set(opts.analysisFeatures ?? [])
 
 					let rows: { channel: string; kind: string; summary: SummaryStats }[] = []
 					let sourceLabel = ""
@@ -827,14 +984,11 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 					)
 
 					let ay = DOCUMENT_MARGIN + 12
+					const statCols = SUMMARY_STAT_KEYS.filter(key => chosenStats.includes(key))
+					const statX = (index: number) => DOCUMENT_MARGIN + 82 + index * (160 / Math.max(1, statCols.length))
 					const acols = {
 						channel: DOCUMENT_MARGIN,
-						kind: DOCUMENT_MARGIN + 50,
-						mean: DOCUMENT_MARGIN + 82,
-						median: DOCUMENT_MARGIN + 112,
-						std: DOCUMENT_MARGIN + 142,
-						min: DOCUMENT_MARGIN + 172,
-						max: DOCUMENT_MARGIN + 202
+						kind: DOCUMENT_MARGIN + 50
 					}
 					const drawAHeader = () => {
 						pdf.setFont("Lexend", "semibold")
@@ -842,11 +996,9 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						pdf.setTextColor(...TEXT_SECONDARY)
 						pdf.text("CHANNEL", acols.channel, ay, { align: "left", baseline: "top" })
 						pdf.text("KIND", acols.kind, ay, { align: "left", baseline: "top" })
-						pdf.text("MEAN", acols.mean, ay, { align: "left", baseline: "top" })
-						pdf.text("MEDIAN", acols.median, ay, { align: "left", baseline: "top" })
-						pdf.text("STD", acols.std, ay, { align: "left", baseline: "top" })
-						pdf.text("MIN", acols.min, ay, { align: "left", baseline: "top" })
-						pdf.text("MAX", acols.max, ay, { align: "left", baseline: "top" })
+						statCols.forEach((key, index) => {
+							pdf.text(key.toUpperCase(), statX(index), ay, { align: "left", baseline: "top" })
+						})
 						ay += 4
 						pdf.setDrawColor(210, 210, 210)
 						pdf.line(DOCUMENT_MARGIN, ay, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay)
@@ -868,15 +1020,82 @@ export function useSessionExport(manifest: any, sessionFolder?: string) {
 						pdf.setTextColor(...TEXT_PRIMARY)
 						pdf.text(chLabel, acols.channel, ay, { align: "left", baseline: "top" })
 						pdf.setTextColor(...TEXT_SECONDARY)
-						pdf.text(row.kind ? row.kind.toUpperCase() : "—", acols.kind, ay, { align: "left", baseline: "top" })
-						pdf.text(fmtStat(row.summary.mean), acols.mean, ay, { align: "left", baseline: "top" })
-						pdf.text(fmtStat(row.summary.median), acols.median, ay, { align: "left", baseline: "top" })
-						pdf.text(fmtStat(row.summary.std), acols.std, ay, { align: "left", baseline: "top" })
-						pdf.text(fmtStat(row.summary.min), acols.min, ay, { align: "left", baseline: "top" })
-						pdf.text(fmtStat(row.summary.max), acols.max, ay, { align: "left", baseline: "top" })
+						pdf.text(kindLabel(row.channel, row.kind) || "—", acols.kind, ay, { align: "left", baseline: "top" })
+						statCols.forEach((key, index) => {
+							pdf.text(fmtStat(row.summary[key]), statX(index), ay, { align: "left", baseline: "top" })
+						})
 						ay += 6
 						pdf.setDrawColor(238, 238, 238)
 						pdf.line(DOCUMENT_MARGIN, ay - 2, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay - 2)
+					}
+
+					const featureRows = analysisSrc && chosenFeatures.size > 0
+						? collectAnalysisFeatures(analysisSrc, segment).filter(row =>
+								chosenFeatures.has(row.feature)
+						  )
+						: []
+					if (featureRows.length > 0) {
+						const fcols = {
+							channel: DOCUMENT_MARGIN,
+							kind: DOCUMENT_MARGIN + 50,
+							library: DOCUMENT_MARGIN + 76,
+							feature: DOCUMENT_MARGIN + 110,
+							value: DOCUMENT_WIDTH - DOCUMENT_MARGIN
+						}
+						const drawFHeader = () => {
+							pdf.setFont("Lexend", "semibold")
+							pdf.setFontSize(7)
+							pdf.setTextColor(...TEXT_SECONDARY)
+							pdf.text("CHANNEL", fcols.channel, ay, { align: "left", baseline: "top" })
+							pdf.text("KIND", fcols.kind, ay, { align: "left", baseline: "top" })
+							pdf.text("LIBRARY", fcols.library, ay, { align: "left", baseline: "top" })
+							pdf.text("FEATURE", fcols.feature, ay, { align: "left", baseline: "top" })
+							pdf.text("VALUE", fcols.value, ay, { align: "right", baseline: "top" })
+							ay += 4
+							pdf.setDrawColor(210, 210, 210)
+							pdf.line(DOCUMENT_MARGIN, ay, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay)
+							ay += 3
+						}
+
+						ay += 6
+						if (ay + 14 > DOCUMENT_HEIGHT - DOCUMENT_MARGIN) {
+							pdf.addPage()
+							ay = DOCUMENT_MARGIN
+						}
+						pdf.setFont("Lexend", "semibold")
+						pdf.setFontSize(9)
+						pdf.setTextColor(...TEXT_PRIMARY)
+						pdf.text("Extracted features", DOCUMENT_MARGIN, ay, { align: "left", baseline: "top" })
+						ay += 6
+						drawFHeader()
+
+						for (const row of featureRows) {
+							if (ay + 6 > DOCUMENT_HEIGHT - DOCUMENT_MARGIN) {
+								pdf.addPage()
+								ay = DOCUMENT_MARGIN
+								drawFHeader()
+							}
+							const chLabel = storedChannelNames[row.channel]
+								? `${storedChannelNames[row.channel]} (${row.channel})`
+								: row.channel
+							pdf.setFont("Lexend", "regular")
+							pdf.setFontSize(7.5)
+							pdf.setTextColor(...TEXT_PRIMARY)
+							pdf.text(chLabel, fcols.channel, ay, { align: "left", baseline: "top" })
+							pdf.setTextColor(...TEXT_SECONDARY)
+							pdf.text(kindLabel(row.channel, row.kind) || "—", fcols.kind, ay, { align: "left", baseline: "top" })
+							pdf.text(row.library, fcols.library, ay, { align: "left", baseline: "top" })
+							pdf.text(row.feature, fcols.feature, ay, { align: "left", baseline: "top" })
+							pdf.text(
+								typeof row.value === "number" ? fmtStat(row.value) : String(row.value),
+								fcols.value,
+								ay,
+								{ align: "right", baseline: "top" }
+							)
+							ay += 6
+							pdf.setDrawColor(238, 238, 238)
+							pdf.line(DOCUMENT_MARGIN, ay - 2, DOCUMENT_WIDTH - DOCUMENT_MARGIN, ay - 2)
+						}
 					}
 					addPageFooter()
 				}

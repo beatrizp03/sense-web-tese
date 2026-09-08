@@ -42,20 +42,20 @@ class ChunkedDataWriter {
     }
     this.lastFilename = this.currentStream.path;
     console.log(`[MAIN] Wrote chunk with ${frames.length} frames to ${this.currentStream.path}`);
-    this.finalizeChunk(onFinish);
+    this.finalizeChunk(onFinish, frames.length);
   }
 
   getLastFilename() {
     return this.lastFilename;
   }
   
-  finalizeChunk(onFinish) {
+  finalizeChunk(onFinish, frameCount) {
     if (this.currentStream) {
       this.currentStream.write('\n]');
       this.currentStream.end();
       if (typeof onFinish === 'function') {
         this.currentStream.once('finish', () => {
-          onFinish(this.lastFilename);
+          onFinish(this.lastFilename, frameCount);
         });
       }
     }

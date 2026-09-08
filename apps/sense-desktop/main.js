@@ -804,7 +804,7 @@ app.whenReady().then(() => {
     try {
       let absPath = filePath;
       if (!path.isAbsolute(filePath)) {
-        const folder = baseFolder || sessionFolder || lastManifestFolder || lastSessionFolder;
+        const folder = baseFolder || sessionFolder || lastSessionFolder;
         if (!folder) {
           console.error('[read-chunk-file] Cannot resolve relative chunk path; no session folder known:', filePath);
           return null;
@@ -883,9 +883,9 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
       const segment = segmentNumber;
       const final = !!chunkToWrite.final;
       try {
-        sampleWriter.writeChunk(chunkToWrite, (filename) => {
+        sampleWriter.writeChunk(chunkToWrite, (filename, frameCount) => {
           if (filename && fs.existsSync(filename)) {
-            SessionManager.appendChunkRecord(path.basename(filename), segment, final);
+            SessionManager.appendChunkRecord(path.basename(filename), segment, final, frameCount);
             console.log(`[main] Chunk ${chunkIndex} for segment ${segment} written to ${filename} (final: ${final}).`);
             console.log(`[main] manifest.chunks.length: ${SessionManager.manifest ? SessionManager.manifest.chunks.length : 'N/A'}`);
             const saveTime = Date.now() - start;

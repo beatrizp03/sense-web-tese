@@ -32,9 +32,12 @@ function hexToRgba(hex: string, alpha: number): string {
 
 function formatTimeTenths(seconds: number): string {
 	const sec = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-	const m = Math.floor(sec / 60)
-	const s = sec % 60
-	return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`
+	const total = Math.round(sec * 10) / 10
+	const s = total % 60
+	const m = Math.floor(total / 60) % 60
+	const h = Math.floor(total / 3600)
+	const ss = s.toFixed(1).padStart(4, "0")
+	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`
 }
 
 interface AnnotationsPanelProps {
@@ -206,6 +209,18 @@ const AnnotationsPanel: React.FC<AnnotationsPanelProps> = ({
 		}
 		noteInputRef.current?.focus({ preventScroll: true })
 	}, [selectedId])
+
+	useEffect(() => {
+		if (!selectedId) return
+		const handlePointerDown = (event: PointerEvent) => {
+			const row = selectedRowRef.current
+			const target = event.target as Node | null
+			if (!row || !target || row.contains(target)) return
+			onSelectAnnotation?.(null)
+		}
+		document.addEventListener("pointerdown", handlePointerDown)
+		return () => document.removeEventListener("pointerdown", handlePointerDown)
+	}, [selectedId, onSelectAnnotation])
 
 	const channelLabels = labels.filter(label => label.appliesTo === "channel" && !label.retired)
 	const segmentLabels = labels.filter(label => label.appliesTo === "segment" && !label.retired)

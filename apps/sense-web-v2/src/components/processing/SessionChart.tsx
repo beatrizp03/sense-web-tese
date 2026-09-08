@@ -568,6 +568,10 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 					/>
 				</div>
 			</div>
+			<div className="flex items-center justify-between text-[11px] tabular-nums text-over-background-low">
+				<span>{formatTime(0)}</span>
+				<span>{formatTime(rangeSeconds)}</span>
+			</div>
 		</div>
 	)
 }
@@ -592,6 +596,12 @@ interface SessionChartProps {
 	onChartDoubleClick?: (hitId: string | null) => void
 	onAnnotationDragBound?: (id: string, edge: "t0" | "t1" | "point", x: number) => void
 	onAnnotationMove?: (id: string, t0: number, t1: number) => void
+	/**
+	 * The per-chunk frame counts from the overview pass, handed up so that other
+	 * readers of the session can seek the same way this chart does instead of
+	 * walking every chunk from the beginning.
+	 */
+	onChunkLengths?: (lengths: { file: string; frames: number }[] | null) => void
 }
 
 const SessionChart: React.FC<SessionChartProps> = ({
@@ -612,7 +622,8 @@ const SessionChart: React.FC<SessionChartProps> = ({
 	onChartClick,
 	onChartDoubleClick,
 	onAnnotationDragBound,
-	onAnnotationMove
+	onAnnotationMove,
+	onChunkLengths
 }) => {
 	const isDark = useDarkTheme()
 	const lineColor = isDark ? lineColorDark : lineColorLight
@@ -629,14 +640,17 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			.filter(ann => ann.segment === selectedSegment)
 			.map(ann => {
 				const label = labelById.get(ann.labelId)
+				const note = typeof ann.note === "string" ? ann.note.trim() : ""
 				return {
 					id: ann.id,
 					t0: ann.t0,
 					t1: ann.t1,
 					color: label?.color ?? "#888888",
 					selected: ann.id === selectedAnnotationId,
-					label: label?.name,
-					description: label?.description
+					label: note || label?.name,
+					description: note
+						? [label?.name, label?.description].filter(Boolean).join(" · ")
+						: label?.description
 				}
 			})
 	}, [annotations, selectedSegment, labelById, selectedAnnotationId])
@@ -731,6 +745,12 @@ const SessionChart: React.FC<SessionChartProps> = ({
 			cancelled = true
 		}
 	}, [sessionFolder, chunks, selectedSegment])
+
+	// Publish the index so the export can seek to a range instead of reading the
+	// whole segment; the overview pass that produced it has already been paid for.
+	useEffect(() => {
+		onChunkLengths?.(overview?.chunkLengths ?? null)
+	}, [overview, onChunkLengths])
 
 	const totalSamples = overview?.totalSamples ?? 0
 	const overviewSeconds =

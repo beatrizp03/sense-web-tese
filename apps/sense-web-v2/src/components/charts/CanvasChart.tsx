@@ -32,6 +32,7 @@ export interface CanvasChartProps {
 	yMin?: number | "auto"
 	yMax?: number | "auto"
 	xTicks?: number
+	xTickValues?: number[]
 	yTicks?: number
 	xTickFormat?: (x: number) => string
 	yTickFormat?: (y: number) => string
@@ -66,6 +67,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 	yMin,
 	yMax,
 	xTicks,
+	xTickValues,
 	yTicks,
 	xTickFormat,
 	yTickFormat,
@@ -173,7 +175,9 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				yMax === "auto" || yMax === undefined ? d3.max(Y) : yMax
 
 			const yTicksValues = d3.ticks(yMinValue, yMaxValue, yTicks ?? 10)
-			const xTicksValues = d3.ticks(xMinValue, xMaxValue, xTicks ?? 10)
+			const xTicksValues = xTickValues
+				? xTickValues.filter(x => x >= xMinValue && x <= xMaxValue)
+				: d3.ticks(xMinValue, xMaxValue, xTicks ?? 10)
 			const yAxisWidth =
 				d3.max(
 					yTicksValues.map(
@@ -186,22 +190,29 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 				8 * pixelRatio
 			const xAxisHeight = fontSizeScaled + 10 * pixelRatio
 
+			const edgePadding = 2 * pixelRatio
 			const xLabelHalfWidth =
 				(d3.max(
 					xTicksValues.map(
 						x => context.measureText(String(xTickFormat ? xTickFormat(x) : x)).width
 					)
 				) ?? 0) / 2
+			const xLabelOverhang = xLabelHalfWidth + edgePadding
 
 			const scaledTopMargin =
 				(topMargin ?? fontSizeScaled / 2) * pixelRatio
-			const scaledRightMargin =
+			const scaledRightMargin = Math.max(
 				rightMargin != null
 					? rightMargin * pixelRatio
-					: Math.max(fontSizeScaled / 2, xLabelHalfWidth + 2 * pixelRatio)
+					: Math.max(fontSizeScaled / 2, xLabelOverhang),
+				xLabelOverhang
+			)
 			const scaledBottomMargin =
 				(bottomMargin ?? 0) * pixelRatio + xAxisHeight
-			const scaledLeftMargin = (leftMargin ?? 0) * pixelRatio + yAxisWidth
+			const scaledLeftMargin = Math.max(
+				(leftMargin ?? 0) * pixelRatio + yAxisWidth,
+				xLabelOverhang
+			)
 
 			const plotWidth = scaledWidth - scaledLeftMargin - scaledRightMargin
 			const plotHeight =
@@ -465,6 +476,7 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		yTicks,
 		yTickFormat,
 		xTicks,
+		xTickValues,
 		xTickFormat,
 		fontSize,
 		fontWeight,
@@ -723,11 +735,18 @@ const CanvasChart: React.FC<CanvasChartProps> = ({
 		if (r) {
 			const x = clientXToData(event.clientX, event.currentTarget)
 			if (x == null) return
+			const [lo, hi] = (geomRef.current?.xScale.domain() ?? []) as number[]
+			const bounded =
+				lo != null && hi != null ? Math.min(Math.max(x, lo), hi) : x
 			if (r.edge === "move") {
-				const delta = x - r.grabX
-				onAnnotationMove?.(r.id, r.t0 + delta, r.t1 + delta)
+				const width = r.t1 - r.t0
+				let t0 = r.t0 + (bounded - r.grabX)
+				if (lo != null && hi != null && width <= hi - lo) {
+					t0 = Math.min(Math.max(t0, lo), hi - width)
+				}
+				onAnnotationMove?.(r.id, t0, t0 + width)
 			} else {
-				onAnnotationDragBound?.(r.id, r.edge, x)
+				onAnnotationDragBound?.(r.id, r.edge, bounded)
 			}
 			return
 		}

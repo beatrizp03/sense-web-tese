@@ -113,12 +113,33 @@ const primaryLightColor =
 const backgroundAccentLightColor =
 	(fullConfig.theme as any)?.colors?.["background-accent-light"] ?? "#F2F2F7"
 
+const LAST_SAVED_STORAGE_KEY = "settings:lastSavedAt"
+
+function formatLastSaved(timestamp: number): string {
+	const when = new Date(timestamp)
+	if (Number.isNaN(when.getTime())) return "—"
+	const time = when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+	if (new Date().toDateString() === when.toDateString()) return time
+	const day = when.toLocaleDateString(undefined, { day: "numeric", month: "short" })
+	return `${day}, ${time}`
+}
+
 const Page = () => {
 	const isDark = useDarkTheme()
 	const { labels: annotationLabels } = useAnnotationLabels()
 	const [showSaved, setShowSaved] = useState(false)
 	const savedHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const lastSavedRef = useRef<Record<string, string>>({})
+	const [lastSavedAt, setLastSavedAt] = useState<number | null>(null)
+
+	useEffect(() => {
+		try {
+			const stored = Number(window.localStorage.getItem(LAST_SAVED_STORAGE_KEY))
+			if (Number.isFinite(stored) && stored > 0) setLastSavedAt(stored)
+		} catch {
+			// ignore unavailable storage
+		}
+	}, [])
 	const [loaded, setLoaded] = useState(false)
 	const [showLabelEditor, setShowLabelEditor] = useState(false)
 	const [showHistoryModal, setShowHistoryModal] = useState(false)
@@ -241,6 +262,14 @@ const Page = () => {
 						lastSavedRef.current[deviceKey] = serialized
 						if (previous === undefined || previous === serialized) return
 
+						const savedAt = Date.now()
+						setLastSavedAt(savedAt)
+						try {
+							window.localStorage.setItem(LAST_SAVED_STORAGE_KEY, String(savedAt))
+						} catch {
+							// ignore unavailable storage
+						}
+
 						setShowSaved(true)
 						if (savedHideTimer.current) clearTimeout(savedHideTimer.current)
 						savedHideTimer.current = setTimeout(
@@ -259,18 +288,31 @@ const Page = () => {
 								role="status"
 								aria-live="polite"
 								className={clsx(
-									"fixed left-4 top-20 z-30 flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium shadow-lg transition-opacity duration-300",
-									showSaved ? "opacity-100" : "pointer-events-none opacity-0"
+									"fixed left-4 top-20 z-30 flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium shadow-lg transition-colors duration-300",
+									!showSaved &&
+										"border border-background-accent bg-background-accent text-over-background-medium"
 								)}
-								style={{
-									backgroundColor: isDark
-										? primaryLightColor
-										: primaryDarkColor,
-									color: isDark ? primaryDarkColor : primaryLightColor
-								}}
+								style={
+									showSaved
+										? {
+												backgroundColor: isDark ? primaryLightColor : primaryDarkColor,
+												color: isDark ? primaryDarkColor : primaryLightColor
+										  }
+										: undefined
+								}
 							>
-								<FontAwesomeIcon icon={faCheck} className="h-3.5 w-3.5" />
-								Settings saved
+								{showSaved ? (
+									<>
+										<FontAwesomeIcon icon={faCheck} className="h-3.5 w-3.5" />
+										Settings saved
+									</>
+								) : (
+									<>
+										{lastSavedAt === null
+											? "Not saved"
+											: `Last saved ${formatLastSaved(lastSavedAt)}`}
+									</>
+								)}
 							</div>
 							<div className="absolute right-4 top-12 z-10 -translate-y-1/2">
 								<TextButton

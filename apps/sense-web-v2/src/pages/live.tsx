@@ -12,6 +12,7 @@ import { useRouter } from "next/router"
 import { TextButton, TextField } from "@scientisst/react-ui/components/inputs"
 import { FormikAutoSubmit } from "@scientisst/react-ui/components/utils"
 import { useDarkTheme } from "@scientisst/react-ui/dark-theme"
+import clsx from "clsx"
 import {
 	CancelledByUserException,
 	ConnectionLostException,
@@ -72,6 +73,9 @@ const LIVE_ACC_AXIS_OPTIONS = [
 ]
 const IO_INPUTS = ["I1", "I2"]
 const IO_OUTPUTS = ["O1", "O2"]
+const IO_PORT_CHANNELS = [...IO_INPUTS, ...IO_OUTPUTS]
+
+const isIoPort = (channel: string) => IO_PORT_CHANNELS.includes(channel)
 
 function getOrderedEegChannels(
 	channelSignalKinds: Record<string, string>,
@@ -130,6 +134,8 @@ const outlineColorDark =
 const UI_WINDOW_SECONDS = 5
 const UI_BUCKETS = 300
 const UI_TICK_MS = 66
+
+const DISCONNECT_NOTICE_MS = 3000
 
 type ChannelPoint = [number, number | null]
 type ChannelSeries = Record<string, ChannelPoint[]>
@@ -253,6 +259,8 @@ const Page = () => {
 	const acquisitionStartedRef = useRef(false);
 	const [connectedDeviceLabel, setConnectedDeviceLabel] = useState<string>("Unknown");
 	const [setupReview, setSetupReview] = useState<SetupReview | null>(null);
+	const [disconnectNotice, setDisconnectNotice] = useState(false);
+	const disconnectedAtRef = useRef(0);
 
 
 	const channelBuffersRef = useRef<Map<string, RingBuffer<ChannelPoint>>>(new Map());
@@ -353,7 +361,16 @@ const Page = () => {
 				});
 				window.electronAPI?.logPerfEvent?.('acquisition_end', Date.now() - stopTime);
 				await window.electronAPI?.finalizeSession?.(Date.now());
-				setStatus(STATUS.STOPPED_AND_SAVED);await router.push(
+				setStatus(STATUS.STOPPED_AND_SAVED);
+				if (finalizingAfterErrorRef.current) {
+					const shown = Date.now() - disconnectedAtRef.current;
+					if (shown < DISCONNECT_NOTICE_MS) {
+						await new Promise<void>(resolve =>
+							setTimeout(resolve, DISCONNECT_NOTICE_MS - shown)
+						);
+					}
+				}
+				await router.push(
 					finalizingAfterErrorRef.current
 						? "/summary?interrupted=1"
 						: "/summary"
@@ -411,8 +428,19 @@ const Page = () => {
 					| undefined
 				if (!channelValues) return
 
+				for (const port of IO_PORT_CHANNELS) {
+					const raw = channelValues[port]
+					if (raw == null) continue
+					const on = Number(raw) !== 0
+					setActiveChannels(prev =>
+						prev[port] === on ? prev : { ...prev, [port]: on }
+					)
+				}
+
 				if (channelsRef.current.length === 0 && frame.channels) {
-					channelsRef.current = Object.keys(frame.channels).sort();
+					channelsRef.current = Object.keys(frame.channels)
+						.filter(channel => !isIoPort(channel))
+						.sort();
 					bucketListRef.current = []
 					ringListRef.current = []
 					channelsRef.current.forEach(channel => {
@@ -500,7 +528,7 @@ const Page = () => {
 			typeof settings.channelSignalAxes === "object" && settings.channelSignalAxes !== null
 				? (settings.channelSignalAxes as Record<string, string>)
 				: {}
-		const deviceChannels = (device.getChannels?.() ?? []).map(String)
+		const deviceChannels = (device.getChannels?.() ?? []).map(String).filter(channel => !isIoPort(channel))
 		const channelSignalKinds = Object.fromEntries(
 			Object.entries(configuredSignalKinds).filter(
 				([channel, signalKind]) =>
@@ -536,6 +564,7 @@ const Page = () => {
 		setStatus(STATUS.CONNECTING)
 		setAcquisitionStarted(false)
 		setSetupReview(null)
+		setDisconnectNotice(false)
 		cleanupPipeline();
 
 		const settings = JSON.parse(localStorage.getItem("settings") || "{}") as Record<string, unknown>
@@ -589,7 +618,7 @@ const Page = () => {
 				case "sense": {
 					const communicationMode = (settings.communication ??
 						SCIENTISST_COMUNICATION_MODE.WEBSERIAL) as SCIENTISST_COMUNICATION_MODE
-					const selectedChannels = (settings.channels ?? [
+					const configuredChannels = (settings.channels ?? [
 						"AI1",
 						"AI2",
 						"AI3",
@@ -597,6 +626,10 @@ const Page = () => {
 						"AI5",
 						"AI6"
 					]) as SCIENTISST_CHANNEL[]
+					const selectedChannels = [
+						...configuredChannels.filter(channel => !isIoPort(channel)),
+						...(IO_PORT_CHANNELS as SCIENTISST_CHANNEL[])
+					]
 					let samplingRate = Number(settings.samplingRate)
 					if (!Number.isFinite(samplingRate) || samplingRate <= 0) {
 						samplingRate = 1000;
@@ -656,7 +689,10 @@ const Page = () => {
 						? "WiFi"
 						: "Bluetooth",
 				samplingRate: Number.isFinite(reviewRate) ? (reviewRate as number) : null,
-				channels: (deviceRef.current.getChannels?.() ?? []).map(String).map(channel => ({
+				channels: (deviceRef.current.getChannels?.() ?? [])
+					.map(String)
+					.filter(channel => !isIoPort(channel))
+					.map(channel => ({
 					channel,
 					name: typeof reviewNames[channel] === "string" ? reviewNames[channel] : "",
 					kind: typeof reviewKinds[channel] === "string" ? reviewKinds[channel] : "",
@@ -709,6 +745,8 @@ const Page = () => {
 		if (finalizingAfterErrorRef.current) return
 		finalizingAfterErrorRef.current = true
 		window.electronAPI?.logPerfEvent?.('connection_lost')
+		disconnectedAtRef.current = Date.now()
+		setDisconnectNotice(true)
 
 		const finalizeAfterError = async () => {
 			try {
@@ -772,7 +810,9 @@ const Page = () => {
 				typeof settings.channelNames === "object" && settings.channelNames !== null
 					? (settings.channelNames as Record<string, string>)
 					: {}
-			const sessionChannels = (device.getChannels?.() ?? []).map(String)
+			const sessionChannels = (device.getChannels?.() ?? [])
+				.map(String)
+				.filter(channel => !isIoPort(channel))
 			const channelSignalKinds = Object.fromEntries(
 				Object.entries(configuredSignalKinds).filter(
 					([channel, signalKind]) =>
@@ -967,11 +1007,23 @@ const Page = () => {
 
 		if (time < 0) return "0:00"
 
-		const seconds = Math.floor(time % 60)
-		const minutes = Math.floor(time / 60)
+		const total = Math.round(time)
+		const seconds = total % 60
+		const minutes = Math.floor(total / 60)
 
 		return seconds < 10 ? `${minutes}:0${seconds}` : `${minutes}:${seconds}`
 	}, [])
+
+	const secondTickFrames = (): number[] | undefined => {
+		const windowFrames = uiWindowFramesRef.current
+		const samplingRate = deviceRef.current?.getSamplingRate?.() || 0
+		if (!windowFrames || !samplingRate) return undefined
+		const ticks: number[] = []
+		for (let second = 0; second * samplingRate <= windowFrames; second++) {
+			ticks.push(second * samplingRate)
+		}
+		return ticks.length > 0 ? ticks : undefined
+	}
 
 	const [showCloseModal, setShowCloseModal] = useState(false);
 
@@ -1031,6 +1083,16 @@ const Page = () => {
 			shortTitle="Live"
 			returnHref="/"
 		>
+			<div
+				role="status"
+				aria-live="assertive"
+				className={clsx(
+					"fixed left-4 top-20 z-30 flex items-center gap-2 rounded-full bg-red-600 px-3 py-1 text-sm font-medium text-white shadow-lg transition-opacity duration-300",
+					disconnectNotice ? "opacity-100" : "pointer-events-none opacity-0"
+				)}
+			>
+				Device disconnected - saving the recording
+			</div>
 			{status === STATUS.CONNECTED && (
 				<div className="w-full max-w-2xl rounded-lg border border-background-accent bg-background-accent px-4 py-3 text-sm text-over-background-highest">
 					<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
@@ -1306,6 +1368,7 @@ const Page = () => {
 												}
 												yTicks={5}
 												xTicks={5}
+												xTickValues={secondTickFrames()}
 												xTickFormat={xTickFormatter}
 											/>
 										</div>

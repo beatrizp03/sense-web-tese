@@ -11,7 +11,17 @@ export interface PdfExportRange {
 	endSec: number
 	includeAnalysis: boolean
 	observations: string
+	summaryStats: string[]
+	analysisFeatures: string[]
 }
+
+export interface AnalysisFeatureOption {
+	feature: string
+	library: string
+	channelCount: number
+}
+
+const SUMMARY_STATS = ["mean", "median", "std", "min", "max"]
 
 /** Accepts "90", "1:30" and "1:02:03"; returns seconds, or null if unreadable. */
 function parseTimeInput(raw: string): number | null {
@@ -51,6 +61,9 @@ interface PdfExportModalProps {
 	description?: string
 	showAnnotationInfo?: boolean
 	showAnalysisToggle?: boolean
+	analysisFeatureOptions?: AnalysisFeatureOption[]
+	analysisFeatureSource?: string
+	analysisFeaturesLoading?: boolean
 }
 
 /**
@@ -68,7 +81,10 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	title = "Export annotated PDF",
 	description = "Choose the part of the recording to put in the report. Annotations inside that span are drawn on the charts and listed in a table underneath them.",
 	showAnnotationInfo = true,
-	showAnalysisToggle = true
+	showAnalysisToggle = true,
+	analysisFeatureOptions,
+	analysisFeatureSource,
+	analysisFeaturesLoading = false
 }) => {
 	const segmentCount = Math.max(1, segmentSeconds.length)
 	const [segment, setSegment] = useState(defaultSegment)
@@ -76,6 +92,9 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	const [endDraft, setEndDraft] = useState("30")
 	const [includeAnalysis, setIncludeAnalysis] = useState(true)
 	const [observations, setObservations] = useState("")
+	const [summaryStats, setSummaryStats] = useState<string[]>([...SUMMARY_STATS])
+	const [analysisFeatures, setAnalysisFeatures] = useState<string[]>([])
+	const [featuresOpen, setFeaturesOpen] = useState(false)
 
 	const maxSeconds = segmentSeconds[segment - 1] || 0
 
@@ -88,6 +107,9 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 		const endSec = defaultRange ? defaultRange.endSec : segMax > 0 ? Math.min(30, segMax) : 30
 		setStartDraft(formatTime(startSec))
 		setEndDraft(formatTime(endSec))
+		setSummaryStats([...SUMMARY_STATS])
+		setAnalysisFeatures([])
+		setFeaturesOpen(false)
 	}, [open, defaultSegment, defaultRange, segmentCount, segmentSeconds])
 
 	const start = parseTimeInput(startDraft)
@@ -102,6 +124,20 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 		return null
 	}, [start, end, maxSeconds])
 
+	const toggle = (
+		setter: React.Dispatch<React.SetStateAction<string[]>>,
+		value: string
+	) =>
+		setter(current =>
+			current.includes(value) ? current.filter(item => item !== value) : [...current, value]
+		)
+
+	const featureRowCount = (analysisFeatureOptions ?? [])
+		.filter(option => analysisFeatures.includes(option.feature))
+		.reduce((total, option) => total + option.channelCount, 0)
+	const selectedCount = summaryStats.length + analysisFeatures.length
+	const totalCount = SUMMARY_STATS.length + (analysisFeatureOptions?.length ?? 0)
+
 	if (!open) return null
 
 	const startSec = start ?? 0
@@ -109,11 +145,11 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 	const clampedEnd = maxSeconds > 0 ? Math.min(endSec, maxSeconds) : endSec
 
 	return (
-		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-			<div className="w-full max-w-md rounded-xl border border-background-accent bg-background p-6 shadow-2xl">
-				<h2 className="text-lg font-bold text-over-background-highest">{title}</h2>
+		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+			<div className="flex max-h-full w-full max-w-md flex-col rounded-xl border border-background-accent bg-background p-6 shadow-2xl">
+				<h2 className="shrink-0 text-lg font-bold text-over-background-highest">{title}</h2>
+				<div className="table-scroll -mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
 				<p className="mt-1 text-xs text-over-background-medium">{description}</p>
-
 				{segmentCount > 1 && (
 					<div className="mt-4">
 						<p className="mb-1.5 text-xs uppercase tracking-[0.18em] text-over-background-low">Segment</p>
@@ -186,6 +222,112 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 				</label>
 				)}
 
+				{showAnalysisToggle && includeAnalysis && (
+					<div className="mt-2 border-l-2 border-background-accent pl-3">
+						<button
+							type="button"
+							onClick={() => setFeaturesOpen(open => !open)}
+							className="flex w-full items-center justify-between gap-2 text-left text-xs text-over-background-medium"
+						>
+							<span className="text-xs">
+								What to include
+								<span className="ml-1 text-over-background-low text-xs">
+									{selectedCount} of {totalCount} selected
+									{featureRowCount > 0 ? ` · ${featureRowCount} feature row${featureRowCount === 1 ? "" : "s"}` : ""}
+								</span>
+							</span>
+							<span aria-hidden className="text-xs leading-none">{featuresOpen ? "▾" : "▸"}</span>
+						</button>
+
+						{featuresOpen && (
+							<div className="mt-2 space-y-2">
+								<div>
+									<p className="text-[11px] uppercase tracking-[0.18em] text-over-background-low">
+										Summary statistics
+									</p>
+									<div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+										{SUMMARY_STATS.map(stat => (
+											<label key={stat} className="inline-flex items-center gap-1.5 text-xs text-over-background-medium">
+												<input
+													type="checkbox"
+													checked={summaryStats.includes(stat)}
+													onChange={() => toggle(setSummaryStats, stat)}
+													className="h-3.5 w-3.5 accent-primary"
+												/>
+												{stat}
+											</label>
+										))}
+									</div>
+								</div>
+
+								<div>
+									<div className="flex items-center justify-between gap-2">
+										<p className="text-[11px] uppercase tracking-[0.18em] text-over-background-low">
+											Extracted features
+										</p>
+										{(analysisFeatureOptions?.length ?? 0) > 0 && (
+											<span className="flex gap-2 text-xs">
+												<button
+													type="button"
+													onClick={() => setAnalysisFeatures((analysisFeatureOptions ?? []).map(o => o.feature))}
+													className="text-over-background-medium underline underline-offset-2"
+												>
+													All
+												</button>
+												<button
+													type="button"
+													onClick={() => setAnalysisFeatures([])}
+													className="text-over-background-medium underline underline-offset-2"
+												>
+													None
+												</button>
+											</span>
+										)}
+									</div>
+									{analysisFeatureSource && (
+										<p className="mt-0.5 text-xs text-over-background-low">{analysisFeatureSource}</p>
+									)}
+									{analysisFeaturesLoading ? (
+										<p className="mt-1 text-xs text-over-background-low">Looking for a saved analysis…</p>
+									) : (analysisFeatureOptions?.length ?? 0) === 0 ? (
+										<p className="mt-1 text-xs text-over-background-low">
+											No saved analysis for this range - the report will use descriptive
+											statistics computed from the window.
+										</p>
+									) : (
+										<div className="table-scroll mt-1 max-h-40 overflow-y-auto pr-1">
+											{(analysisFeatureOptions ?? []).map(option => (
+												<label
+													key={`${option.library}:${option.feature}`}
+													className="flex items-center gap-2 py-0.5 text-xs text-over-background-medium"
+												>
+													<input
+														type="checkbox"
+														checked={analysisFeatures.includes(option.feature)}
+														onChange={() => toggle(setAnalysisFeatures, option.feature)}
+														className="h-3.5 w-3.5 shrink-0 accent-primary"
+													/>
+													<span className="min-w-0 flex-1 truncate font-mono text-xs text-over-background-highest">
+														{option.feature}
+													</span>
+													<span className="shrink-0 text-xs text-over-background-low">{option.library}</span>
+													<span className="shrink-0 text-xs text-over-background-low">
+														{option.channelCount} ch
+													</span>
+												</label>
+											))}
+										</div>
+									)}
+									<p className="mt-1 text-xs text-over-background-low">
+										Selected features are printed as a table after the summary, one row
+										per channel.
+									</p>
+								</div>
+							</div>
+						)}
+					</div>
+				)}
+
 				<label className="mt-3 flex flex-col gap-1 text-xs text-over-background-medium">
 					Observations (optional)
 					<textarea
@@ -198,8 +340,9 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 				</label>
 
 				{error && <p className="mt-2 text-xs text-red-500">{error}</p>}
+				</div>
 
-				<div className="mt-6 flex justify-end gap-3">
+				<div className="mt-6 flex shrink-0 justify-end gap-3">
 					<button
 						type="button"
 						onClick={onClose}
@@ -212,7 +355,7 @@ const PdfExportModal: React.FC<PdfExportModalProps> = ({
 						size="base"
 						className={`!text-sm${generating ? ` ${LOADING_BUTTON_CLASS}` : ""}`}
 						disabled={!!error || generating}
-						onClick={() => onGenerate({ segment, startSec: Math.max(0, startSec), endSec: clampedEnd, includeAnalysis, observations })}
+						onClick={() => onGenerate({ segment, startSec: Math.max(0, startSec), endSec: clampedEnd, includeAnalysis, observations, summaryStats, analysisFeatures })}
 					>
 						<span className="inline-flex items-center justify-center gap-2">
 							{generating && <LoadingDots />}

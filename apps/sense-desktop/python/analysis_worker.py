@@ -78,6 +78,7 @@ RESERVED_FRAME_KEYS = {
 
 CHUNK_FILENAME_RE = re.compile(r"^sample(?P<sample>\d+)_chunk(?P<chunk>\d+)\.json$", re.IGNORECASE)
 SUPPORTED_SIGNAL_KINDS = {"ecg", "eda", "ppg", "emg", "rsp", "eog", "eeg", "pcg", "acc"}
+DIGITAL_PORT_CHANNELS = ("I1", "I2", "O1", "O2")
 ACC_AXIS_ORDER = {"x": 0, "y": 1, "z": 2}
 PRIMARY_LIBRARY = "biosppy"
 SECONDARY_LIBRARY = "neurokit2"
@@ -503,8 +504,16 @@ def normalize_channel_list(value: Any) -> List[str]:
 
 
 def ordered_channels(manifest: Dict[str, Any], channel_keys: Sequence[str]) -> List[str]:
-    available = [str(channel) for channel in channel_keys]
-    preferred_order = normalize_channel_list(manifest.get("channels"))
+    available = [
+        str(channel)
+        for channel in channel_keys
+        if str(channel) not in DIGITAL_PORT_CHANNELS
+    ]
+    preferred_order = [
+        channel
+        for channel in normalize_channel_list(manifest.get("channels"))
+        if channel not in DIGITAL_PORT_CHANNELS
+    ]
 
     ordered = [channel for channel in preferred_order if channel in available]
     for channel in available:
@@ -3624,7 +3633,13 @@ def write_signal_csvs(
         if not channel_keys:
             for chunk_file in chunk_files:
                 for frame in load_chunk_frames(Path(chunk_file)):
-                    keys = list(frame_channels(frame).keys())
+                    # The ports already have their own columns in the header below;
+                    # picking them up here would duplicate them as signal columns.
+                    keys = [
+                        key
+                        for key in frame_channels(frame).keys()
+                        if key not in DIGITAL_PORT_CHANNELS
+                    ]
                     if keys:
                         channel_keys = sorted(keys)
                         break
@@ -3676,7 +3691,7 @@ def write_signal_csvs(
         segment_folder.mkdir(parents=True, exist_ok=True)
         csv_path = segment_folder / "signal.csv"
 
-        digital_prefix = ["0", "0", "0", "0"]  # I1, I2, O1, O2 — not retained by the pipeline
+        digital_ports = DIGITAL_PORT_CHANNELS
         running_index = 0
 
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
@@ -3696,7 +3711,13 @@ def write_signal_csvs(
                         seq_val = int(seq_raw)
                     running_index += 1
                     channels_dict = frame_channels(frame)
-                    row = [str(seq_val)] + digital_prefix
+                    # Digital port states, recorded per frame. Sessions from
+                    # before the ports were retained carry no such key and
+                    # fall back to 0, as they always read.
+                    row = [str(seq_val)] + [
+                        "1" if _sense_num(channels_dict.get(port)) else "0"
+                        for port in digital_ports
+                    ]
                     for key in channel_keys:
                         raw_value = _sense_num(channels_dict.get(key))
                         row.append(str(raw_value))

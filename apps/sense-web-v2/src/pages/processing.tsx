@@ -93,6 +93,7 @@ const Page = () => {
 	const [segLabelMenu, setSegLabelMenu] = useState<number | null>(null)
 	const [helpOpen, setHelpOpen] = useState(false)
 	const [bannerDismissed, setBannerDismissed] = useState(false)
+	const [chunkLengths, setChunkLengths] = useState<{ file: string; frames: number }[] | null>(null)
 
 	const annotating = activeSideTab === "annotations"
 
@@ -334,9 +335,6 @@ const Page = () => {
 		})
 	}, [loadSessionBundle, requestDiscard])
 
-	// Auto-import when arriving from the summary page with ?session=<folder>.
-	// Consumed once per value: the parameter stays in the URL, so without this
-	// every later manual import would be undone by re-importing that folder.
 	const autoImportedRef = useRef<string | null>(null)
 	useEffect(() => {
 		if (!hydrated || !router.isReady) return
@@ -438,15 +436,23 @@ const Page = () => {
 					<div className="grid grid-cols-3 gap-4">
 						<div className="col-span-2 space-y-6">
 							<div className="grid grid-cols-5 gap-2 items-stretch">
-								<div className="col-span-4 flex items-center rounded-xl border border-background-accent bg-background-accent px-6 py-3 shadow-sm">
-									<div className="min-w-0 space-y-0">
-										<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Imported session</p>
-										<p className="break-all text-sm text-over-background-highest">{sessionFolder}</p>
+								<div className="col-span-4 rounded-xl border border-background-accent bg-background-accent px-6 py-3 shadow-sm">
+									<p className="text-xs uppercase tracking-[0.24em] text-over-background-low">Imported session</p>
+									<p className="break-all text-sm text-over-background-highest">{sessionFolder}</p>
+									<div className="mt-0.5 flex items-center gap-3">
 										{sessionSummary && (
-											<p className="mt-0.5 text-xs font-medium tabular-nums text-over-background-medium">
+											<p className="min-w-0 text-xs font-medium tabular-nums text-over-background-medium">
 												{sessionSummary}
 											</p>
 										)}
+										<button
+											type="button"
+											onClick={() => void window.electronAPI?.openExternalPath?.(sessionFolder)}
+											title={`Open ${sessionFolder} in the file explorer`}
+											className="ml-auto shrink-0 whitespace-nowrap rounded-lg bg-over-background-low-light p-2 text-xs font-medium text-over-background-high-light transition hover:bg-over-background-medium-light dark:bg-over-primary-medium-light dark:text-over-background-highest-light dark:hover:bg-over-primary-low-light"
+										>
+											Open folder on file explorer
+										</button>
 									</div>
 								</div>
 								<div className="col-span-1 flex items-center py-1 rounded-l">
@@ -638,6 +644,7 @@ const Page = () => {
 								</div>
 							)}
 							<SessionChart
+								onChunkLengths={setChunkLengths}
 								channels={channels}
 								manifest={manifest}
 								sessionFolder={sessionFolder}
@@ -704,6 +711,7 @@ const Page = () => {
 										defaultSegment={selectedSegment}
 										defaultRange={windowRange}
 										onBusyChange={setExportBusy}
+										chunkLengths={chunkLengths}
 									/>
 								}
 								activeTab={activeSideTab}

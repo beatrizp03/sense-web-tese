@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react"
 
 import { TextButton } from "@scientisst/react-ui/components/inputs"
 
-import { useSessionExport } from "../../hooks/useSessionExport"
+import { collectAnalysisFeatures, findAnalysisResult, useSessionExport } from "../../hooks/useSessionExport"
 import { Annotation } from "../../hooks/useAnnotations"
 import { AnnotationLabel } from "../../utils/annotationLabels"
-import PdfExportModal, { PdfExportRange } from "./PdfExportModal"
+import PdfExportModal, { AnalysisFeatureOption, PdfExportRange } from "./PdfExportModal"
 import LoadingDots, { LOADING_BUTTON_CLASS } from "./LoadingDots"
 
 interface SessionExportBarProps {
@@ -17,6 +17,8 @@ interface SessionExportBarProps {
 	defaultSegment?: number
 	defaultRange?: { startSec: number; endSec: number } | null
 	onBusyChange?: (busy: boolean) => void
+	/** Per-chunk frame counts from the chart's overview, so the PDF can seek. */
+	chunkLengths?: { file: string; frames: number }[] | null
 }
 
 /**
@@ -31,9 +33,13 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 	labels = [],
 	defaultSegment = 1,
 	defaultRange = null,
-	onBusyChange
+	onBusyChange,
+	chunkLengths = null
 }) => {
 	const { csvDownloading, annotationsDownloading, annotatedPdfDownloading, convertToCSV, convertToCSVWithAnnotations, convertToAnnotatedPDF } = useSessionExport(manifest, sessionFolder)
+	const [featureOptions, setFeatureOptions] = useState<AnalysisFeatureOption[]>([])
+	const [featureSource, setFeatureSource] = useState<string>("")
+	const [featuresLoading, setFeaturesLoading] = useState(false)
 	const hasSession = Array.isArray(manifest?.chunks) && manifest.chunks.length > 0
 
 	const exporting = csvDownloading || annotationsDownloading || annotatedPdfDownloading
@@ -63,8 +69,34 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 		a => (Number(a.segment) || 1) === defaultSegment
 	).length
 
+	useEffect(() => {
+		if (!pdfModalOpen) return
+		let cancelled = false
+		const range = defaultRange
+		const startSec = range ? Math.max(0, range.startSec) : 0
+		const endSec = range ? range.endSec : segmentSeconds[defaultSegment - 1] || 0
+		setFeaturesLoading(true)
+		void (async () => {
+			const found = await findAnalysisResult(sessionFolder, defaultSegment, startSec, endSec)
+			if (cancelled) return
+			const rows = found ? collectAnalysisFeatures(found.result, defaultSegment) : []
+			const byFeature = new Map<string, AnalysisFeatureOption>()
+			for (const row of rows) {
+				const existing = byFeature.get(row.feature)
+				if (existing) existing.channelCount += 1
+				else byFeature.set(row.feature, { feature: row.feature, library: row.library, channelCount: 1 })
+			}
+			setFeatureOptions([...byFeature.values()].sort((a, b) => a.feature.localeCompare(b.feature)))
+			setFeatureSource(found?.origin ?? "")
+			setFeaturesLoading(false)
+		})()
+		return () => {
+			cancelled = true
+		}
+	}, [pdfModalOpen, sessionFolder, defaultSegment, defaultRange, segmentSeconds])
+
 	const handleGenerate = async (range: PdfExportRange) => {
-		await convertToAnnotatedPDF({ ...range, sessionFolder, channels, channelNames, annotations, labels })
+		await convertToAnnotatedPDF({ ...range, sessionFolder, channels, channelNames, annotations, labels, chunkLengths })
 		setPdfModalOpen(false)
 	}
 
@@ -147,6 +179,9 @@ const SessionExportBar: React.FC<SessionExportBarProps> = ({
 				annotationCount={annotationsForDefaultSegment}
 				generating={annotatedPdfDownloading}
 				onGenerate={handleGenerate}
+				analysisFeatureOptions={featureOptions}
+				analysisFeatureSource={featureSource}
+				analysisFeaturesLoading={featuresLoading}
 			/>
 		</div>
 	)
