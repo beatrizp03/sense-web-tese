@@ -11,7 +11,7 @@
     "format": "prettier --write .",
     "dev:desktop": "concurrently -k \"pnpm --filter sense-web dev\" \"wait-on http://localhost:3000 && pnpm --filter sense-desktop start:no-warnings\"",
     "build:desktop": "pnpm --filter sense-web build",
-    "start:desktop": "concurrently -k \"pnpm --filter sense-web start\" \"wait-on http://localhost:3000 && pnpm --filter sense-desktop start:no-warnings\"",
+    "start:desktop": "pnpm run build:desktop && cross-env SENSE_WEB_ROOT=../sense-web-v2/out pnpm --filter sense-desktop start:no-warnings",
     "setup": "pnpm config set ignore-scripts false --location project && pnpm install",
     "clean:all": "pnpm -w dlx rimraf node_modules **/node_modules pnpm-lock.yaml && pnpm -w store prune",
     "reinstall": "pnpm run clean:all && pnpm install",

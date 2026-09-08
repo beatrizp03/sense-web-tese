@@ -1,5 +1,24 @@
+# Download
+
+**[⬇ Download SENSE Desktop for Windows](https://github.com/beatrizp03/sense-web-tese/releases/latest/download/SENSE-Desktop-Setup-0.1.0.exe)**
+
+Run the downloaded installer. Nothing else is needed,  no Node, no Python, no
+terminal. Everything the app requires, including the signal-analysis engine, is
+bundled inside.
+
+Windows will warn you that the publisher is unknown, because the installer is
+not code-signed. Click **More info**, then **Run anyway**. On machines with
+Smart App Control enabled, Windows blocks unsigned installers outright and
+offers no override; the only way in is to turn Smart App Control off in
+_Windows Security → App & browser control_, or to build the app from source
+using the instructions below.
+
+All releases, including builds for other platforms when available, are listed on
+the [releases page](https://github.com/beatrizp03/sense-web-tese/releases).
+
 # Table of Contents
 
+-   [Download](#download)
 -   [Introduction](#introduction)
 -   [Project Structure](#project-structure)
 -   [Packages](#packages)

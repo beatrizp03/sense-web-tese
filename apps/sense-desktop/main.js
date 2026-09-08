@@ -1,8 +1,62 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, protocol, net } = require("electron");
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { ipcMain, dialog } = require("electron");
 const { spawn, spawnSync } = require('child_process');
+
+const WEB_SCHEME = 'app';
+
+const BUNDLED_RESOURCES = process.env.SENSE_BUNDLED_RESOURCES || null;
+const usingBundledResources = app.isPackaged || Boolean(BUNDLED_RESOURCES);
+const RESOURCES_ROOT = BUNDLED_RESOURCES || process.resourcesPath;
+
+const WEB_ROOT_OVERRIDE = process.env.SENSE_WEB_ROOT
+  ? path.resolve(process.env.SENSE_WEB_ROOT)
+  : null;
+
+const WEB_ROOT = WEB_ROOT_OVERRIDE
+  || (usingBundledResources ? path.join(RESOURCES_ROOT, 'web') : path.join(__dirname, 'web'));
+
+const servingBundledWeb = usingBundledResources || Boolean(WEB_ROOT_OVERRIDE);
+const DEV_WEB_URL = process.env.SENSE_WEB_URL || 'http://127.0.0.1:3000';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: WEB_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
+]);
+
+function resolveWebAsset(requestPath) {
+  const decoded = decodeURIComponent(requestPath.split('?')[0].split('#')[0]);
+  const relative = decoded.replace(/^\/+/, '');
+  const candidate = path.join(WEB_ROOT, relative);
+  const normalised = path.normalize(candidate);
+  if (normalised !== WEB_ROOT && !normalised.startsWith(WEB_ROOT + path.sep)) return null;
+  if (fs.existsSync(normalised) && fs.statSync(normalised).isDirectory()) {
+    return path.join(normalised, 'index.html');
+  }
+  if (fs.existsSync(normalised)) return normalised;
+  const withHtml = `${normalised}.html`;
+  if (fs.existsSync(withHtml)) return withHtml;
+  const asIndex = path.join(normalised, 'index.html');
+  if (fs.existsSync(asIndex)) return asIndex;
+  return null;
+}
+
+function getSessionsRoot() {
+  if (!usingBundledResources) return path.join(__dirname, 'data');
+  return path.join(app.getPath('documents'), 'SENSE Desktop', 'data');
+}
+
+function registerWebProtocol() {
+  protocol.handle(WEB_SCHEME, request => {
+    const { pathname } = new URL(request.url);
+    const file = resolveWebAsset(pathname) ?? path.join(WEB_ROOT, '404.html');
+    return net.fetch(pathToFileURL(file).toString());
+  });
+}
 
 const ChunkedDataWriter = require('./src/ChunkedDataWriter');
 const { BufferManager } = require('./dist/BufferManager.js');
@@ -224,15 +278,15 @@ function resolveAnalysisWorkerCommand(preferredExecutable) {
     return { command: explicitExecutable, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
   }
 
-  if (app.isPackaged) {
+  if (usingBundledResources) {
     const frozenBinaryName = process.platform === 'win32' ? 'analysis_worker.exe' : 'analysis_worker';
-    const frozenBinaryPath = path.join(process.resourcesPath, 'python', frozenBinaryName);
+    const frozenBinaryPath = path.join(RESOURCES_ROOT, 'python', frozenBinaryName);
     if (fs.existsSync(frozenBinaryPath)) {
       return { command: frozenBinaryPath, scriptArgs: [] };
     }
 
     const bundledPythonName = process.platform === 'win32' ? 'python.exe' : 'python';
-    const bundledPythonPath = path.join(process.resourcesPath, 'python', 'runtime', bundledPythonName);
+    const bundledPythonPath = path.join(RESOURCES_ROOT, 'python', 'runtime', bundledPythonName);
     if (fs.existsSync(bundledPythonPath)) {
       return { command: bundledPythonPath, scriptArgs: [PYTHON_ANALYSIS_WORKER] };
     }
@@ -620,7 +674,7 @@ function createWindow() {
    console.log("[renderer]", event.message);
   });
 
-  const url = process.env.SENSE_WEB_URL || "http://127.0.0.1:3000";
+  const url = servingBundledWeb ? `${WEB_SCHEME}://bundle/index.html` : DEV_WEB_URL;
   win.loadURL(url);
 
   win.once("ready-to-show", () => win.show());
@@ -628,6 +682,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   const { session } = require("electron");
+
+  if (servingBundledWeb) registerWebProtocol();
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     if (permission === "serial" || permission === "bluetooth") return callback(true);
@@ -857,7 +913,7 @@ ipcMain.handle('start-acquisition', async (_event, startTime) => {
       perfLogger = null;
     }
 
-    sessionFolder = path.join(__dirname, 'data', startTime.replace(/[:.]/g, '-'));
+    sessionFolder = path.join(getSessionsRoot(), startTime.replace(/[:.]/g, '-'));
     segmentNumber = 1;
     exportEventsCompleted = { csv: false, pdf: false };
     perfLogger = new PerformanceLogger(path.join(sessionFolder, 'performance.csv'), 1000);

@@ -11,28 +11,32 @@
     "start": "tsc && electron .",
     "start:no-warnings": "tsc && cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=1 electron .",
     "build:worker": "python python/build_worker.py",
-    "dist": "pnpm run build:worker && electron-builder",
+    "build:web": "pnpm --filter sense-web build",
+    "dist": "pnpm run build:worker && pnpm run build:web && pnpm run build && electron-builder",
+    "dist:nopython": "pnpm run build:web && pnpm run build && electron-builder",
     "dist:nobuild": "electron-builder"
   },
   "dependencies": {
-    "electron": "^40.6.1",
+    "@scientisst/sense": "workspace:*",
     "serialport": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "electron": "^40.6.1",
     "electron-builder": "^25.1.0",
     "typescript": "^5.9.3"
   },
   "build": {
     "appId": "com.scientisst.sense-desktop",
     "productName": "SENSE Desktop",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
     "files": [
       "main.js",
       "preload.js",
-      "dist/**/*",
+      "dist/*.js",
       "src/**/*",
       "!python/__pycache__/**",
       "!python/build/**",
@@ -46,12 +50,32 @@
           "analysis_worker",
           "analysis_worker.exe"
         ]
+      },
+      {
+        "from": "../sense-web-v2/out",
+        "to": "web"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "beatrizp03",
+        "repo": "sense-web-tese"
       }
     ],
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "artifactName": "SENSE-Desktop-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SENSE Desktop"
     },
     "mac": {
       "target": [

@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 
 /**
  * PerformanceLogger — records system resource usage and key app event timings
@@ -84,6 +85,7 @@ class PerformanceLogger {
   }
 
   start() {
+    fs.mkdirSync(path.dirname(this.outputPath), { recursive: true });
     this.stream = fs.createWriteStream(this.outputPath, { flags: 'w' });
     this.stream.write(
       'timestamp,elapsed_ms,' +

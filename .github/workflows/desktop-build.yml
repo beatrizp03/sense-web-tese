@@ -3,16 +3,38 @@ name: Build SENSE Desktop
 on:
   push:
     branches: [main, nextjs]
+    tags: ["v*"]
   pull_request:
     branches: [main, nextjs]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            target: --win
+            worker: python/dist/analysis_worker.exe
+            artifacts: apps/sense-desktop/release/*.exe
+          - os: macos-latest
+            name: macOS
+            target: --mac
+            worker: python/dist/analysis_worker
+            artifacts: apps/sense-desktop/release/*.dmg
+          - os: ubuntu-latest
+            name: Linux
+            target: --linux
+            worker: python/dist/analysis_worker
+            artifacts: apps/sense-desktop/release/*.AppImage
 
     steps:
       - name: Checkout
@@ -37,7 +59,7 @@ jobs:
 
       - name: Verify frozen binary exists
         working-directory: apps/sense-desktop
-        run: test -f python/dist/analysis_worker.exe
+        run: test -f ${{ matrix.worker }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -54,13 +76,44 @@ jobs:
       - name: Install monorepo dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Package Electron app
+      - name: Build the interface as a static export
+        run: pnpm --filter sense-web build
+
+      - name: Verify the export exists
+        run: test -f apps/sense-web-v2/out/index.html
+
+      - name: Compile the desktop TypeScript modules
         working-directory: apps/sense-desktop
-        run: pnpm run dist:nobuild
+        run: pnpm run build
+
+      - name: Package installer
+        working-directory: apps/sense-desktop
+        run: npx electron-builder ${{ matrix.target }} --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sense-desktop-windows
-          path: apps/sense-desktop/release/*.exe
+          name: sense-desktop-${{ matrix.name }}
+          path: ${{ matrix.artifacts }}
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+
+      - name: Attach installers to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installers/**/*
+          draft: true
+          generate_release_notes: true
